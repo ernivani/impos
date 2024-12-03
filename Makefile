@@ -3,7 +3,7 @@ AS = i686-elf-as
 CFLAGS = -std=gnu99 -ffreestanding -O2 -Wall -Wextra
 LDFLAGS = -ffreestanding -O2 -nostdlib
 
-OBJS = boot.o kernel.o
+OBJS = src/boot.o src/kernel.o
 
 .PHONY: all clean compile verify build run
 
@@ -16,20 +16,21 @@ all: compile verify build
 	$(CC) -c $< -o $@ $(CFLAGS)
 
 compile: $(OBJS)
-	$(CC) -T linker.ld -o myos.bin $(LDFLAGS) $(OBJS) -lgcc
+	$(CC) -T src/linker.ld -o src/myos.bin $(LDFLAGS) $(OBJS) -lgcc
 
-verify: myos.bin
-	grub-file --is-x86-multiboot myos.bin
+verify: src/myos.bin
+	grub-file --is-x86-multiboot src/myos.bin
 
-build: myos.bin grub.cfg
+build: src/myos.bin src/grub.cfg
 	mkdir -p isodir/boot/grub
-	cp myos.bin isodir/boot/myos.bin
-	cp grub.cfg isodir/boot/grub/grub.cfg
+	cp src/myos.bin isodir/boot/myos.bin
+	cp src/grub.cfg isodir/boot/grub/grub.cfg
 	grub-mkrescue -o myos.iso isodir
 
 run: myos.iso
 	qemu-system-i386 -cdrom myos.iso
 
 clean:
-	rm -f *.o myos.bin myos.iso
-	rm -rf isodir
+	rm -f src/*.o src/myos.bin
+	rm -f myos.iso
+	rm -rf isodir 
