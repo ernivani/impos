@@ -247,6 +247,67 @@ void shell_initialize(void) {
     fs_initialize();
     printf("ImposOS Shell v2.0\n");
     printf("Type 'help' for a list of commands.\n");
+    printf("Press Tab for command auto-completion.\n");
+}
+
+size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
+    if (buffer_pos >= buffer_size) {
+        return buffer_pos;
+    }
+
+    // Find the start of the current word (after the last space)
+    size_t start = buffer_pos;
+    while (start > 0 && buffer[start - 1] != ' ') {
+        start--;
+    }
+
+    size_t prefix_len = buffer_pos - start;
+    if (prefix_len == 0) {
+        // Nothing to complete
+        return buffer_pos;
+    }
+
+    const char* first_match = NULL;
+    size_t matches = 0;
+
+    for (size_t i = 0; i < NUM_COMMANDS; i++) {
+        const char* name = commands[i].name;
+
+        // Manual prefix compare to avoid relying on strncmp from libc
+        size_t j = 0;
+        for (; j < prefix_len; j++) {
+            if (name[j] == '\0' || name[j] != buffer[start + j]) {
+                break;
+            }
+        }
+        if (j == prefix_len) {
+            if (matches == 0) {
+                first_match = name;
+            }
+            matches++;
+        }
+    }
+
+    if (matches != 1 || first_match == NULL) {
+        // Either no match or ambiguous; leave buffer unchanged for now
+        return buffer_pos;
+    }
+
+    size_t full_len = strlen(first_match);
+    if (full_len <= prefix_len) {
+        // Already complete
+        return buffer_pos;
+    }
+
+    size_t to_add = full_len - prefix_len;
+    if (buffer_pos + to_add >= buffer_size) {
+        to_add = buffer_size - buffer_pos - 1; // keep room for terminator when used
+    }
+
+    memcpy(&buffer[buffer_pos], first_match + prefix_len, to_add);
+    buffer_pos += to_add;
+
+    return buffer_pos;
 }
 
 void shell_process_command(char* command) {

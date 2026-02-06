@@ -23,6 +23,14 @@ void kernel_main(void) {
                     buffer_pos--;
                     putchar('\b');
                 }
+            } else if (c == '\t') {
+                size_t old_pos = buffer_pos;
+                size_t new_pos =
+                    shell_autocomplete(command_buffer, buffer_pos, sizeof(command_buffer));
+                for (size_t i = old_pos; i < new_pos; i++) {
+                    putchar(command_buffer[i]);
+                }
+                buffer_pos = new_pos;
             } else if (buffer_pos < sizeof(command_buffer) - 1) {
                 command_buffer[buffer_pos++] = c;
                 putchar(c);
