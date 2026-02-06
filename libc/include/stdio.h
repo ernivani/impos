@@ -5,6 +5,12 @@
 
 #define EOF (-1)
 
+#define KEY_ESCAPE  27
+#define KEY_UP      ((char)-128)
+#define KEY_DOWN    ((char)-127)
+#define KEY_LEFT    ((char)-126)
+#define KEY_RIGHT   ((char)-125)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
