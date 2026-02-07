@@ -15,7 +15,10 @@ iso: build
 	grub-mkrescue -o myos.iso isodir
 
 run: iso
-	qemu-system-i386 -cdrom myos.iso -display vnc=:0 -k fr 
+	qemu-system-i386 -cdrom myos.iso -display vnc=:0 -k fr
+
+run-us: iso
+	qemu-system-i386 -cdrom myos.iso -display vnc=:0 -k en-us
 
 run-gtk: iso
 	qemu-system-i386 -cdrom myos.iso

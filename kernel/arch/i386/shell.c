@@ -4,6 +4,8 @@
 #include <kernel/vi.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
 
 #define MAX_ARGS 64
 
@@ -25,10 +27,14 @@ static void cmd_touch(int argc, char* argv[]);
 static void cmd_help(int argc, char* argv[]);
 static void cmd_man(int argc, char* argv[]);
 static void cmd_clear(int argc, char* argv[]);
+static void cmd_history(int argc, char* argv[]);
 static void cmd_pwd(int argc, char* argv[]);
 static void cmd_mkdir(int argc, char* argv[]);
 static void cmd_rm(int argc, char* argv[]);
 static void cmd_vi(int argc, char* argv[]);
+static void cmd_setlayout(int argc, char* argv[]);
+static void cmd_exit(int argc, char* argv[]);
+static void cmd_shutdown(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -172,6 +178,19 @@ static command_t commands[] = {
         "    directory by walking the .. chain up to /.\n"
     },
     {
+        "history", cmd_history,
+        "Display command history",
+        "history: history\n"
+        "    List previously entered commands.\n",
+        "NAME\n"
+        "    history - display command history\n\n"
+        "SYNOPSIS\n"
+        "    history\n\n"
+        "DESCRIPTION\n"
+        "    Prints the list of saved commands (up to 16 entries).\n"
+        "    Use Up/Down in the shell to recall history.\n"
+    },
+    {
         "mkdir", cmd_mkdir,
         "Create a directory",
         "mkdir: mkdir NAME\n"
@@ -239,9 +258,94 @@ static command_t commands[] = {
         "    :wq       Save and quit\n"
         "    :q!       Quit without saving\n"
     },
+    {
+        "setlayout", cmd_setlayout,
+        "Set keyboard layout (fr/us)",
+        "setlayout: setlayout LAYOUT\n"
+        "    Set the keyboard layout. LAYOUT is 'fr' or 'us'.\n"
+        "    Without arguments, shows the current layout.\n",
+        "NAME\n"
+        "    setlayout - change keyboard layout\n\n"
+        "SYNOPSIS\n"
+        "    setlayout [fr|us]\n\n"
+        "DESCRIPTION\n"
+        "    Changes the active keyboard layout.\n"
+        "    Supported layouts:\n"
+        "      fr  - French AZERTY\n"
+        "      us  - US QWERTY\n\n"
+        "    Without arguments, prints the current layout.\n"
+    },
+    {
+        "exit", cmd_exit,
+        "Exit the shell and halt the CPU",
+        "exit: exit [STATUS]\n"
+        "    Exit the shell and halt the CPU.\n"
+        "    STATUS defaults to 0 (success).\n",
+        "NAME\n"
+        "    exit - cause normal process termination\n\n"
+        "SYNOPSIS\n"
+        "    exit [STATUS]\n\n"
+        "DESCRIPTION\n"
+        "    Terminates the shell and halts the CPU. The\n"
+        "    machine remains powered on but stops executing.\n"
+        "    On a VM, the display stays visible.\n"
+        "    Use 'shutdown' to power off the machine.\n\n"
+        "    If STATUS is given, it is used as the exit code.\n"
+        "    0 indicates success, nonzero indicates failure.\n"
+    },
+    {
+        "shutdown", cmd_shutdown,
+        "Power off the machine",
+        "shutdown: shutdown\n"
+        "    Power off the machine via ACPI.\n",
+        "NAME\n"
+        "    shutdown - power off the machine\n\n"
+        "SYNOPSIS\n"
+        "    shutdown\n\n"
+        "DESCRIPTION\n"
+        "    Powers off the machine using ACPI. On QEMU or\n"
+        "    Bochs, the VM window closes. On real hardware\n"
+        "    with ACPI support, the machine powers off.\n"
+        "    If ACPI is not available, falls back to halting\n"
+        "    the CPU (same as 'exit').\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
+
+/* History ring buffer: newest at (history_next - 1) % SHELL_HIST_SIZE */
+static char history_buf[SHELL_HIST_SIZE][SHELL_CMD_SIZE];
+static int history_next;
+static int history_count;
+
+void shell_history_add(const char *cmd) {
+    if (cmd == NULL || cmd[0] == '\0')
+        return;
+    if (history_count > 0) {
+        int last = (history_next + SHELL_HIST_SIZE - 1) % SHELL_HIST_SIZE;
+        if (strcmp(history_buf[last], cmd) == 0)
+            return;
+    }
+    size_t n = SHELL_CMD_SIZE - 1;
+    size_t i = 0;
+    for (; i < n && cmd[i]; i++)
+        history_buf[history_next][i] = cmd[i];
+    history_buf[history_next][i] = '\0';
+    history_next = (history_next + 1) % SHELL_HIST_SIZE;
+    if (history_count < SHELL_HIST_SIZE)
+        history_count++;
+}
+
+int shell_history_count(void) {
+    return history_count;
+}
+
+const char *shell_history_entry(int index) {
+    if (index < 0 || index >= history_count)
+        return NULL;
+    int slot = (history_next - history_count + index + SHELL_HIST_SIZE) % SHELL_HIST_SIZE;
+    return history_buf[slot];
+}
 
 void shell_initialize(void) {
     fs_initialize();
@@ -436,6 +540,17 @@ static void cmd_clear(int argc, char* argv[]) {
     terminal_clear();
 }
 
+static void cmd_history(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    int n = shell_history_count();
+    for (int i = 0; i < n; i++) {
+        const char *entry = shell_history_entry(i);
+        if (entry != NULL)
+            printf("  %d  %s\n", i + 1, entry);
+    }
+}
+
 static void cmd_pwd(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
@@ -470,4 +585,50 @@ static void cmd_vi(int argc, char* argv[]) {
         return;
     }
     vi_open(argv[1]);
+}
+
+static void cmd_setlayout(int argc, char* argv[]) {
+    if (argc < 2) {
+        int layout = keyboard_get_layout();
+        printf("Current layout: %s\n", layout == KB_LAYOUT_FR ? "fr" : "us");
+        return;
+    }
+    if (strcmp(argv[1], "fr") == 0) {
+        keyboard_set_layout(KB_LAYOUT_FR);
+        printf("Keyboard layout set to AZERTY (fr)\n");
+    } else if (strcmp(argv[1], "us") == 0) {
+        keyboard_set_layout(KB_LAYOUT_US);
+        printf("Keyboard layout set to QWERTY (us)\n");
+    } else {
+        printf("Unknown layout '%s'. Use 'fr' or 'us'.\n", argv[1]);
+    }
+}
+
+static void cmd_exit(int argc, char* argv[]) {
+    int status = EXIT_SUCCESS;
+    if (argc >= 2) {
+        int val = 0, neg = 0;
+        const char *p = argv[1];
+        if (*p == '-') { neg = 1; p++; }
+        while (*p >= '0' && *p <= '9')
+            val = val * 10 + (*p++ - '0');
+        status = neg ? -val : val;
+    }
+    printf("End\n");
+    exit(status);
+}
+
+static inline void outw(uint16_t port, uint16_t val) {
+    asm volatile("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static void cmd_shutdown(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    printf("Powering off...\n");
+    asm volatile("cli");
+    outw(0x604, 0x2000);   /* QEMU i440fx ACPI shutdown */
+    outw(0xB004, 0x2000);  /* Bochs / older QEMU */
+    /* If ACPI didn't work, fall back to halt */
+    printf("ACPI shutdown failed. System halted.\n");
+    while (1) asm volatile("hlt");
 }

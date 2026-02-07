@@ -115,3 +115,19 @@ void terminal_clear(void) {
 	terminal_column = 0;
 	terminal_update_cursor();
 }
+
+size_t terminal_get_column(void) {
+	return terminal_column;
+}
+
+size_t terminal_get_row(void) {
+	return terminal_row;
+}
+
+void terminal_set_cursor(size_t col, size_t row) {
+	if (col >= VGA_WIDTH) col = VGA_WIDTH - 1;
+	if (row >= VGA_HEIGHT) row = VGA_HEIGHT - 1;
+	terminal_column = col;
+	terminal_row = row;
+	terminal_update_cursor();
+}
