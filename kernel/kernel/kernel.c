@@ -220,11 +220,34 @@ void kernel_main(void) {
 
             if (c == '\t') {
                 buf[buf_len] = '\0';
+                size_t old_len = buf_len;
                 size_t new_len = shell_autocomplete(buf, buf_len, SHELL_CMD_SIZE);
-                if (new_len > buf_len) {
-                    cursor_move((int)buf_len - (int)cursor);
-                    for (size_t i = buf_len; i < new_len; i++)
+                
+                if (new_len != old_len) {
+                    // Find start of the word that was completed (last space before cursor)
+                    size_t word_start = cursor;
+                    while (word_start > 0 && buf[word_start - 1] != ' ') {
+                        word_start--;
+                    }
+                    
+                    size_t old_word_len = old_len - word_start;
+                    size_t new_word_len = new_len - word_start;
+                    
+                    // Move cursor to start of word
+                    if (cursor > word_start) {
+                        cursor_move((int)word_start - (int)cursor);
+                    }
+                    
+                    // Clear old word with spaces then backspace
+                    for (size_t i = 0; i < old_word_len; i++)
+                        putchar(' ');
+                    for (size_t i = 0; i < old_word_len; i++)
+                        putchar('\b');
+                    
+                    // Write new word
+                    for (size_t i = word_start; i < new_len; i++)
                         putchar(buf[i]);
+                    
                     buf_len = new_len;
                     cursor = new_len;
                 }
