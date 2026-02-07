@@ -368,7 +368,7 @@ void shell_initialize(void) {
     fs_initialize();
     printf("ImposOS Shell v2.0\n");
     printf("Type 'help' for a list of commands.\n");
-    printf("Press Tab for command auto-completion.\n");
+    printf("Press Tab for command and file auto-completion.\n");
 }
 
 size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
@@ -391,21 +391,94 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
     const char* first_match = NULL;
     size_t matches = 0;
 
-    for (size_t i = 0; i < NUM_COMMANDS; i++) {
-        const char* name = commands[i].name;
+    // Determine if we're completing a command (first word) or a filename (argument)
+    int is_first_word = 1;
+    for (size_t i = 0; i < start; i++) {
+        if (buffer[i] != ' ') {
+            is_first_word = 0;
+            break;
+        }
+    }
 
-        // Manual prefix compare to avoid relying on strncmp from libc
-        size_t j = 0;
-        for (; j < prefix_len; j++) {
-            if (name[j] == '\0' || name[j] != buffer[start + j]) {
-                break;
+    if (is_first_word) {
+        // Complete command names
+        for (size_t i = 0; i < NUM_COMMANDS; i++) {
+            const char* name = commands[i].name;
+
+            // Manual prefix compare
+            size_t j = 0;
+            for (; j < prefix_len; j++) {
+                if (name[j] == '\0' || name[j] != buffer[start + j]) {
+                    break;
+                }
+            }
+            if (j == prefix_len) {
+                if (matches == 0) {
+                    first_match = name;
+                }
+                matches++;
             }
         }
-        if (j == prefix_len) {
-            if (matches == 0) {
-                first_match = name;
+    } else {
+        // Complete filenames from current directory
+        inode_t cwd_inode;
+        uint32_t cwd_inode_num = fs_get_cwd_inode();
+        if (fs_read_inode(cwd_inode_num, &cwd_inode) != 0) {
+            return buffer_pos;
+        }
+
+        if (cwd_inode.type != INODE_DIR) {
+            return buffer_pos;
+        }
+
+        // Read directory entries
+        uint8_t dir_data[MAX_FILE_SIZE];
+        size_t dir_size = cwd_inode.size;
+        if (dir_size > MAX_FILE_SIZE) {
+            dir_size = MAX_FILE_SIZE;
+        }
+
+        // Read directory data blocks
+        size_t bytes_read = 0;
+        for (uint8_t i = 0; i < cwd_inode.num_blocks && bytes_read < dir_size; i++) {
+            uint8_t block_data[BLOCK_SIZE];
+            if (fs_read_block(cwd_inode.blocks[i], block_data) != 0) {
+                return buffer_pos;
             }
-            matches++;
+            size_t to_copy = BLOCK_SIZE;
+            if (bytes_read + to_copy > dir_size) {
+                to_copy = dir_size - bytes_read;
+            }
+            memcpy(dir_data + bytes_read, block_data, to_copy);
+            bytes_read += to_copy;
+        }
+
+        // Find matching entries
+        size_t num_entries = dir_size / sizeof(dir_entry_t);
+        dir_entry_t* entries = (dir_entry_t*)dir_data;
+
+        for (size_t i = 0; i < num_entries; i++) {
+            const char* name = entries[i].name;
+            if (name[0] == '\0') continue;
+
+            // Skip . and .. entries
+            if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+                continue;
+            }
+
+            // Manual prefix compare
+            size_t j = 0;
+            for (; j < prefix_len; j++) {
+                if (name[j] == '\0' || name[j] != buffer[start + j]) {
+                    break;
+                }
+            }
+            if (j == prefix_len) {
+                if (matches == 0) {
+                    first_match = name;
+                }
+                matches++;
+            }
         }
     }
 
