@@ -1,12 +1,13 @@
 #include <kernel/fs.h>
+#include <kernel/ata.h>
 #include <string.h>
 #include <stdio.h>
 
 static superblock_t sb;
 static inode_t inodes[NUM_INODES];
 static uint8_t data_blocks[NUM_BLOCKS][BLOCK_SIZE];
+static int fs_dirty = 0;
 
-/* ---- local string helpers (not in our libc) ---- */
 
 static void local_strncpy(char* dst, const char* src, size_t n) {
     size_t i;
@@ -33,7 +34,6 @@ static void local_strcat(char* dst, const char* src) {
     dst[len + i] = '\0';
 }
 
-/* ---- bitmap helpers ---- */
 
 static void bitmap_set(uint8_t* map, uint32_t bit) {
     map[bit / 8] |= (1 << (bit % 8));
@@ -61,6 +61,7 @@ static int alloc_inode(void) {
     if (idx < 0) return -1;
     bitmap_set(sb.inode_bitmap, idx);
     memset(&inodes[idx], 0, sizeof(inode_t));
+    fs_dirty = 1;
     return idx;
 }
 
@@ -69,16 +70,19 @@ static int alloc_block(void) {
     if (idx < 0) return -1;
     bitmap_set(sb.block_bitmap, idx);
     memset(data_blocks[idx], 0, BLOCK_SIZE);
+    fs_dirty = 1;
     return idx;
 }
 
 static void free_inode(int idx) {
     bitmap_clear(sb.inode_bitmap, idx);
     inodes[idx].type = INODE_FREE;
+    fs_dirty = 1;
 }
 
 static void free_block(int idx) {
     bitmap_clear(sb.block_bitmap, idx);
+    fs_dirty = 1;
 }
 
 /* ---- directory operations ---- */
@@ -110,6 +114,7 @@ static int dir_add_entry(uint32_t dir_inode, const char* name, uint32_t child_in
                 entries[e].inode = child_inode;
                 local_strncpy(entries[e].name, name, MAX_NAME_LEN);
                 dir->size += sizeof(dir_entry_t);
+                fs_dirty = 1;
                 return 0;
             }
         }
@@ -125,6 +130,7 @@ static int dir_add_entry(uint32_t dir_inode, const char* name, uint32_t child_in
     entries[0].inode = child_inode;
     local_strncpy(entries[0].name, name, MAX_NAME_LEN);
     dir->size += sizeof(dir_entry_t);
+    fs_dirty = 1;
     return 0;
 }
 
@@ -138,6 +144,7 @@ static int dir_remove_entry(uint32_t dir_inode, const char* name) {
                 local_strncmp(entries[e].name, name, MAX_NAME_LEN) == 0) {
                 memset(&entries[e], 0, sizeof(dir_entry_t));
                 dir->size -= sizeof(dir_entry_t);
+                fs_dirty = 1;
                 return 0;
             }
         }
@@ -220,13 +227,110 @@ static int init_dir_inode(int inode_idx, uint32_t parent_inode) {
     return 0;
 }
 
+/* ---- disk persistence ---- */
+
+int fs_sync(void) {
+    if (!ata_is_available()) {
+        printf("fs_sync: No disk available\n");
+        return -1;
+    }
+
+    if (!fs_dirty) {
+        return 0;  /* Nothing to sync */
+    }
+
+    printf("Syncing filesystem to disk...\n");
+
+    /* Write superblock */
+    sb.magic = FS_MAGIC;
+    if (ata_write_sectors(DISK_SECTOR_SUPERBLOCK, 1, (uint8_t*)&sb) != 0) {
+        printf("fs_sync: Failed to write superblock\n");
+        return -1;
+    }
+
+    /* Write inodes (64 inodes * 32 bytes = 2048 bytes = 4 sectors) */
+    if (ata_write_sectors(DISK_SECTOR_INODES, 4, (uint8_t*)inodes) != 0) {
+        printf("fs_sync: Failed to write inodes\n");
+        return -1;
+    }
+
+    /* Write data blocks (256 blocks of 512 bytes each) */
+    for (int i = 0; i < NUM_BLOCKS; i++) {
+        if (bitmap_test(sb.block_bitmap, i)) {
+            if (ata_write_sectors(DISK_SECTOR_DATA + i, 1, data_blocks[i]) != 0) {
+                printf("fs_sync: Failed to write block %d\n", i);
+                return -1;
+            }
+        }
+    }
+
+    /* Flush disk cache */
+    if (ata_flush() != 0) {
+        printf("fs_sync: Failed to flush disk cache\n");
+        return -1;
+    }
+
+    fs_dirty = 0;
+    printf("Filesystem synced successfully\n");
+    return 0;
+}
+
+int fs_load(void) {
+    if (!ata_is_available()) {
+        return -1;
+    }
+
+    printf("Loading filesystem from disk...\n");
+
+    /* Read superblock */
+    if (ata_read_sectors(DISK_SECTOR_SUPERBLOCK, 1, (uint8_t*)&sb) != 0) {
+        printf("fs_load: Failed to read superblock\n");
+        return -1;
+    }
+
+    /* Verify magic number */
+    if (sb.magic != FS_MAGIC) {
+        printf("fs_load: Invalid filesystem magic (0x%x)\n", sb.magic);
+        return -1;
+    }
+
+    /* Read inodes */
+    if (ata_read_sectors(DISK_SECTOR_INODES, 4, (uint8_t*)inodes) != 0) {
+        printf("fs_load: Failed to read inodes\n");
+        return -1;
+    }
+
+    /* Read data blocks */
+    for (int i = 0; i < NUM_BLOCKS; i++) {
+        if (bitmap_test(sb.block_bitmap, i)) {
+            if (ata_read_sectors(DISK_SECTOR_DATA + i, 1, data_blocks[i]) != 0) {
+                printf("fs_load: Failed to read block %d\n", i);
+                return -1;
+            }
+        }
+    }
+
+    fs_dirty = 0;
+    printf("Filesystem loaded successfully\n");
+    return 0;
+}
+
 /* ---- public API ---- */
 
 void fs_initialize(void) {
+    /* Try to load from disk first */
+    if (ata_is_available() && fs_load() == 0) {
+        printf("Using persistent filesystem from disk\n");
+        return;
+    }
+
+    /* Otherwise initialize new filesystem in memory */
+    printf("Initializing new filesystem\n");
     memset(&sb, 0, sizeof(sb));
     memset(inodes, 0, sizeof(inodes));
     memset(data_blocks, 0, sizeof(data_blocks));
 
+    sb.magic = FS_MAGIC;
     sb.num_inodes = NUM_INODES;
     sb.num_blocks = NUM_BLOCKS;
 
@@ -239,6 +343,13 @@ void fs_initialize(void) {
     fs_create_file("/home", 1);
     fs_create_file("/home/root", 1);
     fs_change_directory("/home/root");
+
+    fs_dirty = 1;
+    
+    /* Auto-sync if disk available */
+    if (ata_is_available()) {
+        fs_sync();
+    }
 }
 
 int fs_create_file(const char* filename, uint8_t is_directory) {
@@ -271,6 +382,11 @@ int fs_create_file(const char* filename, uint8_t is_directory) {
             free_block(inodes[idx].blocks[b]);
         free_inode(idx);
         return -1;
+    }
+
+    /* Auto-sync if disk available */
+    if (ata_is_available()) {
+        fs_sync();
     }
 
     return 0;
@@ -306,6 +422,13 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
         remaining -= chunk;
     }
     inode->size = size;
+    fs_dirty = 1;
+    
+    /* Auto-sync if disk available */
+    if (ata_is_available()) {
+        fs_sync();
+    }
+    
     return 0;
 }
 
@@ -362,6 +485,12 @@ int fs_delete_file(const char* filename) {
 
     /* remove from parent */
     dir_remove_entry(parent, name);
+    
+    /* Auto-sync if disk available */
+    if (ata_is_available()) {
+        fs_sync();
+    }
+    
     return 0;
 }
 

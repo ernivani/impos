@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <kernel/tty.h>
 #include <kernel/shell.h>
+#include <kernel/ata.h>
 
 #define PROMPT      "$ "
 
@@ -48,6 +49,10 @@ static void line_replace(const char *text, size_t len, size_t old_len) {
 
 void kernel_main(void) {
     terminal_initialize();
+    
+    /* Initialize ATA disk driver */
+    ata_initialize();
+    
     shell_initialize();
 
     /* Set up restart point for exit() to return here */
