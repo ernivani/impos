@@ -556,17 +556,75 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
                 }
             } else if (prefix_len >= 0) {
                 // Complete filenames
-                inode_t cwd_inode;
-                uint32_t cwd_inode_num = fs_get_cwd_inode();
-                if (fs_read_inode(cwd_inode_num, &cwd_inode) == 0 && cwd_inode.type == INODE_DIR) {
+                // Extract the current word being completed
+                char word[256] = {0};
+                size_t word_len = buffer_pos - start;
+                if (word_len < sizeof(word)) {
+                    memcpy(word, buffer + start, word_len);
+                }
+                
+                
+                // Find the last / in the word to separate directory from filename
+                char dir_path[256] = {0};
+                char file_prefix[256] = {0};
+                int found_slash = 0;
+                size_t last_slash = 0;
+                
+                for (size_t i = word_len; i > 0; i--) {
+                    if (word[i-1] == '/') {
+                        last_slash = i;
+                        found_slash = 1;
+                        break;
+                    }
+                }
+                
+                // Extract directory path and filename prefix
+                if (found_slash) {
+                    // Has a / - split into dir + prefix
+                    memcpy(dir_path, word, last_slash);
+                    dir_path[last_slash] = '\0';
+                    if (last_slash < word_len) {
+                        memcpy(file_prefix, word + last_slash, word_len - last_slash);
+                        file_prefix[word_len - last_slash] = '\0';
+                    }
+                } else {
+                    // No / - use current directory
+                    strcpy(file_prefix, word);
+                }
+                
+                size_t file_prefix_len = strlen(file_prefix);
+                
+                // Get the target directory inode
+                uint32_t target_inode;
+                if (dir_path[0] != '\0') {
+                    // Save current directory
+                    uint32_t saved_cwd = fs_get_cwd_inode();
+                    
+                    // Try to navigate to target directory
+                    if (fs_change_directory(dir_path) != 0) {
+                        // Path doesn't exist
+                        fs_change_directory_by_inode(saved_cwd);
+                        goto skip_file_completion;
+                    }
+                    target_inode = fs_get_cwd_inode();
+                    
+                    // Restore original directory
+                    fs_change_directory_by_inode(saved_cwd);
+                } else {
+                    target_inode = fs_get_cwd_inode();
+                }
+                
+                // Read target directory
+                inode_t dir_inode;
+                if (fs_read_inode(target_inode, &dir_inode) == 0 && dir_inode.type == INODE_DIR) {
                     uint8_t dir_data[MAX_FILE_SIZE];
-                    size_t dir_size = cwd_inode.size;
+                    size_t dir_size = dir_inode.size;
                     if (dir_size > MAX_FILE_SIZE) dir_size = MAX_FILE_SIZE;
 
                     size_t bytes_read = 0;
-                    for (uint8_t i = 0; i < cwd_inode.num_blocks && bytes_read < dir_size; i++) {
+                    for (uint8_t i = 0; i < dir_inode.num_blocks && bytes_read < dir_size; i++) {
                         uint8_t block_data[BLOCK_SIZE];
-                        if (fs_read_block(cwd_inode.blocks[i], block_data) != 0) break;
+                        if (fs_read_block(dir_inode.blocks[i], block_data) != 0) break;
                         size_t to_copy = BLOCK_SIZE;
                         if (bytes_read + to_copy > dir_size) to_copy = dir_size - bytes_read;
                         memcpy(dir_data + bytes_read, block_data, to_copy);
@@ -575,24 +633,35 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
 
                     size_t num_entries = dir_size / sizeof(dir_entry_t);
                     dir_entry_t* entries = (dir_entry_t*)dir_data;
+                    
 
                     for (size_t i = 0; i < num_entries && completion_matches_count < 32; i++) {
                         const char* name = entries[i].name;
                         if (name[0] == '\0') continue;
                         if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
 
+                        // Compare with file_prefix instead of full word
                         size_t j = 0;
-                        for (; j < prefix_len; j++) {
-                            if (name[j] == '\0' || name[j] != buffer[start + j]) {
+                        for (; j < file_prefix_len; j++) {
+                            if (name[j] == '\0' || name[j] != file_prefix[j]) {
                                 break;
                             }
                         }
-                        if (j == prefix_len) {
-                            strcpy(completion_matches[completion_matches_count], name);
+                        if (j == file_prefix_len) {
+                            // Store full path (dir_path + name)
+                            if (dir_path[0] != '\0') {
+                                strcpy(completion_matches[completion_matches_count], dir_path);
+                                strcat(completion_matches[completion_matches_count], name);
+                            } else {
+                                strcpy(completion_matches[completion_matches_count], name);
+                            }
                             completion_matches_count++;
                         }
                     }
                 }
+                
+                skip_file_completion:
+                (void)0;
             }
         }
         
@@ -897,9 +966,7 @@ static void cmd_timedatectl(int argc, char* argv[]) {
         uint32_t hours = uptime / 3600;
         uint32_t minutes = (uptime % 3600) / 60;
         uint32_t seconds = uptime % 60;
-        printf("          Uptime: %uh %um %us\n", hours, minutes, seconds);
-        printf("Keyboard layout: %s\n", 
-               cfg->keyboard_layout == KB_LAYOUT_FR ? "fr (AZERTY)" : "us (QWERTY)");
+        printf("          Uptime: %dh %dm %ds\n", (int)hours, (int)minutes, (int)seconds);
         
     } else if (strcmp(argv[1], "set-time") == 0) {
         if (argc < 3) {
