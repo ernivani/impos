@@ -62,4 +62,9 @@ const char* fs_get_cwd(void);
 int fs_sync(void);
 int fs_load(void);
 
+/* Helper functions for shell autocompletion */
+uint32_t fs_get_cwd_inode(void);
+int fs_read_inode(uint32_t inode_num, inode_t* out_inode);
+int fs_read_block(uint32_t block_num, uint8_t* out_data);
+
 #endif
