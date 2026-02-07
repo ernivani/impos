@@ -109,6 +109,32 @@ void config_update_uptime(void) {
     sys_config.uptime_seconds++;
 }
 
+void config_tick_second(void) {
+    sys_config.uptime_seconds++;
+    
+    sys_config.datetime.second++;
+    if (sys_config.datetime.second >= 60) {
+        sys_config.datetime.second = 0;
+        sys_config.datetime.minute++;
+        if (sys_config.datetime.minute >= 60) {
+            sys_config.datetime.minute = 0;
+            sys_config.datetime.hour++;
+            if (sys_config.datetime.hour >= 24) {
+                sys_config.datetime.hour = 0;
+                sys_config.datetime.day++;
+                if (sys_config.datetime.day > 30) {
+                    sys_config.datetime.day = 1;
+                    sys_config.datetime.month++;
+                    if (sys_config.datetime.month > 12) {
+                        sys_config.datetime.month = 1;
+                        sys_config.datetime.year++;
+                    }
+                }
+            }
+        }
+    }
+}
+
 const char* config_get_timezone(void) {
     return sys_config.timezone;
 }

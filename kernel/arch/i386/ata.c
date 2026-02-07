@@ -110,7 +110,6 @@ int ata_initialize(void) {
     insw(ATA_PRIMARY_IO + ATA_REG_DATA, identify, 256);
 
     ata_available = 1;
-    printf("ATA disk detected successfully\n");
     return 0;
 }
 

@@ -63,6 +63,9 @@ void kernel_main(void) {
         /* We've returned from exit(), restart the shell */
         printf("\n");
     }
+    
+    /* Reset to home directory at shell start */
+    fs_change_directory("/home/root");
 
     int hist_pos;
     char saved_line[SHELL_CMD_SIZE];
@@ -271,6 +274,7 @@ void kernel_main(void) {
 
         if (!cancelled && buf_len > 0) {
             shell_history_add(buf);
+            config_tick_second();  // Approximate: 1 second per command
             shell_process_command(buf);
         }
     }

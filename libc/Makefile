@@ -42,6 +42,7 @@ string/memmove.o \
 string/memset.o \
 string/strlen.o \
 string/strcpy.o \
+string/strcat.o \
 string/strcmp.o \
 string/strtok.o \
 string/strchr.o \

@@ -57,6 +57,7 @@ int fs_read_file(const char* filename, uint8_t* buffer, size_t* size);
 int fs_delete_file(const char* filename);
 void fs_list_directory(int flags);
 int fs_change_directory(const char* dirname);
+int fs_change_directory_by_inode(uint32_t inode_num);
 const char* fs_get_cwd(void);
 
 int fs_sync(void);

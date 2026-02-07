@@ -253,15 +253,12 @@ int fs_read_block(uint32_t block_num, uint8_t* out_data) {
 
 int fs_sync(void) {
     if (!ata_is_available()) {
-        printf("fs_sync: No disk available\n");
         return -1;
     }
 
     if (!fs_dirty) {
         return 0;  /* Nothing to sync */
     }
-
-    printf("Syncing filesystem to disk...\n");
 
     /* Write superblock */
     sb.magic = FS_MAGIC;
@@ -293,7 +290,6 @@ int fs_sync(void) {
     }
 
     fs_dirty = 0;
-    printf("Filesystem synced successfully\n");
     return 0;
 }
 
@@ -301,8 +297,6 @@ int fs_load(void) {
     if (!ata_is_available()) {
         return -1;
     }
-
-    printf("Loading filesystem from disk...\n");
 
     /* Read superblock */
     if (ata_read_sectors(DISK_SECTOR_SUPERBLOCK, 1, (uint8_t*)&sb) != 0) {
@@ -333,7 +327,6 @@ int fs_load(void) {
     }
 
     fs_dirty = 0;
-    printf("Filesystem loaded successfully\n");
     return 0;
 }
 
@@ -342,12 +335,10 @@ int fs_load(void) {
 void fs_initialize(void) {
     /* Try to load from disk first */
     if (ata_is_available() && fs_load() == 0) {
-        printf("Using persistent filesystem from disk\n");
         return;
     }
 
     /* Otherwise initialize new filesystem in memory */
-    printf("Initializing new filesystem\n");
     memset(&sb, 0, sizeof(sb));
     memset(inodes, 0, sizeof(inodes));
     memset(data_blocks, 0, sizeof(data_blocks));
@@ -565,6 +556,13 @@ int fs_change_directory(const char* dirname) {
 
     if (inodes[inode_idx].type != INODE_DIR) return -1;
     sb.cwd_inode = (uint32_t)inode_idx;
+    return 0;
+}
+
+int fs_change_directory_by_inode(uint32_t inode_num) {
+    if (inode_num >= NUM_INODES) return -1;
+    if (inodes[inode_num].type != INODE_DIR) return -1;
+    sb.cwd_inode = inode_num;
     return 0;
 }
 
