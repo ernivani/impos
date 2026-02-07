@@ -33,6 +33,7 @@ static void cmd_mkdir(int argc, char* argv[]);
 static void cmd_rm(int argc, char* argv[]);
 static void cmd_vi(int argc, char* argv[]);
 static void cmd_setlayout(int argc, char* argv[]);
+static void cmd_sync(int argc, char* argv[]);
 static void cmd_exit(int argc, char* argv[]);
 static void cmd_shutdown(int argc, char* argv[]);
 
@@ -274,6 +275,22 @@ static command_t commands[] = {
         "      fr  - French AZERTY\n"
         "      us  - US QWERTY\n\n"
         "    Without arguments, prints the current layout.\n"
+    },
+    {
+        "sync", cmd_sync,
+        "Synchronize filesystem to disk",
+        "sync: sync\n"
+        "    Write all cached filesystem data to disk.\n",
+        "NAME\n"
+        "    sync - synchronize cached writes to persistent storage\n\n"
+        "SYNOPSIS\n"
+        "    sync\n\n"
+        "DESCRIPTION\n"
+        "    Forces all modified filesystem data to be written\n"
+        "    to disk immediately. This ensures data persistence\n"
+        "    across reboots. The filesystem is automatically\n"
+        "    synced on changes when a disk is available, but\n"
+        "    this command forces an immediate sync.\n"
     },
     {
         "exit", cmd_exit,
@@ -602,6 +619,12 @@ static void cmd_setlayout(int argc, char* argv[]) {
     } else {
         printf("Unknown layout '%s'. Use 'fr' or 'us'.\n", argv[1]);
     }
+}
+
+static void cmd_sync(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    fs_sync();
 }
 
 static void cmd_exit(int argc, char* argv[]) {
