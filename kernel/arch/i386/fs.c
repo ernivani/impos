@@ -227,6 +227,28 @@ static int init_dir_inode(int inode_idx, uint32_t parent_inode) {
     return 0;
 }
 
+/* ---- helper functions for shell autocompletion ---- */
+
+uint32_t fs_get_cwd_inode(void) {
+    return sb.cwd_inode;
+}
+
+int fs_read_inode(uint32_t inode_num, inode_t* out_inode) {
+    if (inode_num >= NUM_INODES) {
+        return -1;
+    }
+    memcpy(out_inode, &inodes[inode_num], sizeof(inode_t));
+    return 0;
+}
+
+int fs_read_block(uint32_t block_num, uint8_t* out_data) {
+    if (block_num >= NUM_BLOCKS) {
+        return -1;
+    }
+    memcpy(out_data, data_blocks[block_num], BLOCK_SIZE);
+    return 0;
+}
+
 /* ---- disk persistence ---- */
 
 int fs_sync(void) {
