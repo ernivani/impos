@@ -6,12 +6,17 @@
 
 static void (*atexit_funcs[ATEXIT_MAX])(void);
 static int atexit_count = 0;
+static jmp_buf *restart_env = NULL;
 
 int atexit(void (*function)(void)) {
 	if (function == NULL || atexit_count >= ATEXIT_MAX)
 		return -1;
 	atexit_funcs[atexit_count++] = function;
 	return 0;
+}
+
+void exit_set_restart_point(jmp_buf *env) {
+	restart_env = env;
 }
 
 __attribute__((__noreturn__))
@@ -22,21 +27,23 @@ void exit(int status) {
 			atexit_funcs[i]();
 	}
 
-	/* Flush and close all open stdio streams */
-	/* In kernel mode, we don't have file streams to close,
-	 * but we could flush any pending output here if needed */
+	atexit_count = 0;
 
 #if defined(__is_libk)
+	if (restart_env != NULL) {
+		if (status != EXIT_SUCCESS)
+			printf("Shell exited with status %d\n", status);
+		longjmp(*restart_env, 1);
+	}
+	
 	if (status != EXIT_SUCCESS)
-		printf("Process terminated with status %d\n", status);
+		printf("System halted with status %d\n", status);
 	else
-		printf("Process terminated successfully\n");
+		printf("System halted.\n");
 #else
-	/* In user mode, would perform system call to terminate process */
 	(void)status;
 #endif
 
-	/* Disable interrupts and halt */
 	asm volatile("cli");
 	while (1)
 		asm volatile("hlt");

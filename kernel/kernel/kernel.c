@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <kernel/tty.h>
 #include <kernel/shell.h>
 
@@ -49,9 +50,18 @@ void kernel_main(void) {
     terminal_initialize();
     shell_initialize();
 
+    /* Set up restart point for exit() to return here */
+    jmp_buf restart_point;
+    exit_set_restart_point(&restart_point);
+    
+    if (setjmp(restart_point) != 0) {
+        /* We've returned from exit(), restart the shell */
+        printf("\n");
+    }
+
     int hist_pos;
     char saved_line[SHELL_CMD_SIZE];
-    size_t saved_len;
+    volatile size_t saved_len;
     int cancelled;
 
     while (1) {

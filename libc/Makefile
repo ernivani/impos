@@ -35,6 +35,7 @@ stdio/getchar.o \
 stdio/puts.o \
 stdlib/abort.o \
 stdlib/exit.o \
+setjmp/setjmp.o \
 string/memcmp.o \
 string/memcpy.o \
 string/memmove.o \
