@@ -2,6 +2,7 @@
 #include <kernel/fs.h>
 #include <kernel/tty.h>
 #include <kernel/vi.h>
+#include <kernel/config.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +37,7 @@ static void cmd_setlayout(int argc, char* argv[]);
 static void cmd_sync(int argc, char* argv[]);
 static void cmd_exit(int argc, char* argv[]);
 static void cmd_shutdown(int argc, char* argv[]);
+static void cmd_timedatectl(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -326,6 +328,38 @@ static command_t commands[] = {
         "    If ACPI is not available, falls back to halting\n"
         "    the CPU (same as 'exit').\n"
     },
+    {
+        "timedatectl", cmd_timedatectl,
+        "Control system time and date settings",
+        "timedatectl: timedatectl [COMMAND]\n"
+        "    Control and query system time and date settings.\n"
+        "    Available commands:\n"
+        "      status              Show current time and date settings\n"
+        "      set-time TIME       Set system time (HH:MM:SS)\n"
+        "      set-date DATE       Set system date (YYYY-MM-DD)\n"
+        "      set-timezone TZ     Set system timezone\n"
+        "      list-timezones      List available timezones\n",
+        "NAME\n"
+        "    timedatectl - control system time and date\n\n"
+        "SYNOPSIS\n"
+        "    timedatectl [COMMAND] [ARGS...]\n\n"
+        "DESCRIPTION\n"
+        "    Query and change system time and date settings.\n\n"
+        "COMMANDS\n"
+        "    status\n"
+        "        Show current time, date, timezone, and uptime.\n\n"
+        "    set-time TIME\n"
+        "        Set the system time. TIME format: HH:MM:SS\n"
+        "        Example: timedatectl set-time 14:30:00\n\n"
+        "    set-date DATE\n"
+        "        Set the system date. DATE format: YYYY-MM-DD\n"
+        "        Example: timedatectl set-date 2026-02-07\n\n"
+        "    set-timezone TIMEZONE\n"
+        "        Set the system timezone.\n"
+        "        Example: timedatectl set-timezone Europe/Paris\n\n"
+        "    list-timezones\n"
+        "        List common available timezones.\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -334,6 +368,13 @@ static command_t commands[] = {
 static char history_buf[SHELL_HIST_SIZE][SHELL_CMD_SIZE];
 static int history_next;
 static int history_count;
+
+/* Tab completion cycling state */
+static size_t last_completion_pos = 0;
+static int completion_cycle_index = 0;
+static char completion_matches[32][64] = {{0}};
+static int completion_matches_count = 0;
+static char last_completed_word[64] = {0};
 
 void shell_history_add(const char *cmd) {
     if (cmd == NULL || cmd[0] == '\0')
@@ -366,9 +407,10 @@ const char *shell_history_entry(int index) {
 
 void shell_initialize(void) {
     fs_initialize();
+    config_initialize();
     printf("ImposOS Shell v2.0\n");
     printf("Type 'help' for a list of commands.\n");
-    printf("Press Tab for command and file auto-completion.\n");
+    printf("Press Tab for smart auto-completion (commands, options, files).\n");
 }
 
 size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
@@ -383,124 +425,210 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
     }
 
     size_t prefix_len = buffer_pos - start;
-    if (prefix_len == 0) {
-        // Nothing to complete
-        return buffer_pos;
-    }
-
-    const char* first_match = NULL;
-    size_t matches = 0;
-
-    // Determine if we're completing a command (first word) or a filename (argument)
-    int is_first_word = 1;
-    for (size_t i = 0; i < start; i++) {
-        if (buffer[i] != ' ') {
-            is_first_word = 0;
-            break;
-        }
-    }
-
-    if (is_first_word) {
-        // Complete command names
-        for (size_t i = 0; i < NUM_COMMANDS; i++) {
-            const char* name = commands[i].name;
-
-            // Manual prefix compare
-            size_t j = 0;
-            for (; j < prefix_len; j++) {
-                if (name[j] == '\0' || name[j] != buffer[start + j]) {
+    
+    // Check if we're continuing a previous completion cycle
+    int is_continuing_cycle = 0;
+    if (last_completion_pos == start && completion_matches_count > 0) {
+        char current_word[64] = {0};
+        size_t word_len = buffer_pos - start;
+        if (word_len < sizeof(current_word)) {
+            memcpy(current_word, buffer + start, word_len);
+            current_word[word_len] = '\0';
+            
+            // Check if current word matches ANY of our completion matches
+            for (int i = 0; i < completion_matches_count; i++) {
+                if (strcmp(current_word, completion_matches[i]) == 0) {
+                    is_continuing_cycle = 1;
                     break;
                 }
             }
-            if (j == prefix_len) {
-                if (matches == 0) {
-                    first_match = name;
-                }
-                matches++;
-            }
-        }
-    } else {
-        // Complete filenames from current directory
-        inode_t cwd_inode;
-        uint32_t cwd_inode_num = fs_get_cwd_inode();
-        if (fs_read_inode(cwd_inode_num, &cwd_inode) != 0) {
-            return buffer_pos;
-        }
-
-        if (cwd_inode.type != INODE_DIR) {
-            return buffer_pos;
-        }
-
-        // Read directory entries
-        uint8_t dir_data[MAX_FILE_SIZE];
-        size_t dir_size = cwd_inode.size;
-        if (dir_size > MAX_FILE_SIZE) {
-            dir_size = MAX_FILE_SIZE;
-        }
-
-        // Read directory data blocks
-        size_t bytes_read = 0;
-        for (uint8_t i = 0; i < cwd_inode.num_blocks && bytes_read < dir_size; i++) {
-            uint8_t block_data[BLOCK_SIZE];
-            if (fs_read_block(cwd_inode.blocks[i], block_data) != 0) {
-                return buffer_pos;
-            }
-            size_t to_copy = BLOCK_SIZE;
-            if (bytes_read + to_copy > dir_size) {
-                to_copy = dir_size - bytes_read;
-            }
-            memcpy(dir_data + bytes_read, block_data, to_copy);
-            bytes_read += to_copy;
-        }
-
-        // Find matching entries
-        size_t num_entries = dir_size / sizeof(dir_entry_t);
-        dir_entry_t* entries = (dir_entry_t*)dir_data;
-
-        for (size_t i = 0; i < num_entries; i++) {
-            const char* name = entries[i].name;
-            if (name[0] == '\0') continue;
-
-            // Skip . and .. entries
-            if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
-                continue;
-            }
-
-            // Manual prefix compare
-            size_t j = 0;
-            for (; j < prefix_len; j++) {
-                if (name[j] == '\0' || name[j] != buffer[start + j]) {
-                    break;
-                }
-            }
-            if (j == prefix_len) {
-                if (matches == 0) {
-                    first_match = name;
-                }
-                matches++;
-            }
         }
     }
+    
+    // If not continuing, reset cycle index
+    if (!is_continuing_cycle) {
+        completion_cycle_index = 0;
+    }
+    
+    // Parse the command line to understand context
+    int word_count = 0;
+    size_t word_starts[10];
+    int in_word = 0;
+    
+    for (size_t i = 0; i < buffer_pos; i++) {
+        if (buffer[i] != ' ' && !in_word) {
+            if (word_count < 10) {
+                word_starts[word_count] = i;
+            }
+            word_count++;
+            in_word = 1;
+        } else if (buffer[i] == ' ') {
+            in_word = 0;
+        }
+    }
+    
+    if (buffer_pos > 0 && buffer[buffer_pos - 1] == ' ') {
+        if (word_count < 10) {
+            word_starts[word_count] = buffer_pos;
+        }
+        word_count++;
+    }
+    
+    // Extract command name
+    char cmd_name[32] = {0};
+    if (word_count > 0) {
+        size_t cmd_start = word_starts[0];
+        size_t cmd_end = cmd_start;
+        while (cmd_end < buffer_pos && buffer[cmd_end] != ' ') cmd_end++;
+        size_t cmd_len = cmd_end - cmd_start;
+        if (cmd_len >= sizeof(cmd_name)) cmd_len = sizeof(cmd_name) - 1;
+        for (size_t i = 0; i < cmd_len; i++) {
+            cmd_name[i] = buffer[cmd_start + i];
+        }
+    }
+    
+    // Collect all matches if NOT continuing a cycle
+    if (!is_continuing_cycle) {
+        completion_matches_count = 0;
+        
+        if (word_count == 1 && prefix_len > 0) {
+            // Complete command names
+            for (size_t i = 0; i < NUM_COMMANDS && completion_matches_count < 32; i++) {
+                const char* name = commands[i].name;
+                size_t j = 0;
+                for (; j < prefix_len; j++) {
+                    if (name[j] == '\0' || name[j] != buffer[start + j]) {
+                        break;
+                    }
+                }
+                if (j == prefix_len) {
+                    strcpy(completion_matches[completion_matches_count], name);
+                    completion_matches_count++;
+                }
+            }
+        } else if (word_count >= 2) {
+            if (strcmp(cmd_name, "timedatectl") == 0 && word_count == 2) {
+                const char* timedatectl_cmds[] = {
+                    "status", "set-time", "set-date", "set-timezone", "list-timezones"
+                };
+                for (size_t i = 0; i < 5 && completion_matches_count < 32; i++) {
+                    const char* subcmd = timedatectl_cmds[i];
+                    size_t j = 0;
+                    for (; j < prefix_len; j++) {
+                        if (subcmd[j] == '\0' || subcmd[j] != buffer[start + j]) {
+                            break;
+                        }
+                    }
+                    if (j == prefix_len) {
+                        strcpy(completion_matches[completion_matches_count], subcmd);
+                        completion_matches_count++;
+                    }
+                }
+            } else if (strcmp(cmd_name, "setlayout") == 0 && word_count == 2) {
+                const char* layouts[] = { "fr", "us" };
+                for (size_t i = 0; i < 2 && completion_matches_count < 32; i++) {
+                    const char* layout = layouts[i];
+                    size_t j = 0;
+                    for (; j < prefix_len; j++) {
+                        if (layout[j] == '\0' || layout[j] != buffer[start + j]) {
+                            break;
+                        }
+                    }
+                    if (j == prefix_len) {
+                        strcpy(completion_matches[completion_matches_count], layout);
+                        completion_matches_count++;
+                    }
+                }
+            } else if (strcmp(cmd_name, "ls") == 0 && prefix_len > 0 && buffer[start] == '-') {
+                const char* options[] = { "-a", "-l", "-la", "-al" };
+                for (size_t i = 0; i < 4 && completion_matches_count < 32; i++) {
+                    const char* opt = options[i];
+                    size_t j = 0;
+                    for (; j < prefix_len; j++) {
+                        if (opt[j] == '\0' || opt[j] != buffer[start + j]) {
+                            break;
+                        }
+                    }
+                    if (j == prefix_len) {
+                        strcpy(completion_matches[completion_matches_count], opt);
+                        completion_matches_count++;
+                    }
+                }
+            } else if (prefix_len >= 0) {
+                // Complete filenames
+                inode_t cwd_inode;
+                uint32_t cwd_inode_num = fs_get_cwd_inode();
+                if (fs_read_inode(cwd_inode_num, &cwd_inode) == 0 && cwd_inode.type == INODE_DIR) {
+                    uint8_t dir_data[MAX_FILE_SIZE];
+                    size_t dir_size = cwd_inode.size;
+                    if (dir_size > MAX_FILE_SIZE) dir_size = MAX_FILE_SIZE;
 
-    if (matches != 1 || first_match == NULL) {
-        // Either no match or ambiguous; leave buffer unchanged for now
+                    size_t bytes_read = 0;
+                    for (uint8_t i = 0; i < cwd_inode.num_blocks && bytes_read < dir_size; i++) {
+                        uint8_t block_data[BLOCK_SIZE];
+                        if (fs_read_block(cwd_inode.blocks[i], block_data) != 0) break;
+                        size_t to_copy = BLOCK_SIZE;
+                        if (bytes_read + to_copy > dir_size) to_copy = dir_size - bytes_read;
+                        memcpy(dir_data + bytes_read, block_data, to_copy);
+                        bytes_read += to_copy;
+                    }
+
+                    size_t num_entries = dir_size / sizeof(dir_entry_t);
+                    dir_entry_t* entries = (dir_entry_t*)dir_data;
+
+                    for (size_t i = 0; i < num_entries && completion_matches_count < 32; i++) {
+                        const char* name = entries[i].name;
+                        if (name[0] == '\0') continue;
+                        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+
+                        size_t j = 0;
+                        for (; j < prefix_len; j++) {
+                            if (name[j] == '\0' || name[j] != buffer[start + j]) {
+                                break;
+                            }
+                        }
+                        if (j == prefix_len) {
+                            strcpy(completion_matches[completion_matches_count], name);
+                            completion_matches_count++;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Save state for next completion
+        last_completion_pos = start;
+    }
+    
+    // No matches at all
+    if (completion_matches_count == 0) {
         return buffer_pos;
     }
-
-    size_t full_len = strlen(first_match);
-    if (full_len <= prefix_len) {
-        // Already complete
-        return buffer_pos;
+    
+    // Get current match
+    const char* match = completion_matches[completion_cycle_index];
+    
+    // Replace current word with match
+    size_t match_len = strlen(match);
+    
+    // Clear the current word
+    buffer_pos = start;
+    
+    // Copy the match
+    size_t to_copy = match_len;
+    if (buffer_pos + to_copy >= buffer_size) {
+        to_copy = buffer_size - buffer_pos - 1;
     }
-
-    size_t to_add = full_len - prefix_len;
-    if (buffer_pos + to_add >= buffer_size) {
-        to_add = buffer_size - buffer_pos - 1; // keep room for terminator when used
-    }
-
-    memcpy(&buffer[buffer_pos], first_match + prefix_len, to_add);
-    buffer_pos += to_add;
-
+    
+    memcpy(&buffer[buffer_pos], match, to_copy);
+    buffer_pos += to_copy;
+    
+    // Save this completed word for next time
+    strcpy(last_completed_word, match);
+    
+    // Move to next match for next Tab press
+    completion_cycle_index = (completion_cycle_index + 1) % completion_matches_count;
+    
     return buffer_pos;
 }
 
@@ -679,15 +807,17 @@ static void cmd_vi(int argc, char* argv[]) {
 
 static void cmd_setlayout(int argc, char* argv[]) {
     if (argc < 2) {
-        int layout = keyboard_get_layout();
+        uint8_t layout = config_get_keyboard_layout();
         printf("Current layout: %s\n", layout == KB_LAYOUT_FR ? "fr" : "us");
         return;
     }
     if (strcmp(argv[1], "fr") == 0) {
         keyboard_set_layout(KB_LAYOUT_FR);
+        config_set_keyboard_layout(KB_LAYOUT_FR);
         printf("Keyboard layout set to AZERTY (fr)\n");
     } else if (strcmp(argv[1], "us") == 0) {
         keyboard_set_layout(KB_LAYOUT_US);
+        config_set_keyboard_layout(KB_LAYOUT_US);
         printf("Keyboard layout set to QWERTY (us)\n");
     } else {
         printf("Unknown layout '%s'. Use 'fr' or 'us'.\n", argv[1]);
@@ -697,6 +827,8 @@ static void cmd_setlayout(int argc, char* argv[]) {
 static void cmd_sync(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
+    config_save_history();
+    config_save();
     fs_sync();
 }
 
@@ -710,6 +842,9 @@ static void cmd_exit(int argc, char* argv[]) {
             val = val * 10 + (*p++ - '0');
         status = neg ? -val : val;
     }
+    config_save_history();
+    config_save();
+    fs_sync();
     printf("End\n");
     exit(status);
 }
@@ -720,6 +855,9 @@ static inline void outw(uint16_t port, uint16_t val) {
 
 static void cmd_shutdown(int argc, char* argv[]) {
     (void)argc; (void)argv;
+    config_save_history();
+    config_save();
+    fs_sync();
     printf("Powering off...\n");
     asm volatile("cli");
     outw(0x604, 0x2000);   /* QEMU i440fx ACPI shutdown */
@@ -727,4 +865,155 @@ static void cmd_shutdown(int argc, char* argv[]) {
     /* If ACPI didn't work, fall back to halt */
     printf("ACPI shutdown failed. System halted.\n");
     while (1) asm volatile("hlt");
+}
+
+static void cmd_timedatectl(int argc, char* argv[]) {
+    if (argc < 2 || strcmp(argv[1], "status") == 0) {
+        /* Show status */
+        datetime_t dt;
+        config_get_datetime(&dt);
+        system_config_t* cfg = config_get();
+        
+        /* Local time */
+        printf("      Local time: %d-", dt.year);
+        if (dt.month < 10) putchar('0'); printf("%d-", dt.month);
+        if (dt.day < 10) putchar('0'); printf("%d ", dt.day);
+        if (dt.hour < 10) putchar('0'); printf("%d:", dt.hour);
+        if (dt.minute < 10) putchar('0'); printf("%d:", dt.minute);
+        if (dt.second < 10) putchar('0'); printf("%d\n", dt.second);
+        
+        /* Universal time */
+        printf("  Universal time: %d-", dt.year);
+        if (dt.month < 10) putchar('0'); printf("%d-", dt.month);
+        if (dt.day < 10) putchar('0'); printf("%d ", dt.day);
+        if (dt.hour < 10) putchar('0'); printf("%d:", dt.hour);
+        if (dt.minute < 10) putchar('0'); printf("%d:", dt.minute);
+        if (dt.second < 10) putchar('0'); printf("%d\n", dt.second);
+        
+        printf("        Timezone: %s\n", config_get_timezone());
+        printf("     Time format: %s\n", cfg->use_24h_format ? "24-hour" : "12-hour");
+        
+        uint32_t uptime = cfg->uptime_seconds;
+        uint32_t hours = uptime / 3600;
+        uint32_t minutes = (uptime % 3600) / 60;
+        uint32_t seconds = uptime % 60;
+        printf("          Uptime: %uh %um %us\n", hours, minutes, seconds);
+        printf("Keyboard layout: %s\n", 
+               cfg->keyboard_layout == KB_LAYOUT_FR ? "fr (AZERTY)" : "us (QWERTY)");
+        
+    } else if (strcmp(argv[1], "set-time") == 0) {
+        if (argc < 3) {
+            printf("Usage: timedatectl set-time HH:MM:SS\n");
+            return;
+        }
+        
+        /* Parse time HH:MM:SS */
+        int hour = 0, minute = 0, second = 0;
+        const char* p = argv[2];
+        
+        /* Parse hour */
+        while (*p >= '0' && *p <= '9') hour = hour * 10 + (*p++ - '0');
+        if (*p != ':') {
+            printf("Invalid time format. Use HH:MM:SS\n");
+            return;
+        }
+        p++;
+        
+        /* Parse minute */
+        while (*p >= '0' && *p <= '9') minute = minute * 10 + (*p++ - '0');
+        if (*p != ':') {
+            printf("Invalid time format. Use HH:MM:SS\n");
+            return;
+        }
+        p++;
+        
+        /* Parse second */
+        while (*p >= '0' && *p <= '9') second = second * 10 + (*p++ - '0');
+        
+        if (hour > 23 || minute > 59 || second > 59) {
+            printf("Invalid time values\n");
+            return;
+        }
+        
+        datetime_t dt;
+        config_get_datetime(&dt);
+        dt.hour = hour;
+        dt.minute = minute;
+        dt.second = second;
+        config_set_datetime(&dt);
+        printf("Time set to ");
+        if (hour < 10) putchar('0'); printf("%d:", hour);
+        if (minute < 10) putchar('0'); printf("%d:", minute);
+        if (second < 10) putchar('0'); printf("%d\n", second);
+        
+    } else if (strcmp(argv[1], "set-date") == 0) {
+        if (argc < 3) {
+            printf("Usage: timedatectl set-date YYYY-MM-DD\n");
+            return;
+        }
+        
+        /* Parse date YYYY-MM-DD */
+        int year = 0, month = 0, day = 0;
+        const char* p = argv[2];
+        
+        /* Parse year */
+        while (*p >= '0' && *p <= '9') year = year * 10 + (*p++ - '0');
+        if (*p != '-') {
+            printf("Invalid date format. Use YYYY-MM-DD\n");
+            return;
+        }
+        p++;
+        
+        /* Parse month */
+        while (*p >= '0' && *p <= '9') month = month * 10 + (*p++ - '0');
+        if (*p != '-') {
+            printf("Invalid date format. Use YYYY-MM-DD\n");
+            return;
+        }
+        p++;
+        
+        /* Parse day */
+        while (*p >= '0' && *p <= '9') day = day * 10 + (*p++ - '0');
+        
+        if (year < 1970 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31) {
+            printf("Invalid date values\n");
+            return;
+        }
+        
+        datetime_t dt;
+        config_get_datetime(&dt);
+        dt.year = year;
+        dt.month = month;
+        dt.day = day;
+        config_set_datetime(&dt);
+        printf("Date set to %d-", year);
+        if (month < 10) putchar('0'); printf("%d-", month);
+        if (day < 10) putchar('0'); printf("%d\n", day);
+        
+    } else if (strcmp(argv[1], "set-timezone") == 0) {
+        if (argc < 3) {
+            printf("Usage: timedatectl set-timezone TIMEZONE\n");
+            return;
+        }
+        
+        config_set_timezone(argv[2]);
+        printf("Timezone set to %s\n", argv[2]);
+        
+    } else if (strcmp(argv[1], "list-timezones") == 0) {
+        printf("Available timezones:\n");
+        printf("  UTC\n");
+        printf("  Europe/Paris\n");
+        printf("  Europe/London\n");
+        printf("  Europe/Berlin\n");
+        printf("  America/New_York\n");
+        printf("  America/Los_Angeles\n");
+        printf("  America/Chicago\n");
+        printf("  Asia/Tokyo\n");
+        printf("  Asia/Shanghai\n");
+        printf("  Australia/Sydney\n");
+        
+    } else {
+        printf("Unknown command '%s'\n", argv[1]);
+        printf("Use 'man timedatectl' for help\n");
+    }
 }
