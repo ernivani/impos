@@ -9,6 +9,7 @@
 #include <kernel/env.h>
 #include <kernel/user.h>
 #include <kernel/hostname.h>
+#include <kernel/acpi.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1289,22 +1290,13 @@ static void cmd_exit(int argc, char* argv[]) {
     exit(status);
 }
 
-static inline void outw(uint16_t port, uint16_t val) {
-    asm volatile("outw %0, %1" : : "a"(val), "Nd"(port));
-}
-
 static void cmd_shutdown(int argc, char* argv[]) {
     (void)argc; (void)argv;
     config_save_history();
     config_save();
     fs_sync();
     printf("Powering off...\n");
-    asm volatile("cli");
-    outw(0x604, 0x2000);   /* QEMU i440fx ACPI shutdown */
-    outw(0xB004, 0x2000);  /* Bochs / older QEMU */
-    /* If ACPI didn't work, fall back to halt */
-    printf("ACPI shutdown failed. System halted.\n");
-    while (1) asm volatile("hlt");
+    acpi_shutdown();
 }
 
 static void cmd_timedatectl(int argc, char* argv[]) {
