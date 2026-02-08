@@ -5,6 +5,7 @@
 #include <kernel/vga.h>
 #include <kernel/shell.h>
 #include <kernel/ata.h>
+#include <kernel/acpi.h>
 
 #define PROMPT      "$ "
 
@@ -53,7 +54,8 @@ void kernel_main(void) {
     
     /* Initialize ATA disk driver */
     ata_initialize();
-    
+    acpi_initialize();
+
     shell_initialize();
 
     /* Set up restart point for exit() to return here */

@@ -38,6 +38,10 @@ SECTIONS
 		*(.bss)
 	}
 
+	/* Heap starts right after BSS, page-aligned */
+	. = ALIGN(4K);
+	_heap_start = .;
+
 	/* The compiler may produce other sections, put them in the proper place in
 	   in this file, if you'd like to include them in the final kernel. */
 }
