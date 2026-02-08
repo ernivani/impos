@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <kernel/tty.h>
+#include <kernel/vga.h>
 #include <kernel/shell.h>
 #include <kernel/ata.h>
 
@@ -78,11 +79,82 @@ void kernel_main(void) {
     int cancelled;
 
     while (1) {
-        /* Get prompt from environment */
+        /* Get prompt from environment and expand \w to current directory */
         const char* ps1 = env_get("PS1");
         if (!ps1) ps1 = "$ ";
-        printf("%s", ps1);
         
+        /* Print prompt with colors, expanding \w to current working directory */
+        const char* p = ps1;
+        int in_username = 0;
+        int in_hostname = 0;
+        int in_path = 0;
+        
+        while (*p) {
+            /* Detect username section (before @) */
+            if (p == ps1 || (p > ps1 && *(p-1) == '\n')) {
+                in_username = 1;
+            }
+            
+            if (*p == '@' && in_username) {
+                in_username = 0;
+                in_hostname = 1;
+                terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+                putchar('@');
+                terminal_setcolor(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK);
+                p++;
+                continue;
+            }
+            
+            if (*p == ':' && in_hostname) {
+                in_hostname = 0;
+                in_path = 1;
+                terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+                putchar(':');
+                terminal_setcolor(VGA_COLOR_CYAN, VGA_COLOR_BLACK);
+                p++;
+                continue;
+            }
+            
+            if (in_username && !in_hostname && !in_path) {
+                terminal_setcolor(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+            } else if (in_hostname) {
+                terminal_setcolor(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK);
+            } else if (in_path) {
+                terminal_setcolor(VGA_COLOR_CYAN, VGA_COLOR_BLACK);
+            }
+            
+            if (*p == '\\' && *(p + 1) == 'w') {
+                /* Print current directory, replacing home with relative path */
+                const char* cwd = fs_get_cwd();
+                
+                const char* home = env_get("HOME");
+                if (home && strncmp(cwd, home, strlen(home)) == 0) {
+                    /* Inside home directory - show relative path */
+                    const char* relative = cwd + strlen(home);
+                    if (*relative == '/') {
+                        relative++;  /* Skip leading slash */
+                    }
+                    if (*relative) {
+                        printf("%s", relative);
+                    }
+                } else {
+                    /* Outside home - show full path */
+                    printf("%s", cwd);
+                }
+                p += 2;
+                continue;
+            }
+            
+            /* Check for $ or # at end of prompt */
+            if ((*p == '$' || *p == '#') && *(p+1) == ' ' && *(p+2) == '\0') {
+                terminal_setcolor(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+            }
+            
+            putchar(*p);
+            p++;
+        }
+        
+        terminal_resetcolor();
         buf_len = 0;
         cursor = 0;
         hist_pos = -1;
@@ -107,9 +179,77 @@ void kernel_main(void) {
 
             if (c == CTRL_L) {
                 terminal_clear();
+                
+                /* Redraw prompt with colors and \w expansion */
                 const char* ps1 = env_get("PS1");
                 if (!ps1) ps1 = "$ ";
-                printf("%s", ps1);
+                
+                const char* p = ps1;
+                int in_username = 0;
+                int in_hostname = 0;
+                int in_path = 0;
+                
+                while (*p) {
+                    if (p == ps1 || (p > ps1 && *(p-1) == '\n')) {
+                        in_username = 1;
+                    }
+                    
+                    if (*p == '@' && in_username) {
+                        in_username = 0;
+                        in_hostname = 1;
+                        terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+                        putchar('@');
+                        terminal_setcolor(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK);
+                        p++;
+                        continue;
+                    }
+                    
+                    if (*p == ':' && in_hostname) {
+                        in_hostname = 0;
+                        in_path = 1;
+                        terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+                        putchar(':');
+                        terminal_setcolor(VGA_COLOR_CYAN, VGA_COLOR_BLACK);
+                        p++;
+                        continue;
+                    }
+                    
+                    if (in_username && !in_hostname && !in_path) {
+                        terminal_setcolor(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+                    } else if (in_hostname) {
+                        terminal_setcolor(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK);
+                    } else if (in_path) {
+                        terminal_setcolor(VGA_COLOR_CYAN, VGA_COLOR_BLACK);
+                    }
+                    
+                    if (*p == '\\' && *(p + 1) == 'w') {
+                        const char* cwd = fs_get_cwd();
+                        
+                        const char* home = env_get("HOME");
+                        if (home && strncmp(cwd, home, strlen(home)) == 0) {
+                            const char* relative = cwd + strlen(home);
+                            if (*relative == '/') {
+                                relative++;
+                            }
+                            if (*relative) {
+                                printf("%s", relative);
+                            }
+                        } else {
+                            printf("%s", cwd);
+                        }
+                        p += 2;
+                        continue;
+                    }
+                    
+                    if ((*p == '$' || *p == '#') && *(p+1) == ' ' && *(p+2) == '\0') {
+                        terminal_setcolor(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+                    }
+                    
+                    putchar(*p);
+                    p++;
+                }
+                
+                terminal_resetcolor();
                 for (size_t i = 0; i < buf_len; i++)
                     putchar(buf[i]);
                 cursor_move((int)cursor - (int)buf_len);

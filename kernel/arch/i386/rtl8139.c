@@ -49,21 +49,17 @@ static uint8_t tx_buffer_static[RTL8139_NUM_TX_DESC][RTL8139_TX_BUFFER_SIZE] __a
 int rtl8139_initialize(void) {
     pci_device_t pci_dev;
     
-    printf("Searching for RTL8139 network card...\n");
     
     if (pci_find_device(RTL8139_VENDOR_ID, RTL8139_DEVICE_ID, &pci_dev) != 0) {
         printf("RTL8139 not found\n");
         return -1;
     }
     
-    printf("Found RTL8139 at PCI %d:%d.%d\n", 
-           pci_dev.bus, pci_dev.device, pci_dev.function);
     
     /* Get I/O base address from BAR0 */
     rtl8139_dev.io_base = pci_dev.bar[0] & ~0x3;
     rtl8139_dev.irq = pci_dev.interrupt_line;
     
-    printf("  I/O Base: 0x%x, IRQ: %d\n", rtl8139_dev.io_base, rtl8139_dev.irq);
     
     /* Enable PCI Bus Mastering */
     uint16_t command = pci_config_read_word(pci_dev.bus, pci_dev.device, 
@@ -76,7 +72,6 @@ int rtl8139_initialize(void) {
     outb(rtl8139_dev.io_base + RTL8139_CONFIG1, 0x00);
     
     /* Software reset */
-    printf("Resetting RTL8139...\n");
     outb(rtl8139_dev.io_base + RTL8139_CHIPCMD, RTL8139_CMD_RESET);
     
     /* Wait for reset to complete */
@@ -91,22 +86,11 @@ int rtl8139_initialize(void) {
         return -1;
     }
     
-    printf("RTL8139 reset complete\n");
     
     /* Read MAC address */
     for (int i = 0; i < 6; i++) {
         rtl8139_dev.mac[i] = inb(rtl8139_dev.io_base + RTL8139_IDR0 + i);
     }
-    
-    printf("  MAC Address: ");
-    for (int i = 0; i < 6; i++) {
-        if (i > 0) putchar(':');
-        int high = rtl8139_dev.mac[i] >> 4;
-        int low = rtl8139_dev.mac[i] & 0xF;
-        putchar(high < 10 ? '0' + high : 'a' + high - 10);
-        putchar(low < 10 ? '0' + low : 'a' + low - 10);
-    }
-    printf("\n");
     
     /* Set up receive buffer */
     rtl8139_dev.rx_buffer = rx_buffer_static;
@@ -151,7 +135,6 @@ int rtl8139_initialize(void) {
     
     rtl8139_dev.initialized = 1;
     
-    printf("RTL8139 initialized successfully\n");
     
     return 0;
 }

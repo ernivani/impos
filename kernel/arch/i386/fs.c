@@ -263,13 +263,11 @@ int fs_sync(void) {
     /* Write superblock */
     sb.magic = FS_MAGIC;
     if (ata_write_sectors(DISK_SECTOR_SUPERBLOCK, 1, (uint8_t*)&sb) != 0) {
-        printf("fs_sync: Failed to write superblock\n");
         return -1;
     }
 
     /* Write inodes (64 inodes * 32 bytes = 2048 bytes = 4 sectors) */
     if (ata_write_sectors(DISK_SECTOR_INODES, 4, (uint8_t*)inodes) != 0) {
-        printf("fs_sync: Failed to write inodes\n");
         return -1;
     }
 
@@ -277,7 +275,6 @@ int fs_sync(void) {
     for (int i = 0; i < NUM_BLOCKS; i++) {
         if (bitmap_test(sb.block_bitmap, i)) {
             if (ata_write_sectors(DISK_SECTOR_DATA + i, 1, data_blocks[i]) != 0) {
-                printf("fs_sync: Failed to write block %d\n", i);
                 return -1;
             }
         }
@@ -285,7 +282,6 @@ int fs_sync(void) {
 
     /* Flush disk cache */
     if (ata_flush() != 0) {
-        printf("fs_sync: Failed to flush disk cache\n");
         return -1;
     }
 
@@ -300,19 +296,16 @@ int fs_load(void) {
 
     /* Read superblock */
     if (ata_read_sectors(DISK_SECTOR_SUPERBLOCK, 1, (uint8_t*)&sb) != 0) {
-        printf("fs_load: Failed to read superblock\n");
         return -1;
     }
 
     /* Verify magic number */
     if (sb.magic != FS_MAGIC) {
-        printf("fs_load: Invalid filesystem magic (0x%x)\n", sb.magic);
         return -1;
     }
 
     /* Read inodes */
     if (ata_read_sectors(DISK_SECTOR_INODES, 4, (uint8_t*)inodes) != 0) {
-        printf("fs_load: Failed to read inodes\n");
         return -1;
     }
 
@@ -320,7 +313,6 @@ int fs_load(void) {
     for (int i = 0; i < NUM_BLOCKS; i++) {
         if (bitmap_test(sb.block_bitmap, i)) {
             if (ata_read_sectors(DISK_SECTOR_DATA + i, 1, data_blocks[i]) != 0) {
-                printf("fs_load: Failed to read block %d\n", i);
                 return -1;
             }
         }

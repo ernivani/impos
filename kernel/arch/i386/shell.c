@@ -8,6 +8,7 @@
 #include <kernel/ip.h>
 #include <kernel/env.h>
 #include <kernel/user.h>
+#include <kernel/hostname.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -529,9 +530,11 @@ const char *shell_history_entry(int index) {
 }
 
 void shell_initialize(void) {
+    fs_initialize();      /* MUST be first - loads filesystem from disk */
     config_initialize();
     net_initialize();
     env_initialize();
+    hostname_initialize();
     user_initialize();
     
     printf("ImposOS Shell v2.0\n");
@@ -541,6 +544,40 @@ void shell_initialize(void) {
         printf("\n");
         printf("=== ImposOS Initial Setup ===\n");
         printf("No users found. Let's create the administrator account.\n");
+        printf("\n");
+        
+        /* Ask for hostname */
+        printf("Enter hostname (or press Enter for 'imposos'): ");
+        char hostname[64];
+        size_t hostname_len = 0;
+        
+        while (hostname_len < sizeof(hostname) - 1) {
+            int c = getchar();
+            if (c == '\n' || c == '\r') {
+                break;
+            } else if (c == '\b' || c == 127) {
+                if (hostname_len > 0) {
+                    hostname_len--;
+                    printf("\b \b");
+                }
+            } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+                hostname[hostname_len++] = c;
+                putchar(c);
+            } else if (c >= 'A' && c <= 'Z') {
+                hostname[hostname_len++] = c + 32;  /* Lowercase */
+                putchar(c + 32);
+            }
+        }
+        hostname[hostname_len] = '\0';
+        printf("\n");
+        
+        if (hostname[0] == '\0') {
+            strcpy(hostname, "imposos");
+        }
+        
+        hostname_set(hostname);
+        hostname_save();
+        printf("Hostname set to: %s\n", hostname_get());
         printf("\n");
         
         /* Create root user */
@@ -648,15 +685,68 @@ void shell_initialize(void) {
         fs_change_directory(user_home);
         printf("\n");
     } else {
-        /* System already initialized - auto-login as first user or root */
-        user_t* first_user = user_get_by_uid(1000);
-        if (!first_user) {
-            first_user = user_get_by_uid(0);  /* Fallback to root */
-        }
+        /* System already initialized - prompt for login */
+        printf("\n");
+        printf("ImposOS Login\n");
+        printf("\n");
         
-        if (first_user) {
-            user_set_current(first_user->username);
-            fs_change_directory(first_user->home);
+        while (1) {
+            printf("Username: ");
+            char username[64];
+            size_t username_len = 0;
+            
+            while (username_len < sizeof(username) - 1) {
+                int c = getchar();
+                if (c == '\n' || c == '\r') {
+                    break;
+                } else if (c == '\b' || c == 127) {
+                    if (username_len > 0) {
+                        username_len--;
+                        printf("\b \b");
+                    }
+                } else if (c >= 32 && c < 127) {
+                    username[username_len++] = c;
+                    putchar(c);
+                }
+            }
+            username[username_len] = '\0';
+            printf("\n");
+            
+            if (username[0] == '\0') {
+                continue;  /* Empty username, try again */
+            }
+            
+            printf("Password: ");
+            char password[64];
+            size_t password_len = 0;
+            
+            while (password_len < sizeof(password) - 1) {
+                int c = getchar();
+                if (c == '\n' || c == '\r') {
+                    break;
+                } else if (c == '\b' || c == 127) {
+                    if (password_len > 0) {
+                        password_len--;
+                        printf("\b \b");
+                    }
+                } else if (c >= 32 && c < 127) {
+                    password[password_len++] = c;
+                    putchar('*');
+                }
+            }
+            password[password_len] = '\0';
+            printf("\n");
+            
+            /* Authenticate */
+            user_t* authenticated = user_authenticate(username, password);
+            if (authenticated) {
+                user_set_current(authenticated->username);
+                fs_change_directory(authenticated->home);
+                printf("Welcome, %s!\n\n", authenticated->username);
+                break;
+            } else {
+                printf("Login incorrect\n\n");
+            }
         }
     }
     
