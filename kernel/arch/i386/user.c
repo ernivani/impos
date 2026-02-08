@@ -291,6 +291,38 @@ uint16_t user_get_current_uid(void) {
     return user ? user->uid : 65535;
 }
 
+uint16_t user_get_current_gid(void) {
+    if (!current_user[0]) {
+        return 65535;  /* Nobody */
+    }
+
+    user_t* user = user_get(current_user);
+    return user ? user->gid : 65535;
+}
+
+int user_delete(const char* username) {
+    if (!username || !username[0]) return -1;
+
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (users[i].active && strcmp(users[i].username, username) == 0) {
+            users[i].active = 0;
+            users[i].username[0] = '\0';
+            return 0;
+        }
+    }
+    return -1;
+}
+
+uint16_t user_next_uid(void) {
+    uint16_t max_uid = 999;
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (users[i].active && users[i].uid >= 1000 && users[i].uid > max_uid) {
+            max_uid = users[i].uid;
+        }
+    }
+    return max_uid + 1;
+}
+
 int user_system_initialized(void) {
     /* Check if we have at least one user */
     for (int i = 0; i < MAX_USERS; i++) {

@@ -14,28 +14,39 @@
 #define INODE_FREE      0
 #define INODE_FILE      1
 #define INODE_DIR       2
+#define INODE_SYMLINK   3
 
 #define ROOT_INODE      0
 
 #define LS_ALL          0x01
 #define LS_LONG         0x02
 
+/* Permission bits */
+#define PERM_R          4
+#define PERM_W          2
+#define PERM_X          1
+
 #define DISK_SECTOR_SUPERBLOCK  0
 #define DISK_SECTOR_BITMAPS     1
 #define DISK_SECTOR_INODES      3
 #define DISK_SECTOR_DATA        35
+
+/* Number of sectors needed for inode table */
+#define INODE_SECTORS   ((sizeof(inode_t) * NUM_INODES + BLOCK_SIZE - 1) / BLOCK_SIZE)
 
 typedef struct {
     uint32_t inode;
     char name[MAX_NAME_LEN];
 } dir_entry_t;
 
-typedef struct {
-    uint8_t type;
+typedef struct __attribute__((packed)) {
+    uint8_t  type;
+    uint16_t mode;          /* rwxrwxrwx in low 9 bits */
+    uint16_t owner_uid;
+    uint16_t owner_gid;
     uint32_t size;
     uint32_t blocks[DIRECT_BLOCKS];
-    uint8_t num_blocks;
-    uint8_t padding[3];
+    uint8_t  num_blocks;
 } inode_t;
 
 typedef struct {
@@ -62,6 +73,14 @@ const char* fs_get_cwd(void);
 
 int fs_sync(void);
 int fs_load(void);
+
+/* Permissions */
+int fs_chmod(const char* path, uint16_t mode);
+int fs_chown(const char* path, uint16_t uid, uint16_t gid);
+
+/* Symlinks */
+int fs_create_symlink(const char* target, const char* linkname);
+int fs_readlink(const char* path, char* buf, size_t bufsize);
 
 /* Helper functions for shell autocompletion */
 uint32_t fs_get_cwd_inode(void);
