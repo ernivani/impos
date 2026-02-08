@@ -30,6 +30,8 @@ extern "C" {
 
 int printf(const char* __restrict, ...);
 int snprintf(char* __restrict, size_t, const char* __restrict, ...);
+int sprintf(char* __restrict, const char* __restrict, ...);
+int vsnprintf(char* __restrict, size_t, const char* __restrict, __builtin_va_list);
 int putchar(int);
 char getchar(void);
 int puts(const char*);

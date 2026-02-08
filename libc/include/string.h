@@ -21,6 +21,9 @@ int strcmp(const char* s1, const char* s2);
 int strncmp(const char* s1, const char* s2, size_t n);
 char* strtok(char* str, const char* delim);
 char* strchr(const char* str, int c);
+char* strstr(const char* haystack, const char* needle);
+char* strdup(const char* s);
+
 #ifdef __cplusplus
 }
 #endif

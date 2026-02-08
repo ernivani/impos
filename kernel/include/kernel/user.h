@@ -40,6 +40,13 @@ user_t* user_authenticate(const char* username, const char* password);
 void user_set_current(const char* username);
 const char* user_get_current(void);
 uint16_t user_get_current_uid(void);
+uint16_t user_get_current_gid(void);
+
+/* Delete a user */
+int user_delete(const char* username);
+
+/* Get next available UID >= 1000 */
+uint16_t user_next_uid(void);
 
 /* Check if system is initialized (has users) */
 int user_system_initialized(void);
