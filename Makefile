@@ -1,36 +1,98 @@
-CC = i686-elf-gcc
-AS = i686-elf-as
-CFLAGS = -std=gnu99 -ffreestanding -O2 -Wall -Wextra
-LDFLAGS = -ffreestanding -O2 -nostdlib
+SHELL := /bin/bash
+export PATH := $(HOME)/opt/cross/bin:$(PATH)
 
-OBJS = src/boot.o src/kernel.o
+# Disk configuration
+DISK_IMAGE := impos_disk.img
+DISK_SIZE := 10M
 
-.PHONY: all clean compile verify build run
+.PHONY: all build iso run run-disk run-us clean rebuild clean-disk help
 
-all: compile verify build
+all: iso
 
-%.o: %.s
-	$(AS) $< -o $@
+build:
+	./build.sh
 
-%.o: %.c
-	$(CC) -c $< -o $@ $(CFLAGS)
-
-compile: $(OBJS)
-	$(CC) -T src/linker.ld -o src/myos.bin $(LDFLAGS) $(OBJS) -lgcc
-
-verify: src/myos.bin
-	grub-file --is-x86-multiboot src/myos.bin
-
-build: src/myos.bin src/grub.cfg
+iso: build
 	mkdir -p isodir/boot/grub
-	cp src/myos.bin isodir/boot/myos.bin
-	cp src/grub.cfg isodir/boot/grub/grub.cfg
+	cp sysroot/boot/myos.kernel isodir/boot/myos.kernel
+	@printf 'menuentry "myos" {\n\tmultiboot /boot/myos.kernel\n}\n' > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o myos.iso isodir
 
-run: myos.iso
+$(DISK_IMAGE):
+	@echo "Creating disk image: $(DISK_IMAGE) ($(DISK_SIZE))"
+	qemu-img create -f raw $(DISK_IMAGE) $(DISK_SIZE)
+
+run: iso $(DISK_IMAGE)
+	@echo "=== Running ImposOS with persistent disk ==="
+	@echo "Boot: myos.iso (CD-ROM)"
+	@echo "Disk: $(DISK_IMAGE) (IDE)"
+	@echo ""
+	qemu-system-i386 \
+		-cdrom myos.iso \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
+		-boot d \
+		-m 128M
+
+run-vnc: iso $(DISK_IMAGE)
+	@echo "=== Running ImposOS with VNC display ==="
+	qemu-system-i386 \
+		-cdrom myos.iso \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
+		-boot d \
+		-m 128M \
+		-display vnc=:0 \
+		-k fr
+
+run-disk: run
+	@# Alias for 'make run'
+
+run-us: iso $(DISK_IMAGE)
+	qemu-system-i386 \
+		-cdrom myos.iso \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
+		-boot d \
+		-m 128M \
+		-k en-us
+
+run-gtk: iso
 	qemu-system-i386 -cdrom myos.iso
 
 clean:
-	rm -f src/*.o src/myos.bin
-	rm -f myos.iso
-	rm -rf isodir 
+	./clean.sh
+
+clean-disk:
+	@echo "Removing disk image: $(DISK_IMAGE)"
+	rm -f $(DISK_IMAGE)
+
+rebuild: clean all
+
+help:
+	@echo "ImposOS Build System"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all          Build ISO (default)"
+	@echo "  build        Build kernel and libraries"
+	@echo "  iso          Create bootable ISO"
+	@echo "  run          Run with persistent disk (GTK display)"
+	@echo "  run-disk     Alias for 'run'"
+	@echo "  run-vnc      Run with persistent disk (VNC display)"
+	@echo "  run-us       Run with US keyboard layout"
+	@echo "  run-gtk      Run with GTK display"
+	@echo "  clean        Clean build artifacts"
+	@echo "  clean-disk   Remove disk image"
+	@echo "  rebuild      Clean and rebuild everything"
+	@echo "  help         Show this help message"
+	@echo ""
+	@echo "Persistent Disk:"
+	@echo "  File: $(DISK_IMAGE)"
+	@echo "  Size: $(DISK_SIZE)"
+	@echo "  Auto-creates on first run"
+	@echo "  Remove with 'make clean-disk' to start fresh"
+	@echo ""
+	@echo "Note: 'make run' now uses persistent disk by default!"
