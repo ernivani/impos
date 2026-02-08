@@ -4,17 +4,13 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Simplified snprintf - only supports %s, %d, %u, %x */
-int snprintf(char* str, size_t size, const char* format, ...) {
+int vsnprintf(char* str, size_t size, const char* format, va_list parameters) {
     if (!str || size == 0) {
         return 0;
     }
-    
-    va_list parameters;
-    va_start(parameters, format);
-    
+
     size_t written = 0;
-    
+
     while (*format != '\0' && written < size - 1) {
         if (format[0] != '%' || format[1] == '%') {
             if (format[0] == '%')
@@ -22,9 +18,9 @@ int snprintf(char* str, size_t size, const char* format, ...) {
             str[written++] = *format++;
             continue;
         }
-        
+
         format++;  /* Skip % */
-        
+
         if (*format == 'c') {
             format++;
             char c = (char)va_arg(parameters, int);
@@ -43,12 +39,12 @@ int snprintf(char* str, size_t size, const char* format, ...) {
             char buf[32];
             int pos = 0;
             int neg = 0;
-            
+
             if (value < 0) {
                 neg = 1;
                 value = -value;
             }
-            
+
             if (value == 0) {
                 buf[pos++] = '0';
             } else {
@@ -65,7 +61,7 @@ int snprintf(char* str, size_t size, const char* format, ...) {
                     temp /= 10;
                 }
             }
-            
+
             if (neg && written < size - 1) {
                 str[written++] = '-';
             }
@@ -79,7 +75,7 @@ int snprintf(char* str, size_t size, const char* format, ...) {
             char buf[32];
             int pos = 0;
             int base = is_hex ? 16 : 10;
-            
+
             if (value == 0) {
                 buf[pos++] = '0';
             } else {
@@ -97,7 +93,7 @@ int snprintf(char* str, size_t size, const char* format, ...) {
                     temp /= base;
                 }
             }
-            
+
             for (int i = 0; i < pos && written < size - 1; i++) {
                 str[written++] = buf[i];
             }
@@ -111,8 +107,16 @@ int snprintf(char* str, size_t size, const char* format, ...) {
             }
         }
     }
-    
+
     str[written] = '\0';
-    va_end(parameters);
     return written;
+}
+
+/* Simplified snprintf - only supports %s, %d, %u, %x */
+int snprintf(char* str, size_t size, const char* format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    int result = vsnprintf(str, size, format, ap);
+    va_end(ap);
+    return result;
 }
