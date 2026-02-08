@@ -1,12 +1,4 @@
-# Fichiers objets et binaires
-*.o
-*.bin
 *.iso
-
-# Fichiers de build
-build/
-isodir/
-
-# Fichiers système
-.DS_Store 
-
+*.img
+isodir
+sysroot 
