@@ -6,6 +6,8 @@
 #include <kernel/net.h>
 #include <kernel/pci.h>
 #include <kernel/ip.h>
+#include <kernel/env.h>
+#include <kernel/user.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +47,9 @@ static void cmd_ifconfig(int argc, char* argv[]);
 static void cmd_ping(int argc, char* argv[]);
 static void cmd_lspci(int argc, char* argv[]);
 static void cmd_arp(int argc, char* argv[]);
+static void cmd_export(int argc, char* argv[]);
+static void cmd_env(int argc, char* argv[]);
+static void cmd_whoami(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -437,6 +442,47 @@ static command_t commands[] = {
         "    and displays the MAC address in the reply.\n"
         "    This tests if network RX actually works.\n"
     },
+    {
+        "export", cmd_export,
+        "Set environment variable",
+        "export: export VAR=value\n"
+        "    Set an environment variable.\n",
+        "NAME\n"
+        "    export - set environment variable\n\n"
+        "SYNOPSIS\n"
+        "    export VAR=value\n\n"
+        "DESCRIPTION\n"
+        "    Sets an environment variable that persists\n"
+        "    for the current shell session.\n\n"
+        "EXAMPLES\n"
+        "    export PS1=\"> \"\n"
+        "    export HOME=/home/user\n"
+    },
+    {
+        "env", cmd_env,
+        "List environment variables",
+        "env: env\n"
+        "    Display all environment variables.\n",
+        "NAME\n"
+        "    env - list environment variables\n\n"
+        "SYNOPSIS\n"
+        "    env\n\n"
+        "DESCRIPTION\n"
+        "    Displays all currently set environment\n"
+        "    variables and their values.\n"
+    },
+    {
+        "whoami", cmd_whoami,
+        "Display current user",
+        "whoami: whoami\n"
+        "    Display the current username.\n",
+        "NAME\n"
+        "    whoami - print effective userid\n\n"
+        "SYNOPSIS\n"
+        "    whoami\n\n"
+        "DESCRIPTION\n"
+        "    Prints the name of the current user.\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -483,11 +529,139 @@ const char *shell_history_entry(int index) {
 }
 
 void shell_initialize(void) {
-    fs_initialize();
     config_initialize();
     net_initialize();
+    env_initialize();
+    user_initialize();
+    
     printf("ImposOS Shell v2.0\n");
+    
+    /* Check if system needs initial setup */
+    if (!user_system_initialized()) {
+        printf("\n");
+        printf("=== ImposOS Initial Setup ===\n");
+        printf("No users found. Let's create the administrator account.\n");
+        printf("\n");
+        
+        /* Create root user */
+        printf("Creating root account...\n");
+        printf("Enter password for root: ");
+        char root_password[64];
+        size_t root_pass_len = 0;
+        
+        /* Read root password */
+        while (root_pass_len < sizeof(root_password) - 1) {
+            int c = getchar();
+            if (c == '\n' || c == '\r') {
+                break;
+            } else if (c == '\b' || c == 127) {
+                if (root_pass_len > 0) {
+                    root_pass_len--;
+                    printf("\b \b");
+                }
+            } else if (c >= 32 && c < 127) {
+                root_password[root_pass_len++] = c;
+                putchar('*');
+            }
+        }
+        root_password[root_pass_len] = '\0';
+        printf("\n");
+        
+        /* Create root home directory */
+        fs_create_file("/home", 1);
+        fs_create_file("/home/root", 1);
+        
+        user_create("root", root_password, "/home/root", 0, 0);
+        printf("Root account created!\n");
+        printf("\n");
+        
+        /* Create regular user */
+        printf("Now let's create your user account.\n");
+        printf("Enter username: ");
+        char username[32];
+        size_t username_len = 0;
+        
+        while (username_len < sizeof(username) - 1) {
+            int c = getchar();
+            if (c == '\n' || c == '\r') {
+                break;
+            } else if (c == '\b' || c == 127) {
+                if (username_len > 0) {
+                    username_len--;
+                    printf("\b \b");
+                }
+            } else if (c >= 'a' && c <= 'z') {
+                username[username_len++] = c;
+                putchar(c);
+            } else if (c >= 'A' && c <= 'Z') {
+                username[username_len++] = c + 32;  /* Lowercase */
+                putchar(c + 32);
+            } else if ((c >= '0' && c <= '9') && username_len > 0) {
+                username[username_len++] = c;
+                putchar(c);
+            }
+        }
+        username[username_len] = '\0';
+        printf("\n");
+        
+        if (username[0] == '\0') {
+            strcpy(username, "user");
+            printf("Using default username: user\n");
+        }
+        
+        printf("Enter password for %s: ", username);
+        char user_password[64];
+        size_t user_pass_len = 0;
+        
+        while (user_pass_len < sizeof(user_password) - 1) {
+            int c = getchar();
+            if (c == '\n' || c == '\r') {
+                break;
+            } else if (c == '\b' || c == 127) {
+                if (user_pass_len > 0) {
+                    user_pass_len--;
+                    printf("\b \b");
+                }
+            } else if (c >= 32 && c < 127) {
+                user_password[user_pass_len++] = c;
+                putchar('*');
+            }
+        }
+        user_password[user_pass_len] = '\0';
+        printf("\n");
+        
+        /* Create user home directory */
+        char user_home[128];
+        snprintf(user_home, sizeof(user_home), "/home/%s", username);
+        fs_create_file(user_home, 1);
+        
+        user_create(username, user_password, user_home, 1000, 1000);
+        printf("User '%s' created!\n", username);
+        printf("\n");
+        
+        /* Save users to disk */
+        user_save();
+        fs_sync();
+        
+        printf("Setup complete! Logging in as %s...\n", username);
+        user_set_current(username);
+        fs_change_directory(user_home);
+        printf("\n");
+    } else {
+        /* System already initialized - auto-login as first user or root */
+        user_t* first_user = user_get_by_uid(1000);
+        if (!first_user) {
+            first_user = user_get_by_uid(0);  /* Fallback to root */
+        }
+        
+        if (first_user) {
+            user_set_current(first_user->username);
+            fs_change_directory(first_user->home);
+        }
+    }
+    
     printf("Type 'help' for a list of commands.\n");
+    printf("Press Tab for smart auto-completion (commands, options, files).\n");
 }
 
 size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
@@ -1366,4 +1540,46 @@ static void cmd_arp(int argc, char* argv[]) {
     }
     
     printf("\n");
+}
+
+static void cmd_export(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: export VAR=value\n");
+        return;
+    }
+    
+    /* Parse VAR=value */
+    char* equals = strchr(argv[1], '=');
+    if (!equals) {
+        printf("Invalid format. Use: export VAR=value\n");
+        return;
+    }
+    
+    /* Split into name and value */
+    *equals = '\0';
+    const char* name = argv[1];
+    const char* value = equals + 1;
+    
+    if (env_set(name, value) == 0) {
+        printf("%s=%s\n", name, value);
+    } else {
+        printf("Failed to set variable\n");
+    }
+}
+
+static void cmd_env(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    env_list();
+}
+
+static void cmd_whoami(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    const char* user = env_get("USER");
+    if (user) {
+        printf("%s\n", user);
+    } else {
+        printf("unknown\n");
+    }
 }
