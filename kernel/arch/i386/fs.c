@@ -1,5 +1,7 @@
 #include <kernel/fs.h>
 #include <kernel/ata.h>
+#include <kernel/user.h>
+#include <kernel/group.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -52,6 +54,30 @@ static int bitmap_find_free(const uint8_t* map, uint32_t count) {
         if (!bitmap_test(map, i)) return (int)i;
     }
     return -1;
+}
+
+/* ---- permission check ---- */
+
+static int check_permission(inode_t* node, int required) {
+    uint16_t uid = user_get_current_uid();
+
+    /* root bypasses all permission checks */
+    if (uid == 0) return 1;
+
+    uint16_t mode = node->mode;
+    int perm;
+
+    const char* cur_name = user_get_current();
+    if (uid == node->owner_uid) {
+        perm = (mode >> 6) & 7;  /* owner bits */
+    } else if (node->owner_gid == user_get_current_gid() ||
+               (cur_name && group_is_member(node->owner_gid, cur_name))) {
+        perm = (mode >> 3) & 7;  /* group bits */
+    } else {
+        perm = mode & 7;         /* other bits */
+    }
+
+    return (perm & required) == required;
 }
 
 /* ---- allocation ---- */
@@ -152,9 +178,18 @@ static int dir_remove_entry(uint32_t dir_inode, const char* name) {
     return -1;
 }
 
+#define SYMLINK_MAX_DEPTH 8
+
 /* ---- path resolution ---- */
 
+static int resolve_path_depth(const char* path, uint32_t* out_parent, char* out_name, int depth);
+
 static int resolve_path(const char* path, uint32_t* out_parent, char* out_name) {
+    return resolve_path_depth(path, out_parent, out_name, 0);
+}
+
+static int resolve_path_depth(const char* path, uint32_t* out_parent, char* out_name, int depth) {
+    if (depth > SYMLINK_MAX_DEPTH) return -1;
     uint32_t cur;
     char component[MAX_NAME_LEN];
 
@@ -188,7 +223,17 @@ static int resolve_path(const char* path, uint32_t* out_parent, char* out_name) 
         /* if more components follow, descend */
         if (*path != '\0') {
             int child = dir_lookup(cur, component);
-            if (child < 0 || inodes[child].type != INODE_DIR) return -1;
+            if (child < 0) return -1;
+            /* Follow symlinks in intermediate components */
+            if (inodes[child].type == INODE_SYMLINK) {
+                char target[BLOCK_SIZE];
+                if (inodes[child].num_blocks == 0) return -1;
+                memcpy(target, data_blocks[inodes[child].blocks[0]], inodes[child].size);
+                target[inodes[child].size] = '\0';
+                child = resolve_path_depth(target, NULL, NULL, depth + 1);
+                if (child < 0) return -1;
+            }
+            if (inodes[child].type != INODE_DIR) return -1;
             cur = (uint32_t)child;
         } else {
             /* last component */
@@ -266,8 +311,8 @@ int fs_sync(void) {
         return -1;
     }
 
-    /* Write inodes (64 inodes * 32 bytes = 2048 bytes = 4 sectors) */
-    if (ata_write_sectors(DISK_SECTOR_INODES, 4, (uint8_t*)inodes) != 0) {
+    /* Write inodes */
+    if (ata_write_sectors(DISK_SECTOR_INODES, INODE_SECTORS, (uint8_t*)inodes) != 0) {
         return -1;
     }
 
@@ -305,7 +350,7 @@ int fs_load(void) {
     }
 
     /* Read inodes */
-    if (ata_read_sectors(DISK_SECTOR_INODES, 4, (uint8_t*)inodes) != 0) {
+    if (ata_read_sectors(DISK_SECTOR_INODES, INODE_SECTORS, (uint8_t*)inodes) != 0) {
         return -1;
     }
 
@@ -343,6 +388,9 @@ void fs_initialize(void) {
     bitmap_set(sb.inode_bitmap, ROOT_INODE);
     sb.cwd_inode = ROOT_INODE;
     init_dir_inode(ROOT_INODE, ROOT_INODE);
+    inodes[ROOT_INODE].mode = 0755;
+    inodes[ROOT_INODE].owner_uid = 0;
+    inodes[ROOT_INODE].owner_gid = 0;
 
     /* create default directory hierarchy */
     fs_create_file("/home", 1);
@@ -375,11 +423,15 @@ int fs_create_file(const char* filename, uint8_t is_directory) {
             free_inode(idx);
             return -1;
         }
+        inodes[idx].mode = 0755;
     } else {
         inodes[idx].type = INODE_FILE;
         inodes[idx].size = 0;
         inodes[idx].num_blocks = 0;
+        inodes[idx].mode = 0644;
     }
+    inodes[idx].owner_uid = user_get_current_uid();
+    inodes[idx].owner_gid = user_get_current_gid();
 
     if (dir_add_entry(parent, name, idx) < 0) {
         /* clean up allocated blocks */
@@ -406,6 +458,7 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
     inode_t* inode = &inodes[inode_idx];
     if (inode->type != INODE_FILE) return -1;
     if (size > MAX_FILE_SIZE) return -1;
+    if (!check_permission(inode, PERM_W)) return -1;
 
     /* free old blocks */
     for (uint8_t b = 0; b < inode->num_blocks; b++)
@@ -444,7 +497,18 @@ int fs_read_file(const char* filename, uint8_t* buffer, size_t* size) {
 
     if (inode_idx < 0) return -1;
     inode_t* inode = &inodes[inode_idx];
+
+    /* Follow symlinks */
+    if (inode->type == INODE_SYMLINK) {
+        char target[BLOCK_SIZE];
+        if (inode->num_blocks == 0) return -1;
+        memcpy(target, data_blocks[inode->blocks[0]], inode->size);
+        target[inode->size] = '\0';
+        return fs_read_file(target, buffer, size);
+    }
+
     if (inode->type != INODE_FILE) return -1;
+    if (!check_permission(inode, PERM_R)) return -1;
 
     size_t remaining = inode->size;
     size_t offset = 0;
@@ -465,6 +529,9 @@ int fs_delete_file(const char* filename) {
 
     if (inode_idx < 0) return -1;
     if ((uint32_t)inode_idx == ROOT_INODE) return -1;
+
+    /* Check write permission on parent directory */
+    if (!check_permission(&inodes[parent], PERM_W)) return -1;
 
     inode_t* inode = &inodes[inode_idx];
 
@@ -501,10 +568,45 @@ int fs_delete_file(const char* filename) {
 
 static void print_long_entry(const char* name, uint32_t ino) {
     inode_t* node = &inodes[ino];
-    if (node->type == INODE_DIR)
-        printf("drwxr-xr-x  root root  %d  %s\n", (int)node->size, name);
-    else
-        printf("-rw-r--r--  root root  %d  %s\n", (int)node->size, name);
+    char perm[11];
+    uint16_t m = node->mode;
+
+    /* Type character */
+    if (node->type == INODE_DIR)       perm[0] = 'd';
+    else if (node->type == INODE_SYMLINK) perm[0] = 'l';
+    else                                perm[0] = '-';
+
+    /* Owner */
+    perm[1] = (m & 0400) ? 'r' : '-';
+    perm[2] = (m & 0200) ? 'w' : '-';
+    perm[3] = (m & 0100) ? 'x' : '-';
+    /* Group */
+    perm[4] = (m & 040)  ? 'r' : '-';
+    perm[5] = (m & 020)  ? 'w' : '-';
+    perm[6] = (m & 010)  ? 'x' : '-';
+    /* Other */
+    perm[7] = (m & 04)   ? 'r' : '-';
+    perm[8] = (m & 02)   ? 'w' : '-';
+    perm[9] = (m & 01)   ? 'x' : '-';
+    perm[10] = '\0';
+
+    /* Resolve owner name */
+    const char* owner = "?";
+    user_t* u = user_get_by_uid(node->owner_uid);
+    if (u) owner = u->username;
+
+    printf("%s  %s  %d  %s", perm, owner, (int)node->size, name);
+
+    /* Print symlink target */
+    if (node->type == INODE_SYMLINK && node->num_blocks > 0) {
+        char target[BLOCK_SIZE];
+        size_t tlen = node->size < BLOCK_SIZE ? node->size : BLOCK_SIZE - 1;
+        memcpy(target, data_blocks[node->blocks[0]], tlen);
+        target[tlen] = '\0';
+        printf(" -> %s", target);
+    }
+
+    printf("\n");
 }
 
 void fs_list_directory(int flags) {
@@ -547,6 +649,7 @@ int fs_change_directory(const char* dirname) {
     }
 
     if (inodes[inode_idx].type != INODE_DIR) return -1;
+    if (!check_permission(&inodes[inode_idx], PERM_X)) return -1;
     sb.cwd_inode = (uint32_t)inode_idx;
     return 0;
 }
@@ -608,4 +711,105 @@ const char* fs_get_cwd(void) {
         path[1] = '\0';
     }
     return path;
+}
+
+int fs_chmod(const char* path, uint16_t mode) {
+    uint32_t parent;
+    char name[MAX_NAME_LEN];
+    int inode_idx = resolve_path(path, &parent, name);
+    if (inode_idx < 0) return -1;
+
+    inode_t* node = &inodes[inode_idx];
+    uint16_t uid = user_get_current_uid();
+
+    /* Only root or owner can chmod */
+    if (uid != 0 && uid != node->owner_uid) return -1;
+
+    node->mode = mode & 0777;
+    fs_dirty = 1;
+
+    if (ata_is_available()) fs_sync();
+    return 0;
+}
+
+int fs_chown(const char* path, uint16_t uid, uint16_t gid) {
+    uint32_t parent;
+    char name[MAX_NAME_LEN];
+    int inode_idx = resolve_path(path, &parent, name);
+    if (inode_idx < 0) return -1;
+
+    /* Only root can chown */
+    if (user_get_current_uid() != 0) return -1;
+
+    inodes[inode_idx].owner_uid = uid;
+    inodes[inode_idx].owner_gid = gid;
+    fs_dirty = 1;
+
+    if (ata_is_available()) fs_sync();
+    return 0;
+}
+
+int fs_create_symlink(const char* target, const char* linkname) {
+    uint32_t parent;
+    char name[MAX_NAME_LEN];
+
+    resolve_path(linkname, &parent, name);
+    if (name[0] == '\0') return -1;
+
+    /* Check if already exists */
+    if (dir_lookup(parent, name) >= 0) return -1;
+
+    int idx = alloc_inode();
+    if (idx < 0) return -1;
+
+    inodes[idx].type = INODE_SYMLINK;
+    inodes[idx].mode = 0777;
+    inodes[idx].owner_uid = user_get_current_uid();
+    inodes[idx].owner_gid = user_get_current_gid();
+
+    /* Store target path in first data block */
+    size_t tlen = strlen(target);
+    if (tlen >= BLOCK_SIZE) {
+        free_inode(idx);
+        return -1;
+    }
+
+    int blk = alloc_block();
+    if (blk < 0) {
+        free_inode(idx);
+        return -1;
+    }
+
+    memcpy(data_blocks[blk], target, tlen);
+    inodes[idx].blocks[0] = blk;
+    inodes[idx].num_blocks = 1;
+    inodes[idx].size = tlen;
+
+    if (dir_add_entry(parent, name, idx) < 0) {
+        free_block(blk);
+        free_inode(idx);
+        return -1;
+    }
+
+    fs_dirty = 1;
+    if (ata_is_available()) fs_sync();
+    return 0;
+}
+
+int fs_readlink(const char* path, char* buf, size_t bufsize) {
+    uint32_t parent;
+    char name[MAX_NAME_LEN];
+    int inode_idx = resolve_path(path, &parent, name);
+    if (inode_idx < 0) return -1;
+
+    inode_t* node = &inodes[inode_idx];
+    if (node->type != INODE_SYMLINK) return -1;
+    if (node->num_blocks == 0) return -1;
+
+    size_t tlen = node->size;
+    if (tlen >= bufsize) tlen = bufsize - 1;
+
+    memcpy(buf, data_blocks[node->blocks[0]], tlen);
+    buf[tlen] = '\0';
+    return 0;
 }

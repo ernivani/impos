@@ -8,8 +8,10 @@
 #include <kernel/ip.h>
 #include <kernel/env.h>
 #include <kernel/user.h>
+#include <kernel/group.h>
 #include <kernel/hostname.h>
 #include <kernel/acpi.h>
+#include <kernel/test.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +54,15 @@ static void cmd_arp(int argc, char* argv[]);
 static void cmd_export(int argc, char* argv[]);
 static void cmd_env(int argc, char* argv[]);
 static void cmd_whoami(int argc, char* argv[]);
+static void cmd_chmod(int argc, char* argv[]);
+static void cmd_chown(int argc, char* argv[]);
+static void cmd_ln(int argc, char* argv[]);
+static void cmd_readlink(int argc, char* argv[]);
+static void cmd_su(int argc, char* argv[]);
+static void cmd_id(int argc, char* argv[]);
+static void cmd_useradd(int argc, char* argv[]);
+static void cmd_userdel(int argc, char* argv[]);
+static void cmd_test(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -485,6 +496,121 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Prints the name of the current user.\n"
     },
+    {
+        "chmod", cmd_chmod,
+        "Change file permissions",
+        "chmod: chmod MODE FILE\n"
+        "    Change file permissions. MODE is octal (e.g. 755).\n",
+        "NAME\n"
+        "    chmod - change file mode bits\n\n"
+        "SYNOPSIS\n"
+        "    chmod MODE FILE\n\n"
+        "DESCRIPTION\n"
+        "    Change the permissions of FILE to MODE.\n"
+        "    MODE is an octal number (e.g. 755, 644).\n"
+        "    Only the file owner or root can change permissions.\n"
+    },
+    {
+        "chown", cmd_chown,
+        "Change file owner",
+        "chown: chown USER[:GROUP] FILE\n"
+        "    Change file owner and optionally group. Root only.\n",
+        "NAME\n"
+        "    chown - change file owner and group\n\n"
+        "SYNOPSIS\n"
+        "    chown USER[:GROUP] FILE\n\n"
+        "DESCRIPTION\n"
+        "    Change the owner (and optionally group) of FILE.\n"
+        "    Only root can change file ownership.\n"
+    },
+    {
+        "ln", cmd_ln,
+        "Create links between files",
+        "ln: ln -s TARGET LINKNAME\n"
+        "    Create a symbolic link to TARGET with name LINKNAME.\n",
+        "NAME\n"
+        "    ln - make links between files\n\n"
+        "SYNOPSIS\n"
+        "    ln -s TARGET LINKNAME\n\n"
+        "DESCRIPTION\n"
+        "    Create a symbolic link named LINKNAME pointing to TARGET.\n"
+        "    The -s flag is required (only symlinks are supported).\n"
+    },
+    {
+        "readlink", cmd_readlink,
+        "Display symlink target",
+        "readlink: readlink LINK\n"
+        "    Display the target of a symbolic link.\n",
+        "NAME\n"
+        "    readlink - print resolved symbolic links\n\n"
+        "SYNOPSIS\n"
+        "    readlink LINK\n\n"
+        "DESCRIPTION\n"
+        "    Print the target of the symbolic link LINK.\n"
+    },
+    {
+        "su", cmd_su,
+        "Switch user",
+        "su: su [USERNAME]\n"
+        "    Switch to another user (default: root).\n",
+        "NAME\n"
+        "    su - switch user identity\n\n"
+        "SYNOPSIS\n"
+        "    su [USERNAME]\n\n"
+        "DESCRIPTION\n"
+        "    Switch to another user. Prompts for password unless\n"
+        "    the current user is root. Default target is root.\n"
+    },
+    {
+        "id", cmd_id,
+        "Display user identity",
+        "id: id\n"
+        "    Display current user and group IDs.\n",
+        "NAME\n"
+        "    id - print real and effective user and group IDs\n\n"
+        "SYNOPSIS\n"
+        "    id\n\n"
+        "DESCRIPTION\n"
+        "    Print user and group information for the current user.\n"
+    },
+    {
+        "useradd", cmd_useradd,
+        "Create a new user",
+        "useradd: useradd USERNAME\n"
+        "    Create a new user account. Root only.\n",
+        "NAME\n"
+        "    useradd - create a new user\n\n"
+        "SYNOPSIS\n"
+        "    useradd USERNAME\n\n"
+        "DESCRIPTION\n"
+        "    Create a new user with auto-assigned UID, prompted\n"
+        "    password, and home directory. Root only.\n"
+    },
+    {
+        "userdel", cmd_userdel,
+        "Delete a user",
+        "userdel: userdel [-r] USERNAME\n"
+        "    Delete a user account. Root only.\n",
+        "NAME\n"
+        "    userdel - delete a user account\n\n"
+        "SYNOPSIS\n"
+        "    userdel [-r] USERNAME\n\n"
+        "DESCRIPTION\n"
+        "    Delete the user USERNAME. With -r, also remove\n"
+        "    the user's home directory. Root only.\n"
+    },
+    {
+        "test", cmd_test,
+        "Run regression tests",
+        "test: test\n"
+        "    Run all regression test suites.\n",
+        "NAME\n"
+        "    test - run regression tests\n\n"
+        "SYNOPSIS\n"
+        "    test\n\n"
+        "DESCRIPTION\n"
+        "    Run all built-in test suites and print results.\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -537,6 +663,7 @@ void shell_initialize(void) {
     env_initialize();
     hostname_initialize();
     user_initialize();
+    group_initialize();
     
     printf("ImposOS Shell v2.0\n");
     
@@ -1664,4 +1791,301 @@ static void cmd_whoami(int argc, char* argv[]) {
     } else {
         printf("unknown\n");
     }
+}
+
+static void cmd_chmod(int argc, char* argv[]) {
+    if (argc < 3) {
+        printf("Usage: chmod MODE FILE\n");
+        return;
+    }
+
+    /* Parse octal mode */
+    const char* s = argv[1];
+    uint16_t mode = 0;
+    while (*s >= '0' && *s <= '7') {
+        mode = mode * 8 + (*s - '0');
+        s++;
+    }
+    if (*s != '\0' || mode > 0777) {
+        printf("chmod: invalid mode '%s'\n", argv[1]);
+        return;
+    }
+
+    if (fs_chmod(argv[2], mode) != 0) {
+        printf("chmod: cannot change permissions of '%s'\n", argv[2]);
+    }
+}
+
+static void cmd_chown(int argc, char* argv[]) {
+    if (argc < 3) {
+        printf("Usage: chown USER[:GROUP] FILE\n");
+        return;
+    }
+
+    /* Parse user[:group] */
+    char user_part[32] = {0};
+    char group_part[32] = {0};
+    const char* p = argv[1];
+    size_t i = 0;
+
+    while (*p && *p != ':' && i < sizeof(user_part) - 1) {
+        user_part[i++] = *p++;
+    }
+    user_part[i] = '\0';
+
+    if (*p == ':') {
+        p++;
+        i = 0;
+        while (*p && i < sizeof(group_part) - 1) {
+            group_part[i++] = *p++;
+        }
+        group_part[i] = '\0';
+    }
+
+    user_t* u = user_get(user_part);
+    if (!u) {
+        printf("chown: invalid user '%s'\n", user_part);
+        return;
+    }
+
+    uint16_t gid = u->gid;
+    if (group_part[0]) {
+        group_t* g = group_get_by_name(group_part);
+        if (!g) {
+            printf("chown: invalid group '%s'\n", group_part);
+            return;
+        }
+        gid = g->gid;
+    }
+
+    if (fs_chown(argv[2], u->uid, gid) != 0) {
+        printf("chown: cannot change owner of '%s'\n", argv[2]);
+    }
+}
+
+static void cmd_ln(int argc, char* argv[]) {
+    if (argc < 4 || strcmp(argv[1], "-s") != 0) {
+        printf("Usage: ln -s TARGET LINKNAME\n");
+        return;
+    }
+
+    if (fs_create_symlink(argv[2], argv[3]) != 0) {
+        printf("ln: cannot create symbolic link '%s'\n", argv[3]);
+    }
+}
+
+static void cmd_readlink(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: readlink LINK\n");
+        return;
+    }
+
+    char buf[512];
+    if (fs_readlink(argv[1], buf, sizeof(buf)) == 0) {
+        printf("%s\n", buf);
+    } else {
+        printf("readlink: '%s': not a symlink\n", argv[1]);
+    }
+}
+
+static void cmd_su(int argc, char* argv[]) {
+    const char* target = "root";
+    if (argc >= 2) {
+        target = argv[1];
+    }
+
+    user_t* u = user_get(target);
+    if (!u) {
+        printf("su: user '%s' does not exist\n", target);
+        return;
+    }
+
+    /* Root doesn't need password */
+    if (user_get_current_uid() != 0) {
+        printf("Password: ");
+        char password[64];
+        size_t len = 0;
+
+        while (len < sizeof(password) - 1) {
+            int c = getchar();
+            if (c == '\n' || c == '\r') break;
+            if (c == '\b' || c == 127) {
+                if (len > 0) {
+                    len--;
+                    printf("\b \b");
+                }
+            } else if (c >= 32 && c < 127) {
+                password[len++] = c;
+                putchar('*');
+            }
+        }
+        password[len] = '\0';
+        printf("\n");
+
+        if (!user_authenticate(target, password)) {
+            printf("su: Authentication failure\n");
+            return;
+        }
+    }
+
+    user_set_current(u->username);
+    fs_change_directory(u->home);
+}
+
+static void cmd_id(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+
+    const char* name = user_get_current();
+    if (!name) {
+        printf("id: no current user\n");
+        return;
+    }
+
+    user_t* u = user_get(name);
+    if (!u) {
+        printf("id: cannot find user\n");
+        return;
+    }
+
+    printf("uid=%d(%s) gid=%d", u->uid, u->username, u->gid);
+
+    /* Show group name */
+    group_t* g = group_get_by_gid(u->gid);
+    if (g) {
+        printf("(%s)", g->name);
+    }
+
+    /* Show all groups */
+    printf(" groups=%d", u->gid);
+    if (g) printf("(%s)", g->name);
+
+    for (int i = 0; i < MAX_GROUPS; i++) {
+        group_t* grp = group_get_by_index(i);
+        if (grp && grp->gid != u->gid && group_is_member(grp->gid, u->username)) {
+            printf(",%d(%s)", grp->gid, grp->name);
+        }
+    }
+
+    printf("\n");
+}
+
+static void cmd_useradd(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: useradd USERNAME\n");
+        return;
+    }
+
+    if (user_get_current_uid() != 0) {
+        printf("useradd: only root can create users\n");
+        return;
+    }
+
+    const char* username = argv[1];
+
+    if (user_exists(username)) {
+        printf("useradd: user '%s' already exists\n", username);
+        return;
+    }
+
+    /* Prompt for password */
+    printf("Password for %s: ", username);
+    char password[64];
+    size_t len = 0;
+
+    while (len < sizeof(password) - 1) {
+        int c = getchar();
+        if (c == '\n' || c == '\r') break;
+        if (c == '\b' || c == 127) {
+            if (len > 0) {
+                len--;
+                printf("\b \b");
+            }
+        } else if (c >= 32 && c < 127) {
+            password[len++] = c;
+            putchar('*');
+        }
+    }
+    password[len] = '\0';
+    printf("\n");
+
+    uint16_t uid = user_next_uid();
+    uint16_t gid = uid;  /* Private group */
+
+    char home[128];
+    snprintf(home, sizeof(home), "/home/%s", username);
+
+    /* Create home directory */
+    fs_create_file("/home", 1);  /* Ensure /home exists */
+    fs_create_file(home, 1);
+
+    /* Create private group */
+    group_create(username, gid);
+    group_add_member(gid, username);
+
+    /* Create user */
+    if (user_create(username, password, home, uid, gid) != 0) {
+        printf("useradd: failed to create user\n");
+        return;
+    }
+
+    /* Set home directory ownership */
+    fs_chown(home, uid, gid);
+
+    user_save();
+    group_save();
+    printf("User '%s' created (uid=%d, gid=%d)\n", username, uid, gid);
+}
+
+static void cmd_userdel(int argc, char* argv[]) {
+    if (user_get_current_uid() != 0) {
+        printf("userdel: only root can delete users\n");
+        return;
+    }
+
+    int remove_home = 0;
+    const char* username = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-r") == 0) {
+            remove_home = 1;
+        } else {
+            username = argv[i];
+        }
+    }
+
+    if (!username) {
+        printf("Usage: userdel [-r] USERNAME\n");
+        return;
+    }
+
+    user_t* u = user_get(username);
+    if (!u) {
+        printf("userdel: user '%s' does not exist\n", username);
+        return;
+    }
+
+    if (strcmp(username, "root") == 0) {
+        printf("userdel: cannot delete root\n");
+        return;
+    }
+
+    char home[128];
+    strncpy(home, u->home, sizeof(home) - 1);
+    home[sizeof(home) - 1] = '\0';
+
+    user_delete(username);
+    user_save();
+
+    if (remove_home) {
+        fs_delete_file(home);
+    }
+
+    printf("User '%s' deleted\n", username);
+}
+
+static void cmd_test(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    test_run_all();
 }
