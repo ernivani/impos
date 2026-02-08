@@ -30,16 +30,20 @@ run: iso $(DISK_IMAGE)
 	qemu-system-i386 \
 		-cdrom myos.iso \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
 		-boot d \
-		-m 32M
+		-m 128M
 
 run-vnc: iso $(DISK_IMAGE)
 	@echo "=== Running ImposOS with VNC display ==="
 	qemu-system-i386 \
 		-cdrom myos.iso \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
 		-boot d \
-		-m 32M \
+		-m 128M \
 		-display vnc=:0 \
 		-k fr
 
@@ -50,8 +54,10 @@ run-us: iso $(DISK_IMAGE)
 	qemu-system-i386 \
 		-cdrom myos.iso \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
 		-boot d \
-		-m 32M \
+		-m 128M \
 		-k en-us
 
 run-gtk: iso

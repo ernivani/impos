@@ -1,0 +1,176 @@
+#include <kernel/ip.h>
+#include <kernel/arp.h>
+#include <kernel/net.h>
+#include <kernel/rtl8139.h>
+#include <stdio.h>
+#include <string.h>
+
+#define ETHERTYPE_IP 0x0800
+
+static uint16_t ip_id_counter = 0;
+
+/* Convert 16-bit value to network byte order (big-endian) */
+static uint16_t htons(uint16_t hostshort) {
+    return ((hostshort & 0xFF) << 8) | ((hostshort >> 8) & 0xFF);
+}
+
+/* Convert 16-bit value from network byte order */
+static uint16_t ntohs(uint16_t netshort) {
+    return ((netshort & 0xFF) << 8) | ((netshort >> 8) & 0xFF);
+}
+
+uint16_t ip_checksum(const void* data, size_t len) {
+    const uint16_t* words = (const uint16_t*)data;
+    uint32_t sum = 0;
+    
+    while (len > 1) {
+        sum += *words++;
+        len -= 2;
+    }
+    
+    if (len == 1) {
+        sum += *(const uint8_t*)words;
+    }
+    
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    
+    return ~sum;
+}
+
+void ip_initialize(void) {
+    ip_id_counter = 1;
+}
+
+int ip_send_packet(const uint8_t dst_ip[4], uint8_t protocol, const uint8_t* payload, size_t payload_len) {
+    if (!rtl8139_is_initialized()) {
+        return -1;
+    }
+    
+    net_config_t* config = net_get_config();
+    
+    /* Resolve destination MAC via ARP */
+    uint8_t dst_mac[6];
+    if (arp_resolve(dst_ip, dst_mac) != 0) {
+        /* For now, just use broadcast if ARP fails */
+        memset(dst_mac, 0xFF, 6);
+    }
+    
+    /* Build packet: Ethernet + IP + Payload */
+    size_t total_len = 14 + sizeof(ip_header_t) + payload_len;
+    uint8_t packet[1500];
+    
+    if (total_len > sizeof(packet)) {
+        return -1;
+    }
+    
+    /* Ethernet header */
+    memcpy(packet, dst_mac, 6);
+    memcpy(packet + 6, config->mac, 6);
+    *(uint16_t*)(packet + 12) = htons(ETHERTYPE_IP);
+    
+    /* IP header */
+    ip_header_t* ip_hdr = (ip_header_t*)(packet + 14);
+    memset(ip_hdr, 0, sizeof(ip_header_t));
+    ip_hdr->version_ihl = 0x45;  /* Version 4, IHL 5 (20 bytes) */
+    ip_hdr->tos = 0;
+    ip_hdr->total_length = htons(sizeof(ip_header_t) + payload_len);
+    ip_hdr->identification = htons(ip_id_counter++);
+    ip_hdr->flags_fragment = 0;
+    ip_hdr->ttl = 64;
+    ip_hdr->protocol = protocol;
+    memcpy(ip_hdr->src_ip, config->ip, 4);
+    memcpy(ip_hdr->dst_ip, dst_ip, 4);
+    ip_hdr->checksum = 0;
+    ip_hdr->checksum = htons(ip_checksum(ip_hdr, sizeof(ip_header_t)));
+    
+    /* Payload */
+    memcpy(packet + 14 + sizeof(ip_header_t), payload, payload_len);
+    
+    return net_send_packet(packet, total_len);
+}
+
+void ip_handle_packet(const uint8_t* data, size_t len) {
+    if (len < sizeof(ip_header_t)) {
+        return;
+    }
+    
+    const ip_header_t* ip_hdr = (const ip_header_t*)data;
+    net_config_t* config = net_get_config();
+    
+    /* Check if packet is for us */
+    if (memcmp(ip_hdr->dst_ip, config->ip, 4) != 0) {
+        return;
+    }
+    
+    /* Verify checksum */
+    uint16_t received_checksum = ntohs(ip_hdr->checksum);
+    ip_header_t temp_hdr;
+    memcpy(&temp_hdr, ip_hdr, sizeof(ip_header_t));
+    temp_hdr.checksum = 0;
+    uint16_t calculated_checksum = ip_checksum(&temp_hdr, sizeof(ip_header_t));
+    
+    if (received_checksum != calculated_checksum) {
+        return;  /* Bad checksum */
+    }
+    
+    /* Extract payload */
+    uint8_t ihl = (ip_hdr->version_ihl & 0x0F) * 4;
+    const uint8_t* payload = data + ihl;
+    size_t payload_len = ntohs(ip_hdr->total_length) - ihl;
+    
+    /* Handle by protocol */
+    if (ip_hdr->protocol == IP_PROTOCOL_ICMP) {
+        icmp_handle_packet(payload, payload_len, ip_hdr->src_ip);
+    }
+}
+
+void icmp_initialize(void) {
+    /* Nothing to initialize */
+}
+
+int icmp_send_echo_request(const uint8_t dst_ip[4], uint16_t id, uint16_t seq) {
+    uint8_t payload[64];
+    icmp_header_t* icmp = (icmp_header_t*)payload;
+    
+    icmp->type = ICMP_ECHO_REQUEST;
+    icmp->code = 0;
+    icmp->checksum = 0;
+    icmp->id = htons(id);
+    icmp->sequence = htons(seq);
+    
+    /* Add some data */
+    for (int i = sizeof(icmp_header_t); i < 64; i++) {
+        payload[i] = 0x20 + (i % 64);
+    }
+    
+    /* Calculate checksum */
+    icmp->checksum = htons(ip_checksum(payload, 64));
+    
+    return ip_send_packet(dst_ip, IP_PROTOCOL_ICMP, payload, 64);
+}
+
+void icmp_handle_packet(const uint8_t* data, size_t len, const uint8_t src_ip[4]) {
+    if (len < sizeof(icmp_header_t)) {
+        return;
+    }
+    
+    const icmp_header_t* icmp = (const icmp_header_t*)data;
+    
+    if (icmp->type == ICMP_ECHO_REPLY) {
+        printf("Reply from ");
+        net_print_ip(src_ip);
+        printf(": seq=%d\n", ntohs(icmp->sequence));
+    } else if (icmp->type == ICMP_ECHO_REQUEST) {
+        /* Send echo reply */
+        uint8_t reply[1500];
+        memcpy(reply, data, len);
+        icmp_header_t* reply_icmp = (icmp_header_t*)reply;
+        reply_icmp->type = ICMP_ECHO_REPLY;
+        reply_icmp->checksum = 0;
+        reply_icmp->checksum = htons(ip_checksum(reply, len));
+        
+        ip_send_packet(src_ip, IP_PROTOCOL_ICMP, reply, len);
+    }
+}
