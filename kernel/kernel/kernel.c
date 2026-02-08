@@ -64,8 +64,13 @@ void kernel_main(void) {
         printf("\n");
     }
     
-    /* Reset to home directory at shell start */
-    fs_change_directory("/home/root");
+    /* Reset to home directory at shell start - use $HOME from environment */
+    const char* home = env_get("HOME");
+    if (home) {
+        fs_change_directory(home);
+    } else {
+        fs_change_directory("/home/root");
+    }
 
     int hist_pos;
     char saved_line[SHELL_CMD_SIZE];
@@ -73,7 +78,11 @@ void kernel_main(void) {
     int cancelled;
 
     while (1) {
-        printf(PROMPT);
+        /* Get prompt from environment */
+        const char* ps1 = env_get("PS1");
+        if (!ps1) ps1 = "$ ";
+        printf("%s", ps1);
+        
         buf_len = 0;
         cursor = 0;
         hist_pos = -1;
@@ -98,7 +107,9 @@ void kernel_main(void) {
 
             if (c == CTRL_L) {
                 terminal_clear();
-                printf(PROMPT);
+                const char* ps1 = env_get("PS1");
+                if (!ps1) ps1 = "$ ";
+                printf("%s", ps1);
                 for (size_t i = 0; i < buf_len; i++)
                     putchar(buf[i]);
                 cursor_move((int)cursor - (int)buf_len);
