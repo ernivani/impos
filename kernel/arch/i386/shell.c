@@ -3,6 +3,9 @@
 #include <kernel/tty.h>
 #include <kernel/vi.h>
 #include <kernel/config.h>
+#include <kernel/net.h>
+#include <kernel/pci.h>
+#include <kernel/ip.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +41,10 @@ static void cmd_sync(int argc, char* argv[]);
 static void cmd_exit(int argc, char* argv[]);
 static void cmd_shutdown(int argc, char* argv[]);
 static void cmd_timedatectl(int argc, char* argv[]);
+static void cmd_ifconfig(int argc, char* argv[]);
+static void cmd_ping(int argc, char* argv[]);
+static void cmd_lspci(int argc, char* argv[]);
+static void cmd_arp(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -360,6 +367,76 @@ static command_t commands[] = {
         "    list-timezones\n"
         "        List common available timezones.\n"
     },
+    {
+        "ifconfig", cmd_ifconfig,
+        "Configure network interface parameters",
+        "ifconfig: ifconfig [interface] [options]\n"
+        "    Display or configure network interface parameters.\n"
+        "    Without arguments, shows current network configuration.\n"
+        "    Options:\n"
+        "      up                  Enable the network interface\n"
+        "      down                Disable the network interface\n"
+        "      IP NETMASK          Set IP address and netmask\n",
+        "NAME\n"
+        "    ifconfig - configure network interface\n\n"
+        "SYNOPSIS\n"
+        "    ifconfig [interface] [options]\n\n"
+        "DESCRIPTION\n"
+        "    Configure network interface parameters or display\n"
+        "    current network configuration.\n\n"
+        "EXAMPLES\n"
+        "    ifconfig\n"
+        "        Show current network configuration\n\n"
+        "    ifconfig eth0 10.0.2.15 255.255.255.0\n"
+        "        Set IP address and netmask\n\n"
+        "    ifconfig eth0 up\n"
+        "        Enable network interface\n"
+    },
+    {
+        "ping", cmd_ping,
+        "Send ICMP ECHO_REQUEST to network hosts",
+        "ping: ping HOST\n"
+        "    Send ICMP ECHO_REQUEST packets to HOST.\n",
+        "NAME\n"
+        "    ping - send ICMP ECHO_REQUEST to network hosts\n\n"
+        "SYNOPSIS\n"
+        "    ping HOST\n\n"
+        "DESCRIPTION\n"
+        "    Send ICMP ECHO_REQUEST packets to HOST and wait\n"
+        "    for ECHO_RESPONSE. This is useful for testing\n"
+        "    network connectivity.\n\n"
+        "EXAMPLES\n"
+        "    ping 10.0.2.2\n"
+        "        Ping the default gateway\n"
+    },
+    {
+        "lspci", cmd_lspci,
+        "List all PCI devices",
+        "lspci: lspci\n"
+        "    List all PCI devices on the system.\n",
+        "NAME\n"
+        "    lspci - list PCI devices\n\n"
+        "SYNOPSIS\n"
+        "    lspci\n\n"
+        "DESCRIPTION\n"
+        "    Scans the PCI bus and displays information about\n"
+        "    all detected PCI devices, including vendor ID,\n"
+        "    device ID, and device class.\n"
+    },
+    {
+        "arp", cmd_arp,
+        "Test ARP request/reply",
+        "arp: arp IP\n"
+        "    Send ARP request and wait for reply.\n",
+        "NAME\n"
+        "    arp - test ARP protocol\n\n"
+        "SYNOPSIS\n"
+        "    arp IP\n\n"
+        "DESCRIPTION\n"
+        "    Sends an ARP request for the given IP address\n"
+        "    and displays the MAC address in the reply.\n"
+        "    This tests if network RX actually works.\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -408,9 +485,9 @@ const char *shell_history_entry(int index) {
 void shell_initialize(void) {
     fs_initialize();
     config_initialize();
+    net_initialize();
     printf("ImposOS Shell v2.0\n");
     printf("Type 'help' for a list of commands.\n");
-    printf("Press Tab for smart auto-completion (commands, options, files).\n");
 }
 
 size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
@@ -536,6 +613,36 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
                     }
                     if (j == prefix_len) {
                         strcpy(completion_matches[completion_matches_count], layout);
+                        completion_matches_count++;
+                    }
+                }
+            } else if (strcmp(cmd_name, "ifconfig") == 0 && word_count == 2) {
+                const char* ifaces[] = { "eth0" };
+                for (size_t i = 0; i < 1 && completion_matches_count < 32; i++) {
+                    const char* iface = ifaces[i];
+                    size_t j = 0;
+                    for (; j < prefix_len; j++) {
+                        if (iface[j] == '\0' || iface[j] != buffer[start + j]) {
+                            break;
+                        }
+                    }
+                    if (j == prefix_len) {
+                        strcpy(completion_matches[completion_matches_count], iface);
+                        completion_matches_count++;
+                    }
+                }
+            } else if (strcmp(cmd_name, "ifconfig") == 0 && word_count == 3) {
+                const char* opts[] = { "up", "down" };
+                for (size_t i = 0; i < 2 && completion_matches_count < 32; i++) {
+                    const char* opt = opts[i];
+                    size_t j = 0;
+                    for (; j < prefix_len; j++) {
+                        if (opt[j] == '\0' || opt[j] != buffer[start + j]) {
+                            break;
+                        }
+                    }
+                    if (j == prefix_len) {
+                        strcpy(completion_matches[completion_matches_count], opt);
                         completion_matches_count++;
                     }
                 }
@@ -1083,4 +1190,180 @@ static void cmd_timedatectl(int argc, char* argv[]) {
         printf("Unknown command '%s'\n", argv[1]);
         printf("Use 'man timedatectl' for help\n");
     }
+}
+
+static void cmd_ifconfig(int argc, char* argv[]) {
+    net_config_t* config = net_get_config();
+    
+    if (argc == 1) {
+        /* Display current configuration */
+        printf("eth0: flags=");
+        if (config->link_up) {
+            printf("UP");
+        } else {
+            printf("DOWN");
+        }
+        printf("\n");
+        
+        printf("    inet ");
+        net_print_ip(config->ip);
+        printf("  netmask ");
+        net_print_ip(config->netmask);
+        printf("\n");
+        
+        printf("    ether ");
+        net_print_mac(config->mac);
+        printf("\n");
+        
+        printf("    gateway ");
+        net_print_ip(config->gateway);
+        printf("\n");
+        
+    } else if (argc >= 2) {
+        const char* iface = argv[1];
+        
+        if (strcmp(iface, "eth0") != 0) {
+            printf("Unknown interface: %s\n", iface);
+            return;
+        }
+        
+        if (argc == 3 && strcmp(argv[2], "up") == 0) {
+            config->link_up = 1;
+            printf("Interface eth0 enabled\n");
+        } else if (argc == 3 && strcmp(argv[2], "down") == 0) {
+            config->link_up = 0;
+            printf("Interface eth0 disabled\n");
+        } else if (argc == 4) {
+            /* Set IP and netmask: ifconfig eth0 10.0.2.15 255.255.255.0 */
+            /* Parse IP address */
+            const char* ip_str = argv[2];
+            int a = 0, b = 0, c = 0, d = 0;
+            const char* p = ip_str;
+            
+            while (*p >= '0' && *p <= '9') a = a * 10 + (*p++ - '0');
+            if (*p++ != '.') { printf("Invalid IP format\n"); return; }
+            while (*p >= '0' && *p <= '9') b = b * 10 + (*p++ - '0');
+            if (*p++ != '.') { printf("Invalid IP format\n"); return; }
+            while (*p >= '0' && *p <= '9') c = c * 10 + (*p++ - '0');
+            if (*p++ != '.') { printf("Invalid IP format\n"); return; }
+            while (*p >= '0' && *p <= '9') d = d * 10 + (*p++ - '0');
+            
+            config->ip[0] = a;
+            config->ip[1] = b;
+            config->ip[2] = c;
+            config->ip[3] = d;
+            
+            /* Parse netmask */
+            const char* mask_str = argv[3];
+            a = b = c = d = 0;
+            p = mask_str;
+            
+            while (*p >= '0' && *p <= '9') a = a * 10 + (*p++ - '0');
+            if (*p++ != '.') { printf("Invalid netmask format\n"); return; }
+            while (*p >= '0' && *p <= '9') b = b * 10 + (*p++ - '0');
+            if (*p++ != '.') { printf("Invalid netmask format\n"); return; }
+            while (*p >= '0' && *p <= '9') c = c * 10 + (*p++ - '0');
+            if (*p++ != '.') { printf("Invalid netmask format\n"); return; }
+            while (*p >= '0' && *p <= '9') d = d * 10 + (*p++ - '0');
+            
+            config->netmask[0] = a;
+            config->netmask[1] = b;
+            config->netmask[2] = c;
+            config->netmask[3] = d;
+            
+            printf("IP address set to ");
+            net_print_ip(config->ip);
+            printf("\n");
+            printf("Netmask set to ");
+            net_print_ip(config->netmask);
+            printf("\n");
+        } else {
+            printf("Usage: ifconfig [interface] [up|down|IP NETMASK]\n");
+        }
+    }
+}
+
+static void cmd_ping(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: ping HOST\n");
+        return;
+    }
+    
+    const char* host = argv[1];
+    
+    /* Parse IP address */
+    int a = 0, b = 0, c = 0, d = 0;
+    const char* p = host;
+    
+    while (*p >= '0' && *p <= '9') a = a * 10 + (*p++ - '0');
+    if (*p++ != '.') { printf("Invalid IP format\n"); return; }
+    while (*p >= '0' && *p <= '9') b = b * 10 + (*p++ - '0');
+    if (*p++ != '.') { printf("Invalid IP format\n"); return; }
+    while (*p >= '0' && *p <= '9') c = c * 10 + (*p++ - '0');
+    if (*p++ != '.') { printf("Invalid IP format\n"); return; }
+    while (*p >= '0' && *p <= '9') d = d * 10 + (*p++ - '0');
+    
+    uint8_t dst_ip[4] = {a, b, c, d};
+    
+    printf("PING %d.%d.%d.%d\n", a, b, c, d);
+    printf("Note: ICMP echo not supported by QEMU user networking\n");
+    printf("Use 'arp' command to test network functionality\n");
+    
+    /* Send pings anyway for testing */
+    for (int i = 1; i <= 4; i++) {
+        icmp_send_echo_request(dst_ip, 1, i);
+        
+        /* Wait and process packets */
+        for (int attempts = 0; attempts < 20; attempts++) {
+            net_process_packets();
+            for (volatile int j = 0; j < 500000; j++);
+        }
+        
+        /* Delay between pings */
+        for (volatile int j = 0; j < 1000000; j++);
+    }
+    
+    printf("\n");
+}
+
+static void cmd_lspci(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    pci_scan_bus();
+}
+
+static void cmd_arp(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: arp IP\n");
+        return;
+    }
+    
+    const char* host = argv[1];
+    
+    /* Parse IP address */
+    int a = 0, b = 0, c = 0, d = 0;
+    const char* p = host;
+    
+    while (*p >= '0' && *p <= '9') a = a * 10 + (*p++ - '0');
+    if (*p++ != '.') { printf("Invalid IP format\n"); return; }
+    while (*p >= '0' && *p <= '9') b = b * 10 + (*p++ - '0');
+    if (*p++ != '.') { printf("Invalid IP format\n"); return; }
+    while (*p >= '0' && *p <= '9') c = c * 10 + (*p++ - '0');
+    if (*p++ != '.') { printf("Invalid IP format\n"); return; }
+    while (*p >= '0' && *p <= '9') d = d * 10 + (*p++ - '0');
+    
+    uint8_t target_ip[4] = {a, b, c, d};
+    
+    printf("ARP request for %d.%d.%d.%d ... ", a, b, c, d);
+    
+    /* Send ARP request */
+    arp_send_request(target_ip);
+    
+    /* Wait and process packets */
+    for (int i = 0; i < 20; i++) {
+        net_process_packets();
+        for (volatile int j = 0; j < 500000; j++);
+    }
+    
+    printf("\n");
 }

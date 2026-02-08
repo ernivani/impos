@@ -107,6 +107,18 @@ int printf(const char* restrict format, ...) {
 			if (!print(buf, len))
 				return -1;
 			written += len;
+		} else if (*format == 'u') {
+			format++;
+			unsigned int value = va_arg(parameters, unsigned int);
+			char buf[32];
+			uint_to_str(value, buf, 10);
+			size_t len = strlen(buf);
+			if (maxrem < len) {
+				return -1;
+			}
+			if (!print(buf, len))
+				return -1;
+			written += len;
 		} else {
 			format = format_begun_at;
 			size_t len = strlen(format);

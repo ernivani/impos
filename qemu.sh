@@ -8,9 +8,11 @@ if [ ! -f impos_disk.img ]; then
     qemu-img create -f raw impos_disk.img 10M
 fi
 
-# Run with disk for persistence
+# Run with disk for persistence and RTL8139 network card
 qemu-system-$(./target-triplet-to-arch.sh $HOST) \
     -cdrom myos.iso \
     -drive file=impos_disk.img,format=raw,if=ide \
+    -netdev user,id=net0 \
+    -device rtl8139,netdev=net0 \
     -display vnc=:0 \
     -m 128M
