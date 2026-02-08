@@ -30,6 +30,7 @@ LIBK_CPPFLAGS:=$(LIBK_CPPFLAGS) $(KERNEL_ARCH_CPPFLAGS)
 FREEOBJS=\
 $(ARCH_FREEOBJS) \
 stdio/printf.o \
+stdio/snprintf.o \
 stdio/putchar.o \
 stdio/getchar.o \
 stdio/puts.o \
@@ -42,6 +43,7 @@ string/memmove.o \
 string/memset.o \
 string/strlen.o \
 string/strcpy.o \
+string/strncpy.o \
 string/strcat.o \
 string/strcmp.o \
 string/strtok.o \
