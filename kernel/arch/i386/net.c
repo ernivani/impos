@@ -53,7 +53,6 @@ void net_initialize(void) {
         /* Get MAC address from hardware */
         rtl8139_get_mac(net_config.mac);
         net_config.link_up = 1;
-        printf("Network interface eth0 is UP\n");
     } else {
         printf("No network card detected\n");
     }

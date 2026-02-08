@@ -3,17 +3,18 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <kernel/hash.h>
 
 #define MAX_USERS 32
 #define MAX_USERNAME 32
-#define MAX_PASSWORD 64
 #define MAX_HOME 128
 
 /* User structure */
 typedef struct {
     uint16_t uid;
     char username[MAX_USERNAME];
-    char password[MAX_PASSWORD];  /* Plain text for now - TODO: hash */
+    uint8_t password_salt[HASH_SALT_SIZE];
+    uint8_t password_hash[HASH_OUTPUT_SIZE];
     char home[MAX_HOME];
     uint16_t gid;
     int active;
@@ -33,7 +34,7 @@ user_t* user_get(const char* username);
 user_t* user_get_by_uid(uint16_t uid);
 
 /* Authentication */
-int user_authenticate(const char* username, const char* password);
+user_t* user_authenticate(const char* username, const char* password);
 
 /* Current user */
 void user_set_current(const char* username);

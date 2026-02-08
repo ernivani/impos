@@ -42,8 +42,12 @@ void terminal_initialize(void) {
 	terminal_update_cursor();
 }
 
-void terminal_setcolor(uint8_t color) {
-	terminal_color = color;
+void terminal_setcolor(enum vga_color fg, enum vga_color bg) {
+	terminal_color = vga_entry_color(fg, bg);
+}
+
+void terminal_resetcolor(void) {
+	terminal_color = vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 }
 
 void terminal_putentryat(unsigned char c, uint8_t color, size_t x, size_t y) {
