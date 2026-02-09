@@ -5,6 +5,7 @@
 
 #include <kernel/tty.h>
 #include <kernel/gfx.h>
+#include <kernel/io.h>
 
 #include "vga.h"
 
@@ -33,10 +34,6 @@ static const uint32_t vga_to_rgb[16] = {
 	0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
 	0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
 };
-
-static inline void outb(uint16_t port, uint8_t val) {
-	asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
 
 static void terminal_update_cursor(void) {
 	if (gfx_mode) {

@@ -26,11 +26,12 @@ run: iso $(DISK_IMAGE)
 	@echo "=== Running ImposOS with persistent disk ==="
 	@echo "Boot: myos.iso (CD-ROM)"
 	@echo "Disk: $(DISK_IMAGE) (IDE)"
+	@echo "HTTP: http://localhost:8080/ (forwarded to guest port 80)"
 	@echo ""
 	qemu-system-i386 \
 		-cdrom myos.iso \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::8080-:80 \
 		-device rtl8139,netdev=net0 \
 		-boot d \
 		-m 128M

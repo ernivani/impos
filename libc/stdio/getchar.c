@@ -3,15 +3,10 @@
 
 #if defined(__is_libk)
 #include <kernel/tty.h>
+#include <kernel/io.h>
 
 #define KEYBOARD_DATA_PORT    0x60
 #define KEYBOARD_STATUS_PORT  0x64
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
 
 #define CAPSLOCK_SCANCODE    0x3A
 #define NUMLOCK_SCANCODE     0x45

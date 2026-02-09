@@ -1,4 +1,5 @@
 #include <kernel/ata.h>
+#include <kernel/io.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -19,25 +20,6 @@
 
 /* Global (not static) to avoid BSS memory corruption from large fs arrays */
 int ata_available = 0;
-
-/* I/O port access functions */
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    asm volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-
-static inline void outb(uint16_t port, uint8_t val) {
-    asm volatile("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static inline void insw(uint16_t port, void* addr, uint32_t count) {
-    asm volatile("rep insw" : "+D"(addr), "+c"(count) : "d"(port) : "memory");
-}
-
-static inline void outsw(uint16_t port, const void* addr, uint32_t count) {
-    asm volatile("rep outsw" : "+S"(addr), "+c"(count) : "d"(port) : "memory");
-}
 
 static int ata_wait_bsy(void) {
     uint8_t status;

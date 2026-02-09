@@ -6,6 +6,7 @@
 #include <kernel/shell.h>
 #include <kernel/ata.h>
 #include <kernel/acpi.h>
+#include <kernel/idt.h>
 #include <kernel/multiboot.h>
 #include <kernel/gfx.h>
 #include <kernel/desktop.h>
@@ -287,6 +288,9 @@ static void shell_loop(void) {
 void kernel_main(multiboot_info_t* mbi) {
     gfx_init(mbi);
     terminal_initialize();
+
+    /* Set up GDT, IDT, PIC, PIT before anything else */
+    idt_initialize();
 
     if (gfx_is_active())
         desktop_splash();
