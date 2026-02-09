@@ -4,6 +4,9 @@
 #include <kernel/group.h>
 #include <kernel/gfx.h>
 #include <kernel/quota.h>
+#include <kernel/ip.h>
+#include <kernel/net.h>
+#include <kernel/endian.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -568,6 +571,54 @@ static void test_quota(void) {
     q->active = 0;
 }
 
+/* ---- Network Tests ---- */
+
+static void test_network(void) {
+    printf("== Network Tests ==\n");
+
+    /* Byte order: htons / ntohs */
+    TEST_ASSERT(htons(0x1234) == 0x3412, "htons swap");
+    TEST_ASSERT(ntohs(0x3412) == 0x1234, "ntohs swap");
+    TEST_ASSERT(ntohs(htons(0xABCD)) == 0xABCD, "htons/ntohs roundtrip");
+
+    /* htonl / ntohl */
+    TEST_ASSERT(htonl(0x12345678) == 0x78563412, "htonl swap");
+    TEST_ASSERT(ntohl(htonl(0xDEADBEEF)) == 0xDEADBEEF, "htonl/ntohl roundtrip");
+
+    /* IP checksum on a known header:
+     * Version/IHL=0x45, TOS=0, Len=0x003C, ID=0x1C46, Flags=0x4000,
+     * TTL=0x40, Proto=0x06, Checksum=0, Src=0xAC100A63, Dst=0xAC100A0C
+     * Expected checksum: the function returns host-order value which,
+     * stored directly to uint16_t, yields correct wire bytes. */
+    uint8_t ip_hdr[20] = {
+        0x45, 0x00, 0x00, 0x3C,  /* ver/ihl, tos, total_len */
+        0x1C, 0x46, 0x40, 0x00,  /* id, flags/frag */
+        0x40, 0x06, 0x00, 0x00,  /* ttl, proto(TCP), checksum=0 */
+        0xAC, 0x10, 0x0A, 0x63,  /* src: 172.16.10.99 */
+        0xAC, 0x10, 0x0A, 0x0C   /* dst: 172.16.10.12 */
+    };
+
+    uint16_t csum = ip_checksum(ip_hdr, 20);
+    TEST_ASSERT(csum != 0, "ip_checksum non-zero for zeroed field");
+
+    /* Store checksum and verify sum-to-zero property */
+    *(uint16_t*)(ip_hdr + 10) = csum;
+    uint16_t verify = ip_checksum(ip_hdr, 20);
+    TEST_ASSERT(verify == 0, "ip_checksum sum-to-zero");
+
+    /* Net config */
+    net_config_t* cfg = net_get_config();
+    TEST_ASSERT(cfg != NULL, "net_get_config non-null");
+    TEST_ASSERT(cfg->link_up == 1, "link is up");
+
+    /* MAC should not be all-zero (driver set it) */
+    int mac_nonzero = 0;
+    for (int i = 0; i < 6; i++) {
+        if (cfg->mac[i] != 0) mac_nonzero = 1;
+    }
+    TEST_ASSERT(mac_nonzero, "MAC address set");
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -588,6 +639,7 @@ void test_run_all(void) {
     test_user();
     test_gfx();
     test_quota();
+    test_network();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {
