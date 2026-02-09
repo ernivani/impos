@@ -1,7 +1,6 @@
 #include <kernel/ip.h>
 #include <kernel/arp.h>
 #include <kernel/net.h>
-#include <kernel/rtl8139.h>
 #include <kernel/endian.h>
 #include <kernel/udp.h>
 #include <kernel/tcp.h>
@@ -37,16 +36,19 @@ void ip_initialize(void) {
 }
 
 int ip_send_packet(const uint8_t dst_ip[4], uint8_t protocol, const uint8_t* payload, size_t payload_len) {
-    if (!rtl8139_is_initialized()) {
+    net_config_t* config = net_get_config();
+    if (!config->link_up) {
         return -1;
     }
     
-    net_config_t* config = net_get_config();
-    
     /* Resolve destination MAC via ARP */
     uint8_t dst_mac[6];
-    if (arp_resolve(dst_ip, dst_mac) != 0) {
-        /* For now, just use broadcast if ARP fails */
+    uint8_t bcast_ip[4] = {255, 255, 255, 255};
+    if (memcmp(dst_ip, bcast_ip, 4) == 0) {
+        /* Broadcast IP always uses broadcast MAC */
+        memset(dst_mac, 0xFF, 6);
+    } else if (arp_resolve(dst_ip, dst_mac) != 0) {
+        /* ARP failed, fallback to broadcast */
         memset(dst_mac, 0xFF, 6);
     }
     
@@ -76,7 +78,7 @@ int ip_send_packet(const uint8_t dst_ip[4], uint8_t protocol, const uint8_t* pay
     memcpy(ip_hdr->src_ip, config->ip, 4);
     memcpy(ip_hdr->dst_ip, dst_ip, 4);
     ip_hdr->checksum = 0;
-    ip_hdr->checksum = htons(ip_checksum(ip_hdr, sizeof(ip_header_t)));
+    ip_hdr->checksum = ip_checksum(ip_hdr, sizeof(ip_header_t));
     
     /* Payload */
     memcpy(packet + 14 + sizeof(ip_header_t), payload, payload_len);
@@ -101,14 +103,8 @@ void ip_handle_packet(const uint8_t* data, size_t len) {
         return;
     }
     
-    /* Verify checksum */
-    uint16_t received_checksum = ntohs(ip_hdr->checksum);
-    ip_header_t temp_hdr;
-    memcpy(&temp_hdr, ip_hdr, sizeof(ip_header_t));
-    temp_hdr.checksum = 0;
-    uint16_t calculated_checksum = ip_checksum(&temp_hdr, sizeof(ip_header_t));
-    
-    if (received_checksum != calculated_checksum) {
+    /* Verify checksum: sum of entire header (including checksum) should be 0 */
+    if (ip_checksum(ip_hdr, sizeof(ip_header_t)) != 0) {
         return;  /* Bad checksum */
     }
     
@@ -147,7 +143,7 @@ int icmp_send_echo_request(const uint8_t dst_ip[4], uint16_t id, uint16_t seq) {
     }
     
     /* Calculate checksum */
-    icmp->checksum = htons(ip_checksum(payload, 64));
+    icmp->checksum = ip_checksum(payload, 64);
     
     return ip_send_packet(dst_ip, IP_PROTOCOL_ICMP, payload, 64);
 }
@@ -170,7 +166,7 @@ void icmp_handle_packet(const uint8_t* data, size_t len, const uint8_t src_ip[4]
         icmp_header_t* reply_icmp = (icmp_header_t*)reply;
         reply_icmp->type = ICMP_ECHO_REPLY;
         reply_icmp->checksum = 0;
-        reply_icmp->checksum = htons(ip_checksum(reply, len));
+        reply_icmp->checksum = ip_checksum(reply, len);
         
         ip_send_packet(src_ip, IP_PROTOCOL_ICMP, reply, len);
     }

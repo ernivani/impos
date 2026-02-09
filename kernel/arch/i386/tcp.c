@@ -45,12 +45,18 @@ static int ring_peek(tcp_ring_t* r, uint8_t* buf, size_t len, size_t offset) {
 static uint16_t tcp_checksum(const uint8_t src_ip[4], const uint8_t dst_ip[4],
                               const uint8_t* tcp_pkt, size_t tcp_len) {
     uint32_t sum = 0;
-    sum += (src_ip[0] << 8) | src_ip[1];
-    sum += (src_ip[2] << 8) | src_ip[3];
-    sum += (dst_ip[0] << 8) | dst_ip[1];
-    sum += (dst_ip[2] << 8) | dst_ip[3];
-    sum += 6; /* TCP protocol */
-    sum += tcp_len;
+
+    /* Build pseudo-header as raw bytes in network order */
+    uint8_t pseudo[12];
+    memcpy(pseudo, src_ip, 4);
+    memcpy(pseudo + 4, dst_ip, 4);
+    pseudo[8] = 0;
+    pseudo[9] = 6; /* TCP protocol */
+    pseudo[10] = (tcp_len >> 8) & 0xFF;
+    pseudo[11] = tcp_len & 0xFF;
+
+    const uint16_t* pw = (const uint16_t*)pseudo;
+    for (int i = 0; i < 6; i++) sum += pw[i];
 
     const uint16_t* words = (const uint16_t*)tcp_pkt;
     size_t remaining = tcp_len;
