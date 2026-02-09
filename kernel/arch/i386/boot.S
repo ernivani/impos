@@ -1,7 +1,8 @@
 # Declare constants for the multiboot header.
 .set ALIGN,    1<<0             # align loaded modules on page boundaries
 .set MEMINFO,  1<<1             # provide memory map
-.set FLAGS,    ALIGN | MEMINFO  # this is the Multiboot 'flag' field
+.set VIDEO,    1<<2             # request video mode info
+.set FLAGS,    ALIGN | MEMINFO | VIDEO  # this is the Multiboot 'flag' field
 .set MAGIC,    0x1BADB002       # 'magic number' lets bootloader find the header
 .set CHECKSUM, -(MAGIC + FLAGS) # checksum of above, to prove we are multiboot
 
@@ -11,6 +12,19 @@
 .long MAGIC
 .long FLAGS
 .long CHECKSUM
+
+# Address fields (bit 16 not set, so these are ignored but must be present)
+.long 0  # header_addr
+.long 0  # load_addr
+.long 0  # load_end_addr
+.long 0  # bss_end_addr
+.long 0  # entry_addr
+
+# Video mode fields (hints only — actual resolution from multiboot info)
+.long 0     # mode_type: 0 = linear graphics
+.long 1024  # width hint
+.long 768   # height hint
+.long 32    # depth hint (bits per pixel)
 
 # Reserve a stack for the initial thread.
 .section .bss
@@ -26,11 +40,17 @@ stack_top:
 _start:
 	movl $stack_top, %esp
 
+	# Save multiboot info pointer (ebx) before _init clobbers it
+	pushl %ebx
+
 	# Call the global constructors.
 	call _init
 
-	# Transfer control to the main kernel.
+	# Restore multiboot info pointer and pass to kernel_main
+	popl %ebx
+	pushl %ebx
 	call kernel_main
+	addl $4, %esp
 
 	# Hang if kernel_main unexpectedly returns.
 	cli

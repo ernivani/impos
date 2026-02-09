@@ -2,6 +2,7 @@
 #include <kernel/fs.h>
 #include <kernel/user.h>
 #include <kernel/group.h>
+#include <kernel/gfx.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -454,6 +455,42 @@ static void test_user(void) {
     TEST_ASSERT(gid != 65535, "current gid valid");
 }
 
+/* ---- Graphics Tests ---- */
+
+static void test_gfx(void) {
+    printf("== Graphics Tests ==\n");
+
+    TEST_ASSERT(gfx_is_active() == 1, "gfx is active");
+    TEST_ASSERT(gfx_width() > 0, "gfx width > 0");
+    TEST_ASSERT(gfx_height() > 0, "gfx height > 0");
+    TEST_ASSERT(gfx_bpp() == 32, "gfx bpp == 32");
+    TEST_ASSERT(gfx_cols() == gfx_width() / 8, "gfx cols == width/8");
+    TEST_ASSERT(gfx_rows() == gfx_height() / 16, "gfx rows == height/16");
+    TEST_ASSERT(gfx_pitch() >= gfx_width() * 4, "gfx pitch >= width*4");
+    TEST_ASSERT(gfx_backbuffer() != NULL, "gfx backbuffer not null");
+
+    /* Out of bounds put_pixel should not crash */
+    gfx_put_pixel(-1, -1, 0xFF0000);
+    gfx_put_pixel((int)gfx_width() + 1, (int)gfx_height() + 1, 0xFF0000);
+    TEST_ASSERT(1, "gfx put_pixel OOB no crash");
+
+    /* Fill rect clipping at edges */
+    gfx_fill_rect((int)gfx_width() - 5, (int)gfx_height() - 5, 100, 100, 0x00FF00);
+    TEST_ASSERT(1, "gfx fill_rect clip no crash");
+
+    /* Draw char without crash */
+    gfx_draw_char(0, 0, 'A', 0xFFFFFF, 0x000000);
+    TEST_ASSERT(1, "gfx draw_char no crash");
+
+    /* VGA-to-RGB spot checks */
+    /* Black = 0x000000, White = 0xFFFFFF, Blue = 0x0000AA, Red = 0xAA0000 */
+    /* These are tested indirectly via the TTY color table, just verify gfx works */
+    TEST_ASSERT(GFX_RGB(0,0,0) == 0x000000, "GFX_RGB black");
+    TEST_ASSERT(GFX_RGB(255,255,255) == 0xFFFFFF, "GFX_RGB white");
+    TEST_ASSERT(GFX_RGB(255,0,0) == 0xFF0000, "GFX_RGB red");
+    TEST_ASSERT(GFX_RGB(0,255,0) == 0x00FF00, "GFX_RGB green");
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -471,6 +508,7 @@ void test_run_all(void) {
     test_fs();
     test_fs_indirect();
     test_user();
+    test_gfx();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

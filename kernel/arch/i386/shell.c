@@ -12,10 +12,14 @@
 #include <kernel/hostname.h>
 #include <kernel/acpi.h>
 #include <kernel/test.h>
+#include <kernel/gfx.h>
+#include <kernel/desktop.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+
+int shell_exit_requested = 0;
 
 #define MAX_ARGS 64
 
@@ -64,6 +68,7 @@ static void cmd_useradd(int argc, char* argv[]);
 static void cmd_userdel(int argc, char* argv[]);
 static void cmd_test(int argc, char* argv[]);
 static void cmd_logout(int argc, char* argv[]);
+static void cmd_gfxdemo(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -625,6 +630,19 @@ static command_t commands[] = {
         "    Saves state and returns to the login prompt.\n"
         "    The current user session is ended.\n"
     },
+    {
+        "gfxdemo", cmd_gfxdemo,
+        "Run a graphics framebuffer demo",
+        "gfxdemo: gfxdemo\n"
+        "    Draw shapes and colors using the VBE framebuffer.\n",
+        "NAME\n"
+        "    gfxdemo - graphics demo\n\n"
+        "SYNOPSIS\n"
+        "    gfxdemo\n\n"
+        "DESCRIPTION\n"
+        "    Demonstrates the framebuffer graphics API by drawing\n"
+        "    rectangles, lines, and text. Press any key to exit.\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -734,17 +752,25 @@ int shell_login(void) {
     }
 }
 
-void shell_initialize(void) {
-    fs_initialize();      /* MUST be first - loads filesystem from disk */
+void shell_initialize_subsystems(void) {
+    fs_initialize();
     config_initialize();
     net_initialize();
     env_initialize();
     hostname_initialize();
     user_initialize();
     group_initialize();
-    
+}
+
+int shell_needs_setup(void) {
+    return !user_system_initialized();
+}
+
+void shell_initialize(void) {
+    shell_initialize_subsystems();
+
     printf("ImposOS Shell v2.0\n");
-    
+
     /* Check if system needs initial setup */
     if (!user_system_initialized()) {
         printf("\n");
@@ -1346,6 +1372,8 @@ static void cmd_clear(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
     terminal_clear();
+    if (gfx_is_active())
+        desktop_draw_chrome();
 }
 
 static void cmd_history(int argc, char* argv[]) {
@@ -1423,21 +1451,15 @@ static void cmd_sync(int argc, char* argv[]) {
 }
 
 static void cmd_exit(int argc, char* argv[]) {
-    int status = EXIT_SUCCESS;
-    if (argc >= 2) {
-        int val = 0, neg = 0;
-        const char *p = argv[1];
-        if (*p == '-') { neg = 1; p++; }
-        while (*p >= '0' && *p <= '9')
-            val = val * 10 + (*p++ - '0');
-        status = neg ? -val : val;
-    }
+    (void)argc; (void)argv;
     config_save_history();
     config_save();
     fs_sync();
-    printf("End\n");
-    terminal_clear();
-    exit(status);
+    if (gfx_is_active()) {
+        shell_exit_requested = 1;
+        return;
+    }
+    exit(0);
 }
 
 static void cmd_shutdown(int argc, char* argv[]) {
@@ -2121,4 +2143,119 @@ static void cmd_logout(int argc, char* argv[]) {
     fs_sync();
     printf("Logging out...\n");
     exit(0);
+}
+
+static void cmd_gfxdemo(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+
+    if (!gfx_is_active()) {
+        printf("Graphics mode not available (text mode fallback)\n");
+        return;
+    }
+
+    uint32_t w = gfx_width();
+    uint32_t h = gfx_height();
+
+    /* Clear to dark blue background */
+    gfx_clear(GFX_RGB(0, 0, 40));
+
+    /* Draw border */
+    gfx_draw_rect(2, 2, (int)w - 4, (int)h - 4, GFX_WHITE);
+
+    /* Title */
+    gfx_draw_string((int)w / 2 - 100, 20, "ImposOS GFX Demo", GFX_WHITE, GFX_RGB(0, 0, 40));
+    char info[80];
+    snprintf(info, sizeof(info), "Resolution: %dx%d  Grid: %dx%d",
+             (int)w, (int)h, (int)gfx_cols(), (int)gfx_rows());
+    gfx_draw_string((int)w / 2 - 120, 40, info, GFX_CYAN, GFX_RGB(0, 0, 40));
+
+    /* Filled rectangles - color palette */
+    int bx = 40, by = 80, bw = 60, bh = 40;
+    uint32_t colors[] = {
+        GFX_RED, GFX_GREEN, GFX_BLUE, GFX_CYAN,
+        GFX_YELLOW, GFX_MAGENTA, GFX_WHITE, GFX_RGB(255, 128, 0)
+    };
+    const char* names[] = {
+        "Red", "Green", "Blue", "Cyan",
+        "Yellow", "Magenta", "White", "Orange"
+    };
+    for (int i = 0; i < 8; i++) {
+        int x = bx + i * (bw + 10);
+        gfx_fill_rect(x, by, bw, bh, colors[i]);
+        gfx_draw_rect(x, by, bw, bh, GFX_WHITE);
+        gfx_draw_string(x + 4, by + bh + 4, names[i], colors[i], GFX_RGB(0, 0, 40));
+    }
+
+    /* Diagonal lines - starburst pattern */
+    int cx = (int)w / 2;
+    int cy_base = 220;
+    for (int angle = 0; angle < 360; angle += 15) {
+        /* Simple angle approximation using integer math */
+        int dx = 0, dy = 0;
+        int r = 80;
+        /* Use lookup for sin/cos approximation at key angles */
+        switch (angle % 360) {
+            case 0:   dx = r;    dy = 0;    break;
+            case 15:  dx = r*97/100; dy = r*26/100; break;
+            case 30:  dx = r*87/100; dy = r/2;      break;
+            case 45:  dx = r*71/100; dy = r*71/100;  break;
+            case 60:  dx = r/2;      dy = r*87/100;  break;
+            case 75:  dx = r*26/100; dy = r*97/100;  break;
+            case 90:  dx = 0;    dy = r;    break;
+            case 105: dx = -r*26/100; dy = r*97/100; break;
+            case 120: dx = -r/2;      dy = r*87/100; break;
+            case 135: dx = -r*71/100; dy = r*71/100; break;
+            case 150: dx = -r*87/100; dy = r/2;      break;
+            case 165: dx = -r*97/100; dy = r*26/100; break;
+            case 180: dx = -r;   dy = 0;    break;
+            case 195: dx = -r*97/100; dy = -r*26/100; break;
+            case 210: dx = -r*87/100; dy = -r/2;      break;
+            case 225: dx = -r*71/100; dy = -r*71/100; break;
+            case 240: dx = -r/2;      dy = -r*87/100; break;
+            case 255: dx = -r*26/100; dy = -r*97/100; break;
+            case 270: dx = 0;    dy = -r;   break;
+            case 285: dx = r*26/100;  dy = -r*97/100; break;
+            case 300: dx = r/2;       dy = -r*87/100; break;
+            case 315: dx = r*71/100;  dy = -r*71/100; break;
+            case 330: dx = r*87/100;  dy = -r/2;      break;
+            case 345: dx = r*97/100;  dy = -r*26/100; break;
+        }
+        /* Color cycle */
+        uint32_t lc = GFX_RGB(
+            128 + (angle * 127 / 360),
+            255 - (angle * 200 / 360),
+            (angle * 255 / 360)
+        );
+        gfx_draw_line(cx, cy_base, cx + dx, cy_base + dy, lc);
+    }
+
+    /* Nested rectangles */
+    int rx = (int)w - 250, ry = 160;
+    for (int i = 0; i < 8; i++) {
+        uint32_t rc = GFX_RGB(255 - i * 30, i * 30, 128);
+        gfx_draw_rect(rx + i * 8, ry + i * 8, 120 - i * 16, 80 - i * 16, rc);
+    }
+
+    /* Gradient bar */
+    int gy = (int)h - 100;
+    for (int x = 40; x < (int)w - 40; x++) {
+        int t = (x - 40) * 255 / ((int)w - 80);
+        gfx_fill_rect(x, gy, 1, 30, GFX_RGB(t, 0, 255 - t));
+    }
+    gfx_draw_string(40, gy + 34, "Red <-- Gradient --> Blue", GFX_WHITE, GFX_RGB(0, 0, 40));
+
+    /* Bottom message */
+    gfx_draw_string((int)w / 2 - 80, (int)h - 30, "Press any key to exit...",
+                    GFX_YELLOW, GFX_RGB(0, 0, 40));
+
+    gfx_flip();
+
+    /* Wait for keypress */
+    getchar();
+
+    /* Restore terminal */
+    terminal_clear();
+    if (gfx_is_active())
+        desktop_draw_chrome();
 }

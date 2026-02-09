@@ -332,3 +332,22 @@ int user_system_initialized(void) {
     }
     return 0;
 }
+
+user_t* user_get_by_index(int index) {
+    int count = 0;
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (users[i].active) {
+            if (count == index) return &users[i];
+            count++;
+        }
+    }
+    return NULL;
+}
+
+int user_count(void) {
+    int count = 0;
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (users[i].active) count++;
+    }
+    return count;
+}

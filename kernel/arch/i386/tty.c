@@ -4,23 +4,45 @@
 #include <string.h>
 
 #include <kernel/tty.h>
+#include <kernel/gfx.h>
 
 #include "vga.h"
 
-static const size_t VGA_WIDTH = 80;
-static const size_t VGA_HEIGHT = 25;
+static size_t VGA_WIDTH = 80;
+static size_t VGA_HEIGHT = 25;
 static uint16_t* const VGA_MEMORY = (uint16_t*) 0xB8000;
 
 static size_t terminal_row;
 static size_t terminal_column;
 static uint8_t terminal_color;
 static uint16_t* terminal_buffer;
+static int gfx_mode = 0;
+
+/* Window region (character grid units) — defaults to fullscreen */
+static size_t win_x = 0;
+static size_t win_y = 0;
+static size_t win_w = 80;
+static size_t win_h = 25;
+/* Custom background color for windowed mode (0 = use VGA color) */
+static uint32_t win_bg_color = 0;
+static int win_bg_set = 0;
+
+static const uint32_t vga_to_rgb[16] = {
+	0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
+	0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
+	0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
+	0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
+};
 
 static inline void outb(uint16_t port, uint8_t val) {
 	asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
 static void terminal_update_cursor(void) {
+	if (gfx_mode) {
+		gfx_set_cursor((int)(win_x + terminal_column), (int)(win_y + terminal_row));
+		return;
+	}
 	uint16_t pos = terminal_row * VGA_WIDTH + terminal_column;
 	outb(0x3D4, 14);
 	outb(0x3D5, (uint8_t)(pos >> 8));
@@ -32,11 +54,33 @@ void terminal_initialize(void) {
 	terminal_row = 0;
 	terminal_column = 0;
 	terminal_color = vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
-	terminal_buffer = VGA_MEMORY;
-	for (size_t y = 0; y < VGA_HEIGHT; y++) {
-		for (size_t x = 0; x < VGA_WIDTH; x++) {
-			const size_t index = y * VGA_WIDTH + x;
-			terminal_buffer[index] = vga_entry(' ', terminal_color);
+
+	if (gfx_is_active()) {
+		gfx_mode = 1;
+		VGA_WIDTH = gfx_cols();
+		VGA_HEIGHT = gfx_rows();
+		win_x = 0;
+		win_y = 0;
+		win_w = VGA_WIDTH;
+		win_h = VGA_HEIGHT;
+		win_bg_set = 0;
+		gfx_clear(0x000000);
+		gfx_flip();
+	} else {
+		gfx_mode = 0;
+		VGA_WIDTH = 80;
+		VGA_HEIGHT = 25;
+		win_x = 0;
+		win_y = 0;
+		win_w = VGA_WIDTH;
+		win_h = VGA_HEIGHT;
+		win_bg_set = 0;
+		terminal_buffer = VGA_MEMORY;
+		for (size_t y = 0; y < VGA_HEIGHT; y++) {
+			for (size_t x = 0; x < VGA_WIDTH; x++) {
+				const size_t index = y * VGA_WIDTH + x;
+				terminal_buffer[index] = vga_entry(' ', terminal_color);
+			}
 		}
 	}
 	terminal_update_cursor();
@@ -51,11 +95,47 @@ void terminal_resetcolor(void) {
 }
 
 void terminal_putentryat(unsigned char c, uint8_t color, size_t x, size_t y) {
+	if (gfx_mode) {
+		size_t abs_x = win_x + x;
+		size_t abs_y = win_y + y;
+		uint32_t fg = vga_to_rgb[color & 0x0F];
+		uint32_t bg = win_bg_set ? win_bg_color : vga_to_rgb[(color >> 4) & 0x0F];
+		gfx_putchar_at((int)abs_x, (int)abs_y, c, fg, bg);
+		gfx_flip_rect((int)abs_x * FONT_W, (int)abs_y * FONT_H, FONT_W, FONT_H);
+		return;
+	}
 	const size_t index = y * VGA_WIDTH + x;
 	terminal_buffer[index] = vga_entry(c, color);
 }
 
 static void terminal_scroll_up(void) {
+	if (gfx_mode) {
+		uint32_t* bb = gfx_backbuffer();
+		uint32_t pitch4 = gfx_pitch() / 4;
+		uint32_t bg = win_bg_set ? win_bg_color : vga_to_rgb[(terminal_color >> 4) & 0x0F];
+
+		/* Pixel coords of the window region */
+		uint32_t px = (uint32_t)win_x * FONT_W;
+		uint32_t py = (uint32_t)win_y * FONT_H;
+		uint32_t pw = (uint32_t)win_w * FONT_W;
+		uint32_t ph = (uint32_t)win_h * FONT_H;
+
+		/* Shift up by FONT_H pixel rows within the window */
+		for (uint32_t row = py; row < py + ph - FONT_H; row++) {
+			memcpy(bb + row * pitch4 + px,
+			       bb + (row + FONT_H) * pitch4 + px,
+			       pw * 4);
+		}
+		/* Clear bottom character row */
+		uint32_t start_y = py + ph - FONT_H;
+		for (uint32_t y = start_y; y < py + ph; y++) {
+			uint32_t* rowp = bb + y * pitch4 + px;
+			for (uint32_t x = 0; x < pw; x++)
+				rowp[x] = bg;
+		}
+		gfx_flip();
+		return;
+	}
 	memmove(terminal_buffer,
 		terminal_buffer + VGA_WIDTH,
 		VGA_WIDTH * (VGA_HEIGHT - 1) * sizeof(uint16_t));
@@ -72,7 +152,7 @@ void terminal_putchar(char c) {
 			terminal_column--;
 		} else if (terminal_row > 0) {
 			terminal_row--;
-			terminal_column = VGA_WIDTH - 1;
+			terminal_column = win_w - 1;
 		}
 		terminal_putentryat(' ', terminal_color, terminal_column, terminal_row);
 		terminal_update_cursor();
@@ -81,20 +161,20 @@ void terminal_putchar(char c) {
 
 	if (c == '\n') {
 		terminal_column = 0;
-		if (++terminal_row == VGA_HEIGHT) {
+		if (++terminal_row == win_h) {
 			terminal_scroll_up();
-			terminal_row = VGA_HEIGHT - 1;
+			terminal_row = win_h - 1;
 		}
 		terminal_update_cursor();
 		return;
 	}
 
 	terminal_putentryat(uc, terminal_color, terminal_column, terminal_row);
-	if (++terminal_column == VGA_WIDTH) {
+	if (++terminal_column == win_w) {
 		terminal_column = 0;
-		if (++terminal_row == VGA_HEIGHT) {
+		if (++terminal_row == win_h) {
 			terminal_scroll_up();
-			terminal_row = VGA_HEIGHT - 1;
+			terminal_row = win_h - 1;
 		}
 	}
 	terminal_update_cursor();
@@ -110,9 +190,17 @@ void terminal_writestring(const char* data) {
 }
 
 void terminal_clear(void) {
-	for (size_t y = 0; y < VGA_HEIGHT; y++) {
-		for (size_t x = 0; x < VGA_WIDTH; x++) {
-			terminal_buffer[y * VGA_WIDTH + x] = vga_entry(' ', terminal_color);
+	if (gfx_mode) {
+		uint32_t bg = win_bg_set ? win_bg_color : vga_to_rgb[(terminal_color >> 4) & 0x0F];
+		/* Only clear the window region */
+		gfx_fill_rect((int)(win_x * FONT_W), (int)(win_y * FONT_H),
+		              (int)(win_w * FONT_W), (int)(win_h * FONT_H), bg);
+		gfx_flip();
+	} else {
+		for (size_t y = 0; y < VGA_HEIGHT; y++) {
+			for (size_t x = 0; x < VGA_WIDTH; x++) {
+				terminal_buffer[y * VGA_WIDTH + x] = vga_entry(' ', terminal_color);
+			}
 		}
 	}
 	terminal_row = 0;
@@ -128,10 +216,33 @@ size_t terminal_get_row(void) {
 	return terminal_row;
 }
 
+size_t terminal_get_width(void) {
+	return win_w;
+}
+
 void terminal_set_cursor(size_t col, size_t row) {
-	if (col >= VGA_WIDTH) col = VGA_WIDTH - 1;
-	if (row >= VGA_HEIGHT) row = VGA_HEIGHT - 1;
+	if (col >= win_w) col = win_w - 1;
+	if (row >= win_h) row = win_h - 1;
 	terminal_column = col;
 	terminal_row = row;
 	terminal_update_cursor();
 }
+
+void terminal_set_window(size_t x, size_t y, size_t w, size_t h) {
+	win_x = x;
+	win_y = y;
+	win_w = w;
+	win_h = h;
+	terminal_row = 0;
+	terminal_column = 0;
+}
+
+void terminal_set_window_bg(uint32_t color) {
+	win_bg_color = color;
+	win_bg_set = 1;
+}
+
+size_t terminal_get_win_x(void) { return win_x; }
+size_t terminal_get_win_y(void) { return win_y; }
+size_t terminal_get_win_w(void) { return win_w; }
+size_t terminal_get_win_h(void) { return win_h; }

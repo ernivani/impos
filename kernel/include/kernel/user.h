@@ -51,4 +51,8 @@ uint16_t user_next_uid(void);
 /* Check if system is initialized (has users) */
 int user_system_initialized(void);
 
+/* Iterate users */
+user_t* user_get_by_index(int index);
+int user_count(void);
+
 #endif
