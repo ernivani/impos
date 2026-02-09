@@ -219,33 +219,28 @@ void gfx_putchar_at(int col, int row, unsigned char c, uint32_t fg, uint32_t bg)
 void gfx_set_cursor(int col, int row) {
     uint32_t pitch4 = fb_pitch / 4;
 
-    /* Erase previous cursor underline (redraw char rows 14-15 from backbuffer) */
-    if (prev_cursor_col >= 0 && prev_cursor_row >= 0) {
-        /* Already drawn in backbuffer, just need to flip that cell */
-    }
-
-    /* Draw underline cursor at rows 14-15 of the cell */
-    int px = col * FONT_W;
-    int py = row * FONT_H;
-    for (int r = 14; r < 16; r++) {
-        int yy = py + r;
-        if (yy < 0 || (uint32_t)yy >= fb_height) continue;
-        for (int c = 0; c < FONT_W; c++) {
-            int xx = px + c;
-            if (xx < 0 || (uint32_t)xx >= fb_width) continue;
-            backbuf[yy * pitch4 + xx] = GFX_WHITE;
-        }
-    }
-
-    /* Flush previous cursor cell to remove old underline */
+    /* Erase previous cursor by restoring clean backbuffer data to framebuffer */
     if (prev_cursor_col >= 0 && prev_cursor_row >= 0 &&
         (prev_cursor_col != col || prev_cursor_row != row)) {
         gfx_flip_rect(prev_cursor_col * FONT_W, prev_cursor_row * FONT_H,
                        FONT_W, FONT_H);
     }
 
-    /* Flush new cursor cell */
+    /* First flush the new cell's clean backbuffer content to framebuffer */
+    int px = col * FONT_W;
+    int py = row * FONT_H;
     gfx_flip_rect(px, py, FONT_W, FONT_H);
+
+    /* Draw underline cursor at rows 14-15 directly to framebuffer (not backbuffer) */
+    for (int r = 14; r < 16; r++) {
+        int yy = py + r;
+        if (yy < 0 || (uint32_t)yy >= fb_height) continue;
+        for (int c = 0; c < FONT_W; c++) {
+            int xx = px + c;
+            if (xx < 0 || (uint32_t)xx >= fb_width) continue;
+            framebuffer[yy * pitch4 + xx] = GFX_WHITE;
+        }
+    }
 
     prev_cursor_col = col;
     prev_cursor_row = row;
