@@ -15,4 +15,5 @@ qemu-system-$(./target-triplet-to-arch.sh $HOST) \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0 \
     -display vnc=:0 \
-    -m 128M
+    -m 256M \
+    -vga std

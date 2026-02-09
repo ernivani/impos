@@ -67,8 +67,8 @@ $(ARCHDIR)/crtbegin.o $(ARCHDIR)/crtend.o:
 
 clean:
 	rm -f myos.kernel
-	rm -f $(OBJS) *.o */*.o */*/*.o
-	rm -f $(OBJS:.o=.d) *.d */*.d */*/*.d
+	rm -f $(OBJS) *.o */*.o */*/*.o */*/*/*.o
+	rm -f $(OBJS:.o=.d) *.d */*.d */*/*.d */*/*/*.d
 
 install: install-headers install-kernel
 
