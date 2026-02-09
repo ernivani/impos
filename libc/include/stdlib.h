@@ -38,6 +38,8 @@ void* calloc(size_t nmemb, size_t size);
 void* realloc(void* ptr, size_t size);
 void free(void* ptr);
 int atoi(const char* str);
+long atol(const char* str);
+long long atoll(const char* str);
 long strtol(const char* nptr, char** endptr, int base);
 
 int abs(int j);

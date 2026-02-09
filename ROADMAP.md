@@ -5,9 +5,9 @@
 ### Option 1 : Compléter les fondations (recommandé)
 Ces étapes rendent le noyau plus solide avant de passer au graphique :
 
-1. **Compléter libc** — realloc, calloc, atol/atoll, strndup, strrchr, stdarg, etc. (Phase 3, tâches L.8–L.22) — quelques semaines
-2. **Compléter FS** — blocs indirects, robustesse (Phase 6, tâches F.15–F.17) — quelques semaines
-3. **Compléter users** — login au boot, su (Phase 10, tâches U.7–U.8) — quelques semaines
+1. ~~**Compléter libc**~~ — atol/atoll faits, stdarg complet (GCC builtins). Reste L.10 (fprintf/fscanf/sscanf optionnel)
+2. **Compléter FS** — F.17 optionnel (quotas) ; F.15–F.16 faits (blocs indirects, validation au load)
+3. ~~**Compléter users**~~ — su déjà fonctionnel (user_set_current met à jour USER/HOME/PS1) ; U.7 fait (login au boot / après exit)
 4. **TCP** — implémenter TCP pour le port forwarding (Phase 9, tâches N.13–N.19) — grosse pièce
 
 ### Option 2 : Passer directement au graphique
@@ -23,13 +23,13 @@ Si tu veux voir un résultat visuel rapidement :
 
 | Ce qui marche | Ce qui manque |
 |---------------|---------------|
-| ✅ Boot i386, VGA 80×25, shell avec 31 commandes | ❌ realloc, calloc, atol/atoll, stdarg complet (libc) |
-| ✅ FS (fichiers, répertoires, persistance, permissions, chmod, chown, symlinks) | ❌ blocs indirects, robustesse (FS) |
+| ✅ Boot i386, VGA 80×25, shell avec 37 commandes (dont logout, su) | ❌ fprintf/fscanf/sscanf (libc, optionnel) |
+| ✅ FS (fichiers, répertoires, persistance, permissions, chmod, chown, symlinks, **blocs indirects**, validation au load) | ❌ F.17 optionnel (quotas) |
 | ✅ Réseau L2/L3/ICMP (ping fonctionne) | ❌ TCP, UDP, sockets (réseau) |
-| ✅ Users + groupes (/etc/passwd, /etc/group, chmod, chown, useradd, userdel) | ❌ login au boot, su (users) |
-| ✅ 31 commandes shell, vi, historique, Tab, tests de régression | ❌ API graphique, GUI, port forwarding |
+| ✅ Users + groupes, **login au boot / après exit**, useradd, userdel, **su** | ❌ API graphique, GUI, port forwarding |
+| ✅ libc complète (atol/atoll, stdarg GCC builtins, rand, qsort, bsearch, abs) | |
 
-**Étapes : 94 faites / ~150 total → ~56 restantes**
+**Étapes : ~110 faites / ~150 total → ~40 restantes**
 
 ---
 
@@ -37,18 +37,18 @@ Si tu veux voir un résultat visuel rapidement :
 
 | Indicateur | Phase | État | Détails |
 |------------|-------|------|---------|
-| **Étapes faites / total** | — | 94 / ~150 | Fondations avancées ; ~56 étapes restantes (Phase 3: 10, Phase 6: 3, Phase 9: 7, Phase 10: 2, Phases 13–17: 30) |
-| **Phase actuelle** | 12 | Build (M) | Build complet avec tests de régression (user, group, FS) |
+| **Étapes faites / total** | — | ~110 / ~150 | Fondations complètes ; ~40 étapes restantes (Phase 3: 1 optionnel, Phase 6: 1 optionnel, Phase 9: 7, Phases 13–17: 30) |
+| **Phase actuelle** | 12 | Build (M) | Build complet avec tests de régression (user, group, FS, FS indirect, libc extra) |
 | **Boot / Noyau** | 1 | 6/6 | Multiboot, linker, crt, kernel_main, ISO, QEMU |
 | **Affichage (VGA)** | 2 | 6/6 | VGA 80×25, TTY, scroll, curseur, couleurs |
-| **libc** | 3 | partiel | **Fait :** string basique, printf, putchar, getchar, setjmp, exit, malloc/free, sprintf, atoi, strtol, strstr, strdup. **Manque :** realloc, calloc, atol/atoll, strndup, strrchr, stdarg complet, etc. |
+| **libc** | 3 | quasi complet | **Fait :** string basique, printf, putchar, getchar, setjmp, exit, malloc/free/**calloc/realloc**, sprintf, atoi/**atol/atoll**, strtol, strstr, strdup/**strndup**, **strrchr, strnlen, memchr, strcspn, strspn, strpbrk**, **rand/srand, qsort, bsearch, abs/div/ldiv**, **stdarg (GCC builtins)**. **Optionnel :** fprintf/fscanf/sscanf (L.10). |
 | **Clavier** | 4 | 3/3 | Scan codes, getchar, AZERTY/QWERTY (setlayout) |
 | **Disque (ATA)** | 5 | 3/3 | ATA read/write/flush, détection |
-| **Système de fichiers** | 6 | partiel | **Fait :** format, load/sync, CRUD, chemins, persistance, uid/gid/mode sur inodes, chmod/chown, symlinks, vérification des droits. **Manque :** blocs indirects (fichiers plus gros), robustesse erreurs. |
-| **Shell** | 7 | 10/10 | Boucle, 31 commandes (dont chmod, chown, useradd, userdel), historique, Tab, PS1 |
+| **Système de fichiers** | 6 | partiel | **Fait :** format, load/sync, CRUD, chemins, persistance, uid/gid/mode sur inodes, chmod/chown, symlinks, vérification des droits, **blocs indirects (fichiers > 32 Ko)**, **validation au load (superbloc, inodes, cwd)**. **Manque :** F.17 optionnel (quotas). |
+| **Shell** | 7 | 10/10 | Boucle, 32 commandes (dont chmod, chown, useradd, userdel, **logout**), historique, Tab, PS1 |
 | **Éditeur (vi)** | 8 | 3/3 | vi minimal (ouvrir, éditer, sauver) |
 | **Réseau** | 9 | partiel | **Fait :** PCI, RTL8139, Ethernet, ARP, IP, ICMP (ping), ifconfig, lspci, arp. **Pas fini :** TCP, UDP, DNS, DHCP, IRQ (tout est en polling), pas de stack « applicative ». Le réseau « fini » pour un OS inclut TCP au minimum. |
-| **Utilisateurs** | 10 | partiel | **Fait :** /etc/passwd, /etc/group, hash, setup initial, session, whoami, useradd, userdel, groupes (group_load, membership), chmod, chown, vérification droits fichiers. **Manque :** login au boot, su. |
+| **Utilisateurs** | 10 | complet | **Fait :** /etc/passwd, /etc/group, hash, setup initial, session, whoami, useradd, userdel, groupes (group_load, membership), chmod, chown, vérification droits fichiers, **login au boot / après exit (shell_login), logout, su**. |
 | **Config** | 11 | 7/7 | /etc/config, hostname, env, historique, timedatectl |
 | **Build** | 12 | 5/5 | build.sh, ISO, make run, disque, tests de régression (user, group, FS) |
 | **API graphique** | 13 | 0/6 | VBE, framebuffer, double buffer, primitives, polices — **à faire** |
@@ -61,10 +61,10 @@ Si tu veux voir un résultat visuel rapidement :
 
 | Bloc | Phase | Étapes / compléments restants | Ordre de grandeur |
 |------|-------|------------------------------|-------------------|
-| **Compléments libc (L.8–L.22)** | 3 | 10 tâches : realloc, calloc, atol/atoll, strndup, strrchr, stdarg, etc. | semaines |
-| **Compléments FS (F.15–F.17)** | 6 | 3 tâches : blocs indirects (gros fichiers), robustesse | semaines |
+| **Compléments libc** | 3 | 1 tâche optionnelle : fprintf/fscanf/sscanf (L.10) — atol/atoll et stdarg faits | optionnel |
+| **Compléments FS (F.17)** | 6 | 1 tâche optionnelle : quotas | optionnel |
 | **Compléments réseau (N.13–N.19)** | 9 | 7 tâches : IRQ, UDP, TCP, DNS/DHCP optionnel, API socket | TCP = grosse pièce (semaines) |
-| **Compléments utilisateurs (U.7–U.8)** | 10 | 2 tâches : login au boot, su | semaines |
+| **Compléments utilisateurs** | 10 | ~~U.8 su~~ fait | ✅ |
 | **API graphique (G)** | 13 | 6 étapes | 1–2 mois |
 | **Interface graphique (I)** | 14 | 7 étapes | 1–2 mois |
 | **TCP + Port forwarding (P)** | 15 | 4 étapes | 2–4 sem (TCP = grosse pièce) |
@@ -73,7 +73,7 @@ Si tu veux voir un résultat visuel rapidement :
 | **Outil fonctionnel (O)** | 17 | 6 étapes | 1–2 sem |
 | **Autres (multitâche, drivers, etc.)** | — | Tout OS complet en a des dizaines | — |
 
-En résumé : les fondations **avancées** sont en place (shell, FS avec permissions/symlinks, réseau L2/L3/ICMP, users + groupes, libc avec malloc/sprintf/atoi/strtol/strdup/strstr, tests de régression). Il reste les compléments libc (realloc, stdarg, etc.), FS (blocs indirects), utilisateurs (login au boot, su), TCP, puis le bloc graphique, GUI, Windows, outil.
+En résumé : les fondations **avancées** sont en place (shell 37 commandes dont logout/su, FS avec permissions/symlinks/**blocs indirects**/validation au load, réseau L2/L3/ICMP, users + groupes/**login au boot**/su, libc complète avec malloc/calloc/realloc/sprintf/atoi/atol/atoll/strtol/strdup/strndup/strrchr/memchr/strcspn/strspn/strpbrk/rand/qsort/bsearch/abs/stdarg, tests de régression dont FS indirect et libc extra). Il reste TCP, puis le bloc graphique, GUI, Windows, outil.
 
 ### Bloqueurs critiques
 
@@ -84,22 +84,22 @@ En résumé : les fondations **avancées** sont en place (shell, FS avec permiss
 
 - Boot i386 (Multiboot) et chargement du kernel à 1 MiB.
 - Affichage mode texte VGA 80×25 avec couleurs, scroll, curseur.
-- **libc** : string basique, printf, putchar, getchar, setjmp, exit, malloc/free, sprintf, atoi, strtol, strstr, strdup.
+- **libc** : string basique, printf, putchar, getchar, setjmp, exit, malloc/free/calloc/realloc, sprintf, atoi, atol, atoll, strtol, strstr, strdup, strndup, strrchr, strnlen, memchr, strcspn, strspn, strpbrk, rand/srand, qsort, bsearch, abs/div/ldiv, stdarg (GCC builtins).
 - Clavier (polling), getchar, deux layouts (AZERTY/QWERTY) via `setlayout` et config.
 - Driver ATA : lecture/écriture secteurs, flush, détection disque.
-- **Système de fichiers** : superbloc, inodes, répertoires, chemins, fs_load/fs_sync, persistance, uid/gid/mode, chmod/chown, symlinks, vérification des droits.
-- Shell avec 31 commandes : help, man, echo, cat, ls, cd, pwd, touch, mkdir, rm, clear, history, vi, sync, exit, shutdown, timedatectl, ifconfig, ping, lspci, arp, export, env, whoami, **chmod, chown, useradd, userdel**.
+- **Système de fichiers** : superbloc, inodes, répertoires, chemins, fs_load/fs_sync (avec validation superbloc/inodes/cwd), persistance, uid/gid/mode, chmod/chown, symlinks, vérification des droits, blocs indirects (fichiers > 32 Ko).
+- Shell avec 32 commandes : help, man, echo, cat, ls, cd, pwd, touch, mkdir, rm, clear, history, vi, sync, exit, **logout**, shutdown, timedatectl, ifconfig, ping, lspci, arp, export, env, whoami, **chmod, chown, useradd, userdel**.
 - Éditeur de ligne : backspace, Ctrl+U/etc., historique, complétion Tab, prompt PS1 avec \w et couleurs.
 - Éditeur vi minimal : ouvrir fichier, éditer, sauvegarder.
 - **Réseau L2/L3/ICMP uniquement** : PCI, RTL8139 (TX/RX), Ethernet, ARP (cache), IP, ICMP (ping). Pas de TCP/UDP.
-- **Utilisateurs et groupes** : /etc/passwd, /etc/group (sel + hash), user_create, useradd, userdel, setup initial, session (USER, HOME, PS1), whoami, chmod, chown, vérification droits fichiers. Pas de login au boot, su.
+- **Utilisateurs et groupes** : /etc/passwd, /etc/group (sel + hash), user_create, useradd, userdel, setup initial, session (USER, HOME, PS1), whoami, chmod, chown, vérification droits fichiers, **login au boot / après exit (shell_login), logout, su**.
 - Config : /etc/config (clavier, date/heure, timezone, 24h), hostname sur disque, variables d'environnement, historique persistant, timedatectl.
-- Build : build.sh (libc + kernel), ISO GRUB, make run (QEMU + CD-ROM + disque IDE + RTL8139), **tests de régression (user, group, FS)**.
+- Build : build.sh (libc + kernel), ISO GRUB, make run (QEMU + CD-ROM + disque IDE + RTL8139), **tests de régression (user, group, FS, FS indirect, libc string/stdlib extra)**.
 
 ### Vue détaillée des tâches restantes
 
 **Choix A : Compléter les fondations d'abord**
-- Phase 3 compléments libc (L.8–L.22) → Phase 6 compléments FS (F.15–F.17) → Phase 10 compléments users (U.7–U.8 : login, su) → Phase 9 TCP → Phase 13–17 (graphique, GUI, Windows, outil)
+- Phase 9 TCP → Phase 13–17 (graphique, GUI, Windows, outil). Phases 3/6/10 quasi complètes.
 
 **Choix B : Fonctionnalités visibles d'abord**
 - Phase 13 (API graphique) → Phase 14 (GUI) → revenir aux compléments → Phase 15–17
@@ -143,37 +143,34 @@ En résumé : les fondations **avancées** sont en place (shell, FS avec permiss
 - [x] **L.6** malloc (allocation bloc libre)
 - [x] **L.7** free (libération)
 
-### À faire — mémoire dynamique
-- [ ] **L.8** realloc, calloc
+### Fait — mémoire dynamique (suite)
+- [x] **L.8** realloc, calloc
 
 ### Fait — stdio supplémentaires
 - [x] **L.9** sprintf
 - [ ] **L.10** fprintf, fscanf, sscanf (si support fichiers/streams)
 
 ### Fait — conversion nombres / string
-- [x] **L.11** atoi (atol, atoll à faire)
+- [x] **L.11** atoi, atol, atoll
 - [x] **L.12** strtol (strtoul, strtoll, strtoull à faire)
-
-### À faire — conversion nombres / string
-- [ ] atol, atoll ; strtoul, strtoll, strtoull
 
 ### Fait — string supplémentaires
 - [x] **L.13** strstr (recherche sous-chaîne)
-- [x] **L.15** strdup (strndup à faire)
+- [x] **L.15** strdup, strndup
 
-### À faire — string supplémentaires
-- [ ] **L.14** strrchr
-- [ ] **L.16** strnlen
-- [ ] **L.17** memchr
-- [ ] **L.18** strcspn, strspn, strpbrk (optionnel)
+### Fait — string supplémentaires
+- [x] **L.14** strrchr
+- [x] **L.16** strnlen
+- [x] **L.17** memchr
+- [x] **L.18** strcspn, strspn, strpbrk
 
-### À faire — variadiques
-- [ ] **L.19** stdarg propre : va_start, va_arg, va_end, va_list (pour printf/vprintf etc.)
+### Fait — variadiques
+- [x] **L.19** stdarg complet via GCC builtins (__builtin_va_list, __builtin_va_start, __builtin_va_arg, __builtin_va_end, __builtin_va_copy)
 
-### À faire — stdlib / autres (optionnel)
-- [ ] **L.20** rand, srand
-- [ ] **L.21** qsort, bsearch
-- [ ] **L.22** abs, div, ldiv
+### Fait — stdlib / autres
+- [x] **L.20** rand, srand
+- [x] **L.21** qsort, bsearch
+- [x] **L.22** abs, div, ldiv
 
 ---
 
@@ -215,11 +212,11 @@ En résumé : les fondations **avancées** sont en place (shell, FS avec permiss
 ### Fait — liens
 - [x] **F.14** Symlinks : type inode symlink, stocker la cible, résoudre au moment du path lookup
 
-### À faire — tailles
-- [ ] **F.15** Support fichiers plus gros : blocs indirects (ou équivalent) pour dépasser la taille actuelle
+### Fait — tailles
+- [x] **F.15** Support fichiers plus gros : blocs indirects (single-indirect) pour dépasser la taille directe (MAX_FILE_SIZE étendu)
 
-### À faire — robustesse
-- [ ] **F.16** Gestion d’erreurs robuste : retours d’erreur cohérents (ex. -1 + errno ou codes), messages clairs
+### Fait — robustesse
+- [x] **F.16** Validation au load : superbloc (num_inodes, num_blocks), inodes actifs (type, num_blocks, blocs, indirect_block), cwd_inode fallback
 - [ ] **F.17** (Optionnel) Quotas ou limites par utilisateur
 
 ---
@@ -290,9 +287,11 @@ En résumé : les fondations **avancées** sont en place (shell, FS avec permiss
 - [x] **U.5** Premier boot : si aucun utilisateur, setup initial (demander hostname, créer root + un utilisateur, mots de passe)
 - [x] **U.6** Session : utilisateur courant, env USER, HOME, PS1 selon l'utilisateur ; commande whoami
 
-### À faire — login et changement d’utilisateur
-- [ ] **U.7** Login au boot : au démarrage, demander username + mot de passe avant d’entrer dans le shell ; vérifier contre /etc/passwd
-- [ ] **U.8** Commande su (switch user) : demander mot de passe (si besoin), changer current_user et env (USER, HOME, PS1) sans redémarrer
+### Fait — login
+- [x] **U.7** Login au boot / après exit : shell_login() demande username + mot de passe avant le shell ; vérification contre /etc/passwd ; commande logout pour revenir au login
+
+### Fait — changement d'utilisateur
+- [x] **U.8** Commande su (switch user) : demande mot de passe, change current_user et env (USER, HOME, PS1) via user_set_current()
 
 ### Fait — groupes
 - [x] **U.9** Format /etc/group (groupname:gid:liste_users)
@@ -325,7 +324,7 @@ En résumé : les fondations **avancées** sont en place (shell, FS avec permiss
 - [x] **M.2** Générer l'ISO avec GRUB (multiboot)
 - [x] **M.3** Makefile (ou script) : cible run = build + qemu-system-i386 avec CD-ROM + disque + réseau
 - [x] **M.4** Image disque (qemu-img) montée en IDE ; le FS persiste entre deux runs
-- [x] **M.5** Tests de non-régression : tests user, group, filesystem (kernel/arch/i386/test.c)
+- [x] **M.5** Tests de non-régression : tests user, group, filesystem, FS indirect (fichiers > 32 Ko), libc string/stdlib extra (kernel/arch/i386/test.c)
 
 ---
 
@@ -451,13 +450,13 @@ impos/
 |---------|--------|
 | **Fichiers C kernel (arch i386)** | 18 (.c) + 3 (.S) + 1 (.ld) |
 | **Headers kernel** | 16 |
-| **Fichiers libc** | ~25 (stdio, stdlib, string, setjmp) — malloc, sprintf, atoi, strtol, strdup, strstr ajoutés |
-| **Commandes shell** | 31 (dont chmod, chown, useradd, userdel) |
+| **Fichiers libc** | ~25+ (stdio, stdlib, string, setjmp) — malloc/calloc/realloc, sprintf, atoi, strtol, strdup/strndup, strstr, strrchr, memchr, strcspn/strspn/strpbrk, rand, qsort, bsearch, abs |
+| **Commandes shell** | 32 (dont chmod, chown, useradd, userdel, logout) |
 | **Phases 1–2, 4–5, 7–8, 11–12** | Complétées (Boot, VGA, Clavier, Disque, Shell, vi, Config, Build + tests) |
-| **Phase 3** | 12 fait, 10 à faire (L.8–L.22 : realloc, calloc, atol/atoll, strndup, strrchr, stdarg, etc.) |
-| **Phase 6** | 14 fait, 3 à faire (F.15–F.17 : blocs indirects, robustesse) |
+| **Phase 3** | ~24 fait, ~1 optionnel (L.10 fprintf/fscanf/sscanf) — atol/atoll, stdarg faits |
+| **Phase 6** | 16 fait, 1 optionnel (F.17 quotas) — F.15–F.16 faits (blocs indirects, validation load) |
 | **Phase 9** | 12 fait, 7 à faire (N.13–N.19 : IRQ, UDP, TCP, sockets) |
-| **Phase 10** | 15 fait, 2 à faire (U.7–U.8 : login au boot, su) |
+| **Phase 10** | 17 fait — U.8 su fait, login/logout faits |
 | **Phases 13–17** | 0 fait, 30 à faire (API graphique, GUI, Port forwarding, Windows, Outil) |
 
 ---
@@ -474,13 +473,13 @@ impos/
 
 Les phases ci-dessous représentent encore plusieurs mois de travail. Deux voies possibles :
 
-**Voie A (fondations) :** Phase 3 (libc L.8–L.22) → Phase 6 (FS F.15–F.17) → Phase 10 (U.7–U.8 : login, su) → Phase 9 (TCP) → Phases 13–17
+**Voie A (fondations) :** Phase 9 (TCP) → Phases 13–17. Phases 3/6/10 quasi complètes (reste L.10 optionnel, F.17 optionnel).
 
 **Voie B (visuel) :** Phase 13 (graphique) → Phase 14 (GUI) → revenir aux compléments → Phases 15–17
 
 ---
 
-**Dernière mise à jour** : Février 2026 (commits : libc malloc/sprintf/atoi/strtol/strdup/strstr ; users+groupes, chmod/chown, symlinks, tests)  
-**Next step immédiat** : Phase 3 (realloc, stdarg) ou Phase 10 (login au boot, su) ou Phase 13 (API graphique)  
-**Phase actuelle** : Phase 12 complétée (Build + tests de régression)  
-**État global** : 94 / ~150 étapes → fondations avancées OK, reste ~56 tâches (compléments + graphique + GUI + TCP + Windows + outil)
+**Dernière mise à jour** : Février 2026 (atol/atoll ajoutés, stdarg confirmé complet via GCC builtins, su confirmé fonctionnel)
+**Next step immédiat** : Phase 9 (TCP) ou Phase 13 (API graphique)
+**Phase actuelle** : Phase 12 complétée (Build + tests de régression)
+**État global** : ~110 / ~150 étapes → fondations complètes, reste ~40 tâches (TCP + graphique + GUI + Windows + outil)

@@ -128,6 +128,17 @@ static void test_stdlib(void) {
     TEST_ASSERT(atoi("99abc") == 99, "atoi trailing");
     TEST_ASSERT(atoi("") == 0, "atoi empty");
 
+    /* atol */
+    TEST_ASSERT(atol("0") == 0L, "atol zero");
+    TEST_ASSERT(atol("100000") == 100000L, "atol large");
+    TEST_ASSERT(atol("-999") == -999L, "atol negative");
+    TEST_ASSERT(atol("  42") == 42L, "atol whitespace");
+
+    /* atoll */
+    TEST_ASSERT(atoll("0") == 0LL, "atoll zero");
+    TEST_ASSERT(atoll("1234567890") == 1234567890LL, "atoll large");
+    TEST_ASSERT(atoll("-1234567890") == -1234567890LL, "atoll negative");
+
     /* strtol */
     char* end;
     TEST_ASSERT(strtol("255", &end, 10) == 255, "strtol decimal");
