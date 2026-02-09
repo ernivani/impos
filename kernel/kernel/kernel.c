@@ -63,8 +63,9 @@ void kernel_main(void) {
     exit_set_restart_point(&restart_point);
     
     if (setjmp(restart_point) != 0) {
-        /* We've returned from exit(), restart the shell */
+        /* We've returned from exit()/logout, require re-authentication */
         printf("\n");
+        shell_login();
     }
     
     /* Reset to home directory at shell start - use $HOME from environment */

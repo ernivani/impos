@@ -9,7 +9,9 @@
 #define NUM_INODES      64
 #define DIRECT_BLOCKS   8
 #define MAX_NAME_LEN    28
-#define MAX_FILE_SIZE   (DIRECT_BLOCKS * BLOCK_SIZE)
+#define INDIRECT_PTRS   (BLOCK_SIZE / sizeof(uint32_t))
+#define MAX_DIRECT_SIZE (DIRECT_BLOCKS * BLOCK_SIZE)
+#define MAX_FILE_SIZE   (MAX_DIRECT_SIZE + INDIRECT_PTRS * BLOCK_SIZE)
 
 #define INODE_FREE      0
 #define INODE_FILE      1
@@ -47,6 +49,7 @@ typedef struct __attribute__((packed)) {
     uint32_t size;
     uint32_t blocks[DIRECT_BLOCKS];
     uint8_t  num_blocks;
+    uint32_t indirect_block; /* single-indirect block pointer, 0 = none */
 } inode_t;
 
 typedef struct {
