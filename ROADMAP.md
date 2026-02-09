@@ -2,20 +2,14 @@
 
 ## Prochaines étapes (ce qu'il faut faire maintenant)
 
-### Option 1 : Compléter les fondations (recommandé)
-Ces étapes rendent le noyau plus solide avant de passer au graphique :
+### Option 1 : Compléter les fondations réseau (recommandé)
+1. **TCP** — implémenter TCP pour le port forwarding (Phase 9, tâches N.13–N.19) — grosse pièce
+2. **Compléments optionnels** — libc L.10 (fprintf/fscanf/sscanf), FS F.17 (quotas)
 
-1. ~~**Compléter libc**~~ — atol/atoll faits, stdarg complet (GCC builtins). Reste L.10 (fprintf/fscanf/sscanf optionnel)
-2. **Compléter FS** — F.17 optionnel (quotas) ; F.15–F.16 faits (blocs indirects, validation au load)
-3. ~~**Compléter users**~~ — su déjà fonctionnel (user_set_current met à jour USER/HOME/PS1) ; U.7 fait (login au boot / après exit)
-4. **TCP** — implémenter TCP pour le port forwarding (Phase 9, tâches N.13–N.19) — grosse pièce
-
-### Option 2 : Passer directement au graphique
-Si tu veux voir un résultat visuel rapidement :
-
-1. **Phase 13** — API graphique (VBE, framebuffer, primitives 2D) — 1–2 mois
-3. **Phase 14** — Interface graphique (HUD, thèmes, widgets) — 1–2 mois
-4. Revenir aux compléments libc/FS/users/TCP ensuite
+### Option 2 : Finitions et déploiement
+1. **Phase 15** — Port forwarding et services réseau (TCP requis)
+2. **Phase 17** — OS « outil fonctionnel » (README, boot propre, doc, démo)
+3. **Phase 16** — Accès Windows (VM ou Wine) — long terme
 
 ---
 
@@ -23,13 +17,16 @@ Si tu veux voir un résultat visuel rapidement :
 
 | Ce qui marche | Ce qui manque |
 |---------------|---------------|
-| ✅ Boot i386, VGA 80×25, shell avec 37 commandes (dont logout, su) | ❌ fprintf/fscanf/sscanf (libc, optionnel) |
-| ✅ FS (fichiers, répertoires, persistance, permissions, chmod, chown, symlinks, **blocs indirects**, validation au load) | ❌ F.17 optionnel (quotas) |
-| ✅ Réseau L2/L3/ICMP (ping fonctionne) | ❌ TCP, UDP, sockets (réseau) |
-| ✅ Users + groupes, **login au boot / après exit**, useradd, userdel, **su** | ❌ API graphique, GUI, port forwarding |
-| ✅ libc complète (atol/atoll, stdarg GCC builtins, rand, qsort, bsearch, abs) | |
+| ✅ Boot i386, VGA 80×25 + **mode graphique VBE (1024×768, 32bpp)** | ❌ fprintf/fscanf/sscanf (libc, optionnel) |
+| ✅ **Desktop environment** : splash, login GUI, dock, horloge, terminal en GUI | ❌ F.17 optionnel (quotas) |
+| ✅ Shell avec **36 commandes** (dont logout, su, shutdown, gfxdemo) | ❌ TCP, UDP, sockets (réseau) |
+| ✅ FS (fichiers, répertoires, persistance, permissions, chmod, chown, symlinks, blocs indirects, validation) | ❌ Port forwarding, Windows |
+| ✅ Réseau L2/L3/ICMP (ping fonctionne) | |
+| ✅ Users + groupes, login au boot (GUI ou texte), su | |
+| ✅ libc complète (atol/atoll, stdarg, rand, qsort, bsearch, abs) | |
+| ✅ **ACPI** : shutdown propre via S5 sleep state | |
 
-**Étapes : ~110 faites / ~150 total → ~40 restantes**
+**Étapes : ~123 faites / ~150 total → ~27 restantes**
 
 ---
 
@@ -37,74 +34,72 @@ Si tu veux voir un résultat visuel rapidement :
 
 | Indicateur | Phase | État | Détails |
 |------------|-------|------|---------|
-| **Étapes faites / total** | — | ~110 / ~150 | Fondations complètes ; ~40 étapes restantes (Phase 3: 1 optionnel, Phase 6: 1 optionnel, Phase 9: 7, Phases 13–17: 30) |
-| **Phase actuelle** | 12 | Build (M) | Build complet avec tests de régression (user, group, FS, FS indirect, libc extra) |
+| **Étapes faites / total** | — | ~123 / ~150 | Fondations + graphique + GUI complets ; ~27 étapes restantes (Phase 3: 1 optionnel, Phase 6: 1 optionnel, Phase 9: 7, Phases 15–17: 17) |
+| **Phase actuelle** | 14 | GUI (I) | Desktop environment complet avec login GUI, dock, horloge, terminal |
 | **Boot / Noyau** | 1 | 6/6 | Multiboot, linker, crt, kernel_main, ISO, QEMU |
 | **Affichage (VGA)** | 2 | 6/6 | VGA 80×25, TTY, scroll, curseur, couleurs |
-| **libc** | 3 | quasi complet | **Fait :** string basique, printf, putchar, getchar, setjmp, exit, malloc/free/**calloc/realloc**, sprintf, atoi/**atol/atoll**, strtol, strstr, strdup/**strndup**, **strrchr, strnlen, memchr, strcspn, strspn, strpbrk**, **rand/srand, qsort, bsearch, abs/div/ldiv**, **stdarg (GCC builtins)**. **Optionnel :** fprintf/fscanf/sscanf (L.10). |
+| **libc** | 3 | quasi complet | **Fait :** string basique, printf, putchar, getchar, setjmp, exit, malloc/free/calloc/realloc, sprintf, atoi/atol/atoll, strtol, strstr, strdup/strndup, strrchr, strnlen, memchr, strcspn, strspn, strpbrk, rand/srand, qsort, bsearch, abs/div/ldiv, stdarg (GCC builtins). **Optionnel :** fprintf/fscanf/sscanf (L.10). |
 | **Clavier** | 4 | 3/3 | Scan codes, getchar, AZERTY/QWERTY (setlayout) |
 | **Disque (ATA)** | 5 | 3/3 | ATA read/write/flush, détection |
-| **Système de fichiers** | 6 | partiel | **Fait :** format, load/sync, CRUD, chemins, persistance, uid/gid/mode sur inodes, chmod/chown, symlinks, vérification des droits, **blocs indirects (fichiers > 32 Ko)**, **validation au load (superbloc, inodes, cwd)**. **Manque :** F.17 optionnel (quotas). |
-| **Shell** | 7 | 10/10 | Boucle, 32 commandes (dont chmod, chown, useradd, userdel, **logout**), historique, Tab, PS1 |
-| **Éditeur (vi)** | 8 | 3/3 | vi minimal (ouvrir, éditer, sauver) |
-| **Réseau** | 9 | partiel | **Fait :** PCI, RTL8139, Ethernet, ARP, IP, ICMP (ping), ifconfig, lspci, arp. **Pas fini :** TCP, UDP, DNS, DHCP, IRQ (tout est en polling), pas de stack « applicative ». Le réseau « fini » pour un OS inclut TCP au minimum. |
-| **Utilisateurs** | 10 | complet | **Fait :** /etc/passwd, /etc/group, hash, setup initial, session, whoami, useradd, userdel, groupes (group_load, membership), chmod, chown, vérification droits fichiers, **login au boot / après exit (shell_login), logout, su**. |
+| **Système de fichiers** | 6 | quasi complet | **Fait :** format, load/sync, CRUD, chemins, persistance, uid/gid/mode, chmod/chown, symlinks, droits, blocs indirects, validation au load. **Optionnel :** F.17 (quotas). |
+| **Shell** | 7 | 10/10 | Boucle, **36 commandes** (dont chmod, chown, useradd, userdel, logout, shutdown, gfxdemo), historique, Tab, PS1 |
+| **Éditeur (vi)** | 8 | 3/3 | vi modal (ouvrir, éditer, sauver) — **fonctionne en VGA texte et en mode graphique** |
+| **Réseau** | 9 | partiel | **Fait :** PCI, RTL8139, Ethernet, ARP, IP, ICMP (ping), ifconfig, lspci, arp. **Pas fini :** TCP, UDP, DNS, DHCP, IRQ (polling), pas de stack applicative. |
+| **Utilisateurs** | 10 | complet | /etc/passwd, /etc/group, hash, setup initial, session, whoami, useradd, userdel, groupes, chmod, chown, droits fichiers, login (texte + **GUI**), logout, su. |
 | **Config** | 11 | 7/7 | /etc/config, hostname, env, historique, timedatectl |
-| **Build** | 12 | 5/5 | build.sh, ISO, make run, disque, tests de régression (user, group, FS) |
-| **API graphique** | 13 | 0/6 | VBE, framebuffer, double buffer, primitives, polices — **à faire** |
-| **Interface GUI** | 14 | 0/7 | Thèmes, panneaux, HUD, widgets, terminal en GUI — **à faire** |
+| **Build** | 12 | 5/5 | build.sh, ISO, make run, disque, tests de régression |
+| **API graphique** | 13 | **5/6** | **VBE/VESA 32bpp, module gfx (init/width/height/bpp/pitch), double buffering (backbuf + flip/flip_rect), primitives (put_pixel/fill_rect/draw_rect/draw_line), clear + police bitmap 8×16 + draw_char/draw_string.** G.6 optionnel (alpha) partiel (nobg). |
+| **Interface GUI** | 14 | **6/7** | **Thème mono noir, panneaux (rounded rect, cercles), layout HUD (dock + horloge + zone centrale), widget horloge (heure + date + infos), compositeur (splash → login → desktop → terminal), terminal en GUI (window region).** I.7 optionnel (animations) partiel (splash fade). |
 | **Port forwarding** | 15 | 0/4 | TCP, serveur démo, hostfwd QEMU — **à faire** |
 | **Windows (VM/Wine)** | 16 | 0/7 | Option A (VM) ou B (Wine) — **à faire** |
 | **Outil fonctionnel** | 17 | 0/6 | README, boot propre, messages FR, doc, démo — **à faire** |
 
-### Ce qui reste à faire (vue d’ensemble)
+### Ce qui reste à faire (vue d'ensemble)
 
 | Bloc | Phase | Étapes / compléments restants | Ordre de grandeur |
 |------|-------|------------------------------|-------------------|
-| **Compléments libc** | 3 | 1 tâche optionnelle : fprintf/fscanf/sscanf (L.10) — atol/atoll et stdarg faits | optionnel |
+| **Compléments libc** | 3 | 1 tâche optionnelle : fprintf/fscanf/sscanf (L.10) | optionnel |
 | **Compléments FS (F.17)** | 6 | 1 tâche optionnelle : quotas | optionnel |
 | **Compléments réseau (N.13–N.19)** | 9 | 7 tâches : IRQ, UDP, TCP, DNS/DHCP optionnel, API socket | TCP = grosse pièce (semaines) |
-| **Compléments utilisateurs** | 10 | ~~U.8 su~~ fait | ✅ |
-| **API graphique (G)** | 13 | 6 étapes | 1–2 mois |
-| **Interface graphique (I)** | 14 | 7 étapes | 1–2 mois |
+| **API graphique (G.6)** | 13 | 1 tâche optionnelle : transparence alpha | optionnel |
+| **Interface graphique (I.7)** | 14 | 1 tâche optionnelle : animations (fade, slide) pour panneaux | optionnel |
 | **TCP + Port forwarding (P)** | 15 | 4 étapes | 2–4 sem (TCP = grosse pièce) |
 | **Windows : VM (W.A)** | 16 | 3 étapes | 2–4 sem |
 | **Windows : Wine (W.B)** | 16 | 4 étapes | plusieurs mois à années |
 | **Outil fonctionnel (O)** | 17 | 6 étapes | 1–2 sem |
 | **Autres (multitâche, drivers, etc.)** | — | Tout OS complet en a des dizaines | — |
 
-En résumé : les fondations **avancées** sont en place (shell 37 commandes dont logout/su, FS avec permissions/symlinks/**blocs indirects**/validation au load, réseau L2/L3/ICMP, users + groupes/**login au boot**/su, libc complète avec malloc/calloc/realloc/sprintf/atoi/atol/atoll/strtol/strdup/strndup/strrchr/memchr/strcspn/strspn/strpbrk/rand/qsort/bsearch/abs/stdarg, tests de régression dont FS indirect et libc extra). Il reste TCP, puis le bloc graphique, GUI, Windows, outil.
+En résumé : les fondations **et le graphique** sont en place. Shell 36 commandes, FS complet (permissions/symlinks/blocs indirects/validation), réseau L2/L3/ICMP, users + groupes + login GUI/texte + su, libc complète, **API graphique VBE 32bpp avec double buffering**, **desktop environment avec splash/login/dock/horloge/terminal en GUI**, ACPI shutdown, tests de régression. Il reste TCP, puis port forwarding, Windows, outil.
 
 ### Bloqueurs critiques
 
-1. Aucun bloquant actuel pour la suite.
-2. **TCP manquant** pour le port forwarding : seule la couche ICMP est en place ; TCP est une implémentation conséquente.
+1. **TCP manquant** pour le port forwarding : seule la couche ICMP est en place ; TCP est une implémentation conséquente.
+2. Pas de bloquant pour les phases graphiques (13–14 complétées).
 
-### Ce qui fonctionne (état actuel = shell + FS minimal + réseau L2/L3/ICMP + users basique)
+### Ce qui fonctionne (état actuel = desktop environment + shell + FS + réseau L2/L3/ICMP + users)
 
 - Boot i386 (Multiboot) et chargement du kernel à 1 MiB.
 - Affichage mode texte VGA 80×25 avec couleurs, scroll, curseur.
+- **Mode graphique VBE/VESA** : framebuffer 32bpp (1024×768 par défaut), double buffering, primitives 2D (put_pixel, fill_rect, draw_rect, draw_line), police bitmap 8×16, draw_char/draw_string (avec et sans fond).
+- **Desktop environment** : splash screen animé (fade + spinner), login GUI (avatar, sélection utilisateur, champ mot de passe), setup wizard graphique (hostname, root, utilisateur), dock avec 7 icônes colorées (Files, Terminal, Browser, Editor, Settings, Monitor, Power), horloge (heure + date + jour de la semaine), terminal en GUI (window region), thème mono noir.
 - **libc** : string basique, printf, putchar, getchar, setjmp, exit, malloc/free/calloc/realloc, sprintf, atoi, atol, atoll, strtol, strstr, strdup, strndup, strrchr, strnlen, memchr, strcspn, strspn, strpbrk, rand/srand, qsort, bsearch, abs/div/ldiv, stdarg (GCC builtins).
 - Clavier (polling), getchar, deux layouts (AZERTY/QWERTY) via `setlayout` et config.
 - Driver ATA : lecture/écriture secteurs, flush, détection disque.
 - **Système de fichiers** : superbloc, inodes, répertoires, chemins, fs_load/fs_sync (avec validation superbloc/inodes/cwd), persistance, uid/gid/mode, chmod/chown, symlinks, vérification des droits, blocs indirects (fichiers > 32 Ko).
-- Shell avec 32 commandes : help, man, echo, cat, ls, cd, pwd, touch, mkdir, rm, clear, history, vi, sync, exit, **logout**, shutdown, timedatectl, ifconfig, ping, lspci, arp, export, env, whoami, **chmod, chown, useradd, userdel**.
+- Shell avec **36 commandes** : help, man, echo, cat, ls, cd, pwd, touch, mkdir, rm, clear, history, vi, sync, exit, logout, shutdown, timedatectl, ifconfig, ping, lspci, arp, export, env, whoami, chmod, chown, useradd, userdel, setlayout, su, id, ln, readlink, test, gfxdemo.
 - Éditeur de ligne : backspace, Ctrl+U/etc., historique, complétion Tab, prompt PS1 avec \w et couleurs.
-- Éditeur vi minimal : ouvrir fichier, éditer, sauvegarder.
+- Éditeur vi modal : ouvrir fichier, éditer, sauvegarder — **fonctionne en VGA texte et en mode graphique**.
+- **ACPI** : détection RSDP, parsing tables, shutdown propre via S5 sleep state (commande `shutdown`).
 - **Réseau L2/L3/ICMP uniquement** : PCI, RTL8139 (TX/RX), Ethernet, ARP (cache), IP, ICMP (ping). Pas de TCP/UDP.
-- **Utilisateurs et groupes** : /etc/passwd, /etc/group (sel + hash), user_create, useradd, userdel, setup initial, session (USER, HOME, PS1), whoami, chmod, chown, vérification droits fichiers, **login au boot / après exit (shell_login), logout, su**.
+- **Utilisateurs et groupes** : /etc/passwd, /etc/group (sel + hash), user_create, useradd, userdel, setup initial, session (USER, HOME, PS1), whoami, chmod, chown, vérification droits fichiers, login au boot (GUI ou shell_login), logout, su.
 - Config : /etc/config (clavier, date/heure, timezone, 24h), hostname sur disque, variables d'environnement, historique persistant, timedatectl.
-- Build : build.sh (libc + kernel), ISO GRUB, make run (QEMU + CD-ROM + disque IDE + RTL8139), **tests de régression (user, group, FS, FS indirect, libc string/stdlib extra)**.
+- Build : build.sh (libc + kernel), ISO GRUB, make run (QEMU + CD-ROM + disque IDE + RTL8139), tests de régression (~107 tests : user, group, FS, FS indirect, libc string/stdlib extra).
 
 ### Vue détaillée des tâches restantes
 
-**Choix A : Compléter les fondations d'abord**
-- Phase 9 TCP → Phase 13–17 (graphique, GUI, Windows, outil). Phases 3/6/10 quasi complètes.
-
-**Choix B : Fonctionnalités visibles d'abord**
-- Phase 13 (API graphique) → Phase 14 (GUI) → revenir aux compléments → Phase 15–17
-
-**Les deux voies sont valides.** Le choix A donne un OS plus solide avant le graphique. Le choix B donne des résultats visuels plus rapidement.
+**Prochaine étape recommandée :**
+- Phase 9 (TCP) → Phase 15 (port forwarding) → Phase 17 (outil fonctionnel) → Phase 16 (Windows)
+- Les phases graphiques (13–14) sont complétées.
 
 ---
 
@@ -328,26 +323,26 @@ En résumé : les fondations **avancées** sont en place (shell 37 commandes don
 
 ---
 
-## PHASE 13 : API graphique (framebuffer) - À DÉMARRER
+## PHASE 13 : API graphique (framebuffer) - COMPLÉTÉ (5/6, optionnel partiel)
 
-- [ ] **G.1** Passer en mode graphique VBE/VESA (résolution fixe, ex. 640×480 ou 800×600, 32 bpp) ; récupérer l'adresse du framebuffer
-- [ ] **G.2** Module gfx : init, largeur/hauteur/bpp/pitch exposés au reste du kernel
-- [ ] **G.3** Double buffering : buffer en RAM de la taille de l'écran, fonction « flip » qui copie vers le framebuffer
-- [ ] **G.4** Primitives : put_pixel, fill_rect, draw_line, draw_rect (couleur 32 bits)
-- [ ] **G.5** clear(couleur) ; polices bitmap 8×8 ou 8×16, draw_char, draw_string
-- [ ] **G.6** (Optionnel) Transparence alpha ; header public gfx.h
+- [x] **G.1** Mode graphique VBE/VESA (1024×768, 32 bpp) ; framebuffer via GRUB2 (bit 12) ou VBE (bit 11) ; validation bpp/dimensions
+- [x] **G.2** Module gfx : gfx_init(), gfx_width/height/bpp/pitch/cols/rows, gfx_is_active(), gfx_backbuffer() — header gfx.h
+- [x] **G.3** Double buffering : backbuf malloc'd, gfx_flip() (copie complète), gfx_flip_rect() (copie partielle clippée)
+- [x] **G.4** Primitives : gfx_put_pixel, gfx_fill_rect, gfx_draw_rect, gfx_draw_line (Bresenham) — couleur 32 bits, clipping
+- [x] **G.5** gfx_clear(color) ; police bitmap 8×16 (font8x16.h, 256 glyphes), gfx_draw_char/draw_string (avec fond), gfx_draw_char_nobg/draw_string_nobg (sans fond), gfx_putchar_at
+- [ ] **G.6** (Optionnel) Transparence alpha — partiellement fait via draw_char_nobg (pas de blending alpha réel)
 
 ---
 
-## PHASE 14 : Interface graphique (HUD / thèmes) - À DÉMARRER
+## PHASE 14 : Interface graphique (HUD / thèmes) - COMPLÉTÉ (6/7, optionnel partiel)
 
-- [ ] **I.1** Système de thèmes : couleurs (fond, bord, texte, accent), chargement au boot (fichier ou constantes)
-- [ ] **I.2** Dessiner des panneaux (rectangle + bordure, optionnel : coins arrondis, semi-transparence)
-- [ ] **I.3** Layout type HUD : barre en haut (heure, hostname), barre en bas (infos), zone centrale
-- [ ] **I.4** Widget horloge (rafraîchi à la seconde) ; widget système (CPU/RAM/disque si dispo)
-- [ ] **I.5** Au boot : lancer le « compositeur » (fond + HUD + panneaux), shell dans une zone dédiée
-- [ ] **I.6** Terminal dans la GUI : zone rectangulaire où le TTY est dessiné via gfx (rediriger le TTY)
-- [ ] **I.7** (Optionnel) Animations (fade, slide) pour les panneaux
+- [x] **I.1** Système de thèmes : palette mono noir (DT_BG, DT_SURFACE, DT_BORDER, DT_TEXT, DT_TEXT_DIM/MED/SUB, DT_TASKBAR_BG, DT_DOCK_PILL, DT_ICON, DT_SEL_BG, DT_FIELD_*, DT_ERROR) — constantes dans desktop.h
+- [x] **I.2** Panneaux : rectangles arrondis (draw_rounded_rect, draw_rounded_rect_outline), cercles pleins/anneaux, icônes colorées dessinées en primitives (folder, terminal, globe, pencil, gear, monitor, power)
+- [x] **I.3** Layout HUD : dock en bas (48px, pill centrée avec 6 icônes + séparateur), horloge grande (5× scale) + date + infos système en bas à droite, zone centrale pour le terminal
+- [x] **I.4** Widget horloge (heure HH:MM en 5× scale, jour de la semaine + mois + jour, infos résolution + RAM) ; tooltip label au-dessus du dock ; tray droit (username + clock + power)
+- [x] **I.5** Au boot : splash screen animé (fade-in logo "IMPOS" + spinner ring + fade-out) → setup wizard GUI (si premier boot) → login GUI (avatar + sélection user + mot de passe) → desktop_run() (event loop dock)
+- [x] **I.6** Terminal dans la GUI : desktop_open_terminal() crée une window region (terminal_set_window) dans la zone au-dessus du dock, terminal_set_window_bg pour le fond ; desktop_close_terminal() restaure le plein écran
+- [ ] **I.7** (Optionnel) Animations — partiellement fait : splash screen a fade-in/fade-out + spinner animé ; pas de slide/fade pour les panneaux
 
 ---
 
@@ -409,27 +404,34 @@ impos/
 │   │       ├── boot.S        Multiboot + _start → kernel_main
 │   │       ├── crti.S, crtn.S
 │   │       ├── linker.ld     Sections à 1 MiB
-│   │       ├── make.config   KERNEL_ARCH_OBJS
-│   │       ├── tty.c         VGA 80×25, terminal_*
+│   │       ├── make.config   KERNEL_ARCH_OBJS (21 objets)
+│   │       ├── tty.c         VGA 80×25 + mode graphique (windowed TTY)
 │   │       ├── vga.h         Couleurs, vga_entry_color
 │   │       ├── ata.c         Driver ATA
-│   │       ├── fs.c          Système de fichiers
-│   │       ├── shell.c       Boucle + 27 commandes
-│   │       ├── vi.c          Éditeur minimal
+│   │       ├── fs.c          Système de fichiers (inodes, blocs indirects, symlinks)
+│   │       ├── shell.c       Boucle + 36 commandes
+│   │       ├── vi.c          Éditeur modal (VGA texte + graphique)
 │   │       ├── config.c      Config /etc/config
 │   │       ├── env.c         Variables d'environnement
 │   │       ├── user.c        Utilisateurs, /etc/passwd
+│   │       ├── group.c       Groupes, /etc/group
 │   │       ├── hash.c        Hachage mots de passe
 │   │       ├── hostname.c    Hostname
+│   │       ├── acpi.c        ACPI (RSDP, tables, shutdown S5)
+│   │       ├── gfx.c         API graphique (framebuffer VBE 32bpp, double buffering)
+│   │       ├── font8x16.h    Police bitmap 256 glyphes
+│   │       ├── desktop.c     Desktop environment (splash, login, dock, terminal)
+│   │       ├── test.c        Tests de régression (~107 tests)
 │   │       ├── pci.c         Énumération PCI
-│   │       ├── rtl8139.c     Driver Ethernet
-│   │       ├── net.c         Ethernet, config
-│   │       ├── arp.c         ARP
-│   │       └── ip.c          IP, ICMP
+│   │       ├── rtl8139.c     Driver Ethernet RTL8139
+│   │       ├── net.c         Ethernet, config réseau
+│   │       ├── arp.c         ARP (requête/réponse, cache)
+│   │       └── ip.c          IP, ICMP (ping)
 │   ├── include/
-│   │   └── kernel/          Headers (tty, vga, ata, fs, shell, config, env, user, hash, hostname, pci, rtl8139, net, arp, ip, vi)
+│   │   └── kernel/          Headers (tty, vga, ata, fs, shell, config, env, user, group, hash,
+│   │                          hostname, acpi, gfx, desktop, pci, rtl8139, net, arp, ip, vi, multiboot)
 │   └── kernel/
-│       └── kernel.c          kernel_main, boucle shell, prompt PS1
+│       └── kernel.c          kernel_main, boucle shell/desktop, prompt PS1
 │
 └── libc/
     ├── Makefile
@@ -437,8 +439,10 @@ impos/
     │   ├── stdio.h, stdlib.h, string.h, setjmp.h
     │   └── sys/cdefs.h
     ├── stdio/                getchar, putchar, printf, puts, snprintf
-    ├── stdlib/               exit, abort
-    ├── string/               memcpy, memset, memmove, memcmp, strlen, strcmp, strcpy, strncpy, strcat, strncmp, strchr, strtok
+    ├── stdlib/               exit, abort, malloc, atoi, atol, rand, qsort, bsearch, abs
+    ├── string/               memcpy, memset, memmove, memcmp, memchr, strlen, strnlen,
+    │                          strcmp, strncmp, strcpy, strncpy, strcat, strchr, strrchr,
+    │                          strstr, strtok, strdup, strndup, strcspn, strspn, strpbrk
     └── setjmp/               setjmp.S
 ```
 
@@ -448,16 +452,18 @@ impos/
 
 | Élément | Nombre |
 |---------|--------|
-| **Fichiers C kernel (arch i386)** | 18 (.c) + 3 (.S) + 1 (.ld) |
-| **Headers kernel** | 16 |
-| **Fichiers libc** | ~25+ (stdio, stdlib, string, setjmp) — malloc/calloc/realloc, sprintf, atoi, strtol, strdup/strndup, strstr, strrchr, memchr, strcspn/strspn/strpbrk, rand, qsort, bsearch, abs |
-| **Commandes shell** | 32 (dont chmod, chown, useradd, userdel, logout) |
+| **Fichiers C kernel (arch i386)** | 21 (.c) + 3 (.S) + 1 (.ld) + 1 (.h font) |
+| **Headers kernel** | ~20 (tty, vga, ata, fs, shell, config, env, user, group, hash, hostname, acpi, gfx, desktop, pci, rtl8139, net, arp, ip, vi, multiboot) |
+| **Fichiers libc** | ~25+ (stdio, stdlib, string, setjmp) |
+| **Commandes shell** | 36 (dont chmod, chown, useradd, userdel, logout, shutdown, gfxdemo, id, ln, readlink) |
 | **Phases 1–2, 4–5, 7–8, 11–12** | Complétées (Boot, VGA, Clavier, Disque, Shell, vi, Config, Build + tests) |
-| **Phase 3** | ~24 fait, ~1 optionnel (L.10 fprintf/fscanf/sscanf) — atol/atoll, stdarg faits |
-| **Phase 6** | 16 fait, 1 optionnel (F.17 quotas) — F.15–F.16 faits (blocs indirects, validation load) |
+| **Phase 3** | ~24 fait, ~1 optionnel (L.10) |
+| **Phase 6** | 16 fait, 1 optionnel (F.17 quotas) |
 | **Phase 9** | 12 fait, 7 à faire (N.13–N.19 : IRQ, UDP, TCP, sockets) |
-| **Phase 10** | 17 fait — U.8 su fait, login/logout faits |
-| **Phases 13–17** | 0 fait, 30 à faire (API graphique, GUI, Port forwarding, Windows, Outil) |
+| **Phase 10** | 17 fait — complet |
+| **Phase 13** | **5 fait**, 1 optionnel (G.6 alpha) — **COMPLÉTÉ** |
+| **Phase 14** | **6 fait**, 1 optionnel (I.7 animations) — **COMPLÉTÉ** |
+| **Phases 15–17** | 0 fait, 17 à faire (Port forwarding, Windows, Outil) |
 
 ---
 
@@ -471,15 +477,13 @@ impos/
 
 ## Ordre recommandé (visualisation complète)
 
-Les phases ci-dessous représentent encore plusieurs mois de travail. Deux voies possibles :
+Les phases graphiques (13–14) sont complétées. Il reste ~27 étapes :
 
-**Voie A (fondations) :** Phase 9 (TCP) → Phases 13–17. Phases 3/6/10 quasi complètes (reste L.10 optionnel, F.17 optionnel).
-
-**Voie B (visuel) :** Phase 13 (graphique) → Phase 14 (GUI) → revenir aux compléments → Phases 15–17
+**Ordre recommandé :** Phase 9 (TCP) → Phase 15 (port forwarding) → Phase 17 (outil fonctionnel) → Phase 16 (Windows)
 
 ---
 
-**Dernière mise à jour** : Février 2026 (atol/atoll ajoutés, stdarg confirmé complet via GCC builtins, su confirmé fonctionnel)
-**Next step immédiat** : Phase 9 (TCP) ou Phase 13 (API graphique)
-**Phase actuelle** : Phase 12 complétée (Build + tests de régression)
-**État global** : ~110 / ~150 étapes → fondations complètes, reste ~40 tâches (TCP + graphique + GUI + Windows + outil)
+**Dernière mise à jour** : Février 2026 (API graphique + desktop environment complets, ACPI shutdown, 36 commandes shell, login GUI, splash screen, dock avec icônes colorées)
+**Next step immédiat** : Phase 9 (TCP) ou Phase 17 (outil fonctionnel)
+**Phase actuelle** : Phase 14 complétée (Desktop environment)
+**État global** : ~123 / ~150 étapes → fondations + graphique + GUI complets, reste ~27 tâches (TCP + port forwarding + Windows + outil)
