@@ -61,6 +61,7 @@ stdlib/rand.o \
 stdlib/qsort.o \
 stdlib/bsearch.o \
 stdlib/abs.o \
+stdlib/atol.o \
 string/strrchr.o \
 string/strnlen.o \
 string/memchr.o \
