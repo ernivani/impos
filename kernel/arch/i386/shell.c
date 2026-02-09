@@ -6,6 +6,10 @@
 #include <kernel/net.h>
 #include <kernel/pci.h>
 #include <kernel/ip.h>
+#include <kernel/dns.h>
+#include <kernel/dhcp.h>
+#include <kernel/httpd.h>
+#include <kernel/quota.h>
 #include <kernel/env.h>
 #include <kernel/user.h>
 #include <kernel/group.h>
@@ -69,6 +73,10 @@ static void cmd_userdel(int argc, char* argv[]);
 static void cmd_test(int argc, char* argv[]);
 static void cmd_logout(int argc, char* argv[]);
 static void cmd_gfxdemo(int argc, char* argv[]);
+static void cmd_nslookup(int argc, char* argv[]);
+static void cmd_dhcp_cmd(int argc, char* argv[]);
+static void cmd_httpd(int argc, char* argv[]);
+static void cmd_quota(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -643,6 +651,62 @@ static command_t commands[] = {
         "    Demonstrates the framebuffer graphics API by drawing\n"
         "    rectangles, lines, and text. Press any key to exit.\n"
     },
+    {
+        "nslookup", cmd_nslookup,
+        "Query DNS to resolve a hostname",
+        "nslookup: nslookup HOSTNAME\n"
+        "    Resolve HOSTNAME to an IP address using DNS.\n",
+        "NAME\n"
+        "    nslookup - query Internet name servers\n\n"
+        "SYNOPSIS\n"
+        "    nslookup HOSTNAME\n\n"
+        "DESCRIPTION\n"
+        "    Sends a DNS type-A query to the configured DNS server\n"
+        "    (default 10.0.2.3 for QEMU SLIRP) and prints the\n"
+        "    resolved IPv4 address.\n"
+    },
+    {
+        "dhcp", cmd_dhcp_cmd,
+        "Obtain an IP address via DHCP",
+        "dhcp: dhcp\n"
+        "    Run DHCP discovery to obtain an IP address.\n",
+        "NAME\n"
+        "    dhcp - Dynamic Host Configuration Protocol client\n\n"
+        "SYNOPSIS\n"
+        "    dhcp\n\n"
+        "DESCRIPTION\n"
+        "    Sends DHCP Discover/Offer/Request/Acknowledge sequence\n"
+        "    to obtain a network configuration from the DHCP server.\n"
+    },
+    {
+        "httpd", cmd_httpd,
+        "Start or stop the HTTP server",
+        "httpd: httpd start|stop\n"
+        "    Start or stop the built-in HTTP server on port 80.\n",
+        "NAME\n"
+        "    httpd - minimal HTTP/1.0 server\n\n"
+        "SYNOPSIS\n"
+        "    httpd start|stop\n\n"
+        "DESCRIPTION\n"
+        "    Starts a minimal HTTP server on port 80. It serves\n"
+        "    static HTML for / and files from the filesystem.\n"
+        "    Use 'httpd stop' to shut it down.\n"
+    },
+    {
+        "quota", cmd_quota,
+        "View or set filesystem quotas",
+        "quota: quota [-u USER] [-s USER INODES BLOCKS]\n"
+        "    View or set per-user filesystem quotas.\n",
+        "NAME\n"
+        "    quota - manage filesystem quotas\n\n"
+        "SYNOPSIS\n"
+        "    quota [-u USER] [-s USER INODES BLOCKS]\n\n"
+        "DESCRIPTION\n"
+        "    Without arguments, shows quota for the current user.\n"
+        "    -u USER   Show quota for USER (by UID).\n"
+        "    -s USER INODES BLOCKS  Set quota limits for USER.\n"
+        "    INODES and BLOCKS are maximum counts (0 = unlimited).\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -760,6 +824,7 @@ void shell_initialize_subsystems(void) {
     hostname_initialize();
     user_initialize();
     group_initialize();
+    quota_initialize();
 }
 
 int shell_needs_setup(void) {
@@ -2258,4 +2323,87 @@ static void cmd_gfxdemo(int argc, char* argv[]) {
     terminal_clear();
     if (gfx_is_active())
         desktop_draw_chrome();
+}
+
+static void cmd_nslookup(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: nslookup HOSTNAME\n");
+        return;
+    }
+
+    uint8_t ip[4];
+    if (dns_resolve(argv[1], ip) == 0) {
+        printf("%s: %d.%d.%d.%d\n", argv[1], ip[0], ip[1], ip[2], ip[3]);
+    } else {
+        printf("nslookup: could not resolve %s\n", argv[1]);
+    }
+}
+
+static void cmd_dhcp_cmd(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    dhcp_discover();
+}
+
+static void cmd_httpd(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: httpd start|stop\n");
+        return;
+    }
+    if (strcmp(argv[1], "start") == 0) {
+        httpd_start();
+    } else if (strcmp(argv[1], "stop") == 0) {
+        httpd_stop();
+    } else {
+        printf("Usage: httpd start|stop\n");
+    }
+}
+
+static void cmd_quota(int argc, char* argv[]) {
+    if (argc >= 5 && strcmp(argv[1], "-s") == 0) {
+        /* Set quota: quota -s UID MAX_INODES MAX_BLOCKS */
+        uint16_t uid = atoi(argv[2]);
+        uint16_t max_inodes = atoi(argv[3]);
+        uint16_t max_blocks = atoi(argv[4]);
+        if (quota_set(uid, max_inodes, max_blocks) == 0) {
+            printf("Quota set for uid %d: max_inodes=%d max_blocks=%d\n",
+                   uid, max_inodes, max_blocks);
+        } else {
+            printf("quota: failed to set quota\n");
+        }
+        return;
+    }
+
+    if (argc >= 3 && strcmp(argv[1], "-u") == 0) {
+        /* Show quota for specific user */
+        uint16_t uid = atoi(argv[2]);
+        quota_entry_t* q = quota_get(uid);
+        if (q) {
+            printf("Quota for uid %d:\n", uid);
+            printf("  Inodes: %d / %d\n", q->used_inodes,
+                   q->max_inodes ? q->max_inodes : 0);
+            printf("  Blocks: %d / %d\n", q->used_blocks,
+                   q->max_blocks ? q->max_blocks : 0);
+        } else {
+            printf("No quota set for uid %d\n", uid);
+        }
+        return;
+    }
+
+    /* Default: show current user quota */
+    uint16_t uid = user_get_current_uid();
+    const char* uname = user_get_current();
+    if (!uname) {
+        printf("No current user\n");
+        return;
+    }
+    quota_entry_t* q = quota_get(uid);
+    if (q) {
+        printf("Quota for %s (uid %d):\n", uname, uid);
+        printf("  Inodes: %d / %d\n", q->used_inodes,
+               q->max_inodes ? q->max_inodes : 0);
+        printf("  Blocks: %d / %d\n", q->used_blocks,
+               q->max_blocks ? q->max_blocks : 0);
+    } else {
+        printf("No quota set for %s\n", uname);
+    }
 }

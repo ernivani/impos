@@ -2,22 +2,15 @@
 #include <kernel/arp.h>
 #include <kernel/net.h>
 #include <kernel/rtl8139.h>
+#include <kernel/endian.h>
+#include <kernel/udp.h>
+#include <kernel/tcp.h>
 #include <stdio.h>
 #include <string.h>
 
 #define ETHERTYPE_IP 0x0800
 
 static uint16_t ip_id_counter = 0;
-
-/* Convert 16-bit value to network byte order (big-endian) */
-static uint16_t htons(uint16_t hostshort) {
-    return ((hostshort & 0xFF) << 8) | ((hostshort >> 8) & 0xFF);
-}
-
-/* Convert 16-bit value from network byte order */
-static uint16_t ntohs(uint16_t netshort) {
-    return ((netshort & 0xFF) << 8) | ((netshort >> 8) & 0xFF);
-}
 
 uint16_t ip_checksum(const void* data, size_t len) {
     const uint16_t* words = (const uint16_t*)data;
@@ -99,8 +92,12 @@ void ip_handle_packet(const uint8_t* data, size_t len) {
     const ip_header_t* ip_hdr = (const ip_header_t*)data;
     net_config_t* config = net_get_config();
     
-    /* Check if packet is for us */
-    if (memcmp(ip_hdr->dst_ip, config->ip, 4) != 0) {
+    /* Check if packet is for us (or broadcast for DHCP) */
+    uint8_t bcast[4] = {255, 255, 255, 255};
+    uint8_t zero[4]  = {0, 0, 0, 0};
+    if (memcmp(ip_hdr->dst_ip, config->ip, 4) != 0 &&
+        memcmp(ip_hdr->dst_ip, bcast, 4) != 0 &&
+        memcmp(config->ip, zero, 4) != 0) {
         return;
     }
     
@@ -123,6 +120,10 @@ void ip_handle_packet(const uint8_t* data, size_t len) {
     /* Handle by protocol */
     if (ip_hdr->protocol == IP_PROTOCOL_ICMP) {
         icmp_handle_packet(payload, payload_len, ip_hdr->src_ip);
+    } else if (ip_hdr->protocol == IP_PROTOCOL_UDP) {
+        udp_handle_packet(payload, payload_len, ip_hdr->src_ip);
+    } else if (ip_hdr->protocol == IP_PROTOCOL_TCP) {
+        tcp_handle_packet(payload, payload_len, ip_hdr->src_ip);
     }
 }
 

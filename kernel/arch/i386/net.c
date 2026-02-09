@@ -2,6 +2,12 @@
 #include <kernel/rtl8139.h>
 #include <kernel/arp.h>
 #include <kernel/ip.h>
+#include <kernel/udp.h>
+#include <kernel/tcp.h>
+#include <kernel/socket.h>
+#include <kernel/dns.h>
+#include <kernel/dhcp.h>
+#include <kernel/httpd.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -47,6 +53,12 @@ void net_initialize(void) {
     arp_initialize();
     ip_initialize();
     icmp_initialize();
+    udp_initialize();
+    tcp_initialize();
+    socket_initialize();
+    dns_initialize();
+    dhcp_initialize();
+    httpd_initialize();
     
     /* Try to initialize RTL8139 driver */
     if (rtl8139_initialize() == 0) {

@@ -3,6 +3,7 @@
 #include <kernel/user.h>
 #include <kernel/group.h>
 #include <kernel/gfx.h>
+#include <kernel/quota.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -491,6 +492,82 @@ static void test_gfx(void) {
     TEST_ASSERT(GFX_RGB(0,255,0) == 0x00FF00, "GFX_RGB green");
 }
 
+/* ---- sscanf Tests ---- */
+
+static void test_sscanf(void) {
+    printf("== sscanf Tests ==\n");
+
+    int a, b;
+    TEST_ASSERT(sscanf("42", "%d", &a) == 1, "sscanf single int");
+    TEST_ASSERT(a == 42, "sscanf int value");
+
+    TEST_ASSERT(sscanf("10 20", "%d %d", &a, &b) == 2, "sscanf two ints");
+    TEST_ASSERT(a == 10 && b == 20, "sscanf two int values");
+
+    TEST_ASSERT(sscanf("-5", "%d", &a) == 1, "sscanf negative int");
+    TEST_ASSERT(a == -5, "sscanf negative value");
+
+    unsigned int x;
+    TEST_ASSERT(sscanf("0xFF", "%x", &x) == 1, "sscanf hex");
+    TEST_ASSERT(x == 0xFF, "sscanf hex value");
+
+    TEST_ASSERT(sscanf("ff", "%x", &x) == 1, "sscanf hex no prefix");
+    TEST_ASSERT(x == 0xFF, "sscanf hex no prefix value");
+
+    char str[64];
+    TEST_ASSERT(sscanf("hello world", "%s", str) == 1, "sscanf string");
+    TEST_ASSERT(strcmp(str, "hello") == 0, "sscanf string value");
+
+    char c;
+    TEST_ASSERT(sscanf("A", "%c", &c) == 1, "sscanf char");
+    TEST_ASSERT(c == 'A', "sscanf char value");
+
+    unsigned int u;
+    TEST_ASSERT(sscanf("123", "%u", &u) == 1, "sscanf unsigned");
+    TEST_ASSERT(u == 123, "sscanf unsigned value");
+
+    int n;
+    TEST_ASSERT(sscanf("abc", "%s%n", str, &n) == 1, "sscanf %%n");
+    TEST_ASSERT(n == 3, "sscanf %%n value");
+}
+
+/* ---- Quota Tests ---- */
+
+static void test_quota(void) {
+    printf("== Quota Tests ==\n");
+
+    /* Set quota for uid 999 */
+    TEST_ASSERT(quota_set(999, 5, 10) == 0, "quota set");
+
+    quota_entry_t* q = quota_get(999);
+    TEST_ASSERT(q != NULL, "quota get");
+    TEST_ASSERT(q->max_inodes == 5, "quota max_inodes");
+    TEST_ASSERT(q->max_blocks == 10, "quota max_blocks");
+
+    /* Check allows initially */
+    TEST_ASSERT(quota_check_inode(999) == 0, "quota check inode ok");
+    TEST_ASSERT(quota_check_block(999, 5) == 0, "quota check block ok");
+
+    /* Add usage */
+    for (int i = 0; i < 5; i++) quota_add_inode(999);
+    TEST_ASSERT(quota_check_inode(999) == -1, "quota inode exceeded");
+
+    quota_add_blocks(999, 8);
+    TEST_ASSERT(quota_check_block(999, 3) == -1, "quota block exceeded");
+    TEST_ASSERT(quota_check_block(999, 2) == 0, "quota block still ok");
+
+    /* Remove usage */
+    quota_remove_inode(999);
+    TEST_ASSERT(quota_check_inode(999) == 0, "quota inode after remove");
+
+    /* No quota for uid 998 = unlimited */
+    TEST_ASSERT(quota_check_inode(998) == 0, "quota no limit inode");
+    TEST_ASSERT(quota_check_block(998, 1000) == 0, "quota no limit block");
+
+    /* Clean up */
+    q->active = 0;
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -505,10 +582,12 @@ void test_run_all(void) {
     test_stdlib();
     test_stdlib_extra();
     test_snprintf();
+    test_sscanf();
     test_fs();
     test_fs_indirect();
     test_user();
     test_gfx();
+    test_quota();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

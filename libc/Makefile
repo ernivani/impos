@@ -35,6 +35,9 @@ stdio/sprintf.o \
 stdio/putchar.o \
 stdio/getchar.o \
 stdio/puts.o \
+stdio/file.o \
+stdio/fprintf.o \
+stdio/fscanf.o \
 stdlib/abort.o \
 stdlib/exit.o \
 stdlib/malloc.o \

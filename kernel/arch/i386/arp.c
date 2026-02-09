@@ -1,6 +1,7 @@
 #include <kernel/arp.h>
 #include <kernel/net.h>
 #include <kernel/rtl8139.h>
+#include <kernel/endian.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -12,11 +13,6 @@ static uint32_t current_time = 0;
 
 /* Ethernet frame type for ARP */
 #define ETHERTYPE_ARP 0x0806
-
-/* Convert 16-bit value to network byte order (big-endian) */
-static uint16_t htons(uint16_t hostshort) {
-    return ((hostshort & 0xFF) << 8) | ((hostshort >> 8) & 0xFF);
-}
 
 void arp_initialize(void) {
     memset(arp_cache, 0, sizeof(arp_cache));
