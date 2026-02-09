@@ -77,6 +77,7 @@ static void cmd_nslookup(int argc, char* argv[]);
 static void cmd_dhcp_cmd(int argc, char* argv[]);
 static void cmd_httpd(int argc, char* argv[]);
 static void cmd_quota(int argc, char* argv[]);
+static void cmd_connect(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -706,6 +707,22 @@ static command_t commands[] = {
         "    -u USER   Show quota for USER (by UID).\n"
         "    -s USER INODES BLOCKS  Set quota limits for USER.\n"
         "    INODES and BLOCKS are maximum counts (0 = unlimited).\n"
+    },
+    {
+        "connect", cmd_connect,
+        "Auto-configure network via DHCP",
+        "connect: connect\n"
+        "    Bring up the network by running DHCP discovery.\n"
+        "    Displays assigned IP, netmask, and gateway on success.\n",
+        "NAME\n"
+        "    connect - auto-configure network via DHCP\n\n"
+        "SYNOPSIS\n"
+        "    connect\n\n"
+        "DESCRIPTION\n"
+        "    Checks that a NIC is present and the link is up,\n"
+        "    then runs DHCP discovery to obtain an IP address,\n"
+        "    netmask, and gateway from the network. Prints the\n"
+        "    assigned configuration on success.\n"
     },
 };
 
@@ -1799,10 +1816,7 @@ static void cmd_ping(int argc, char* argv[]) {
     uint8_t dst_ip[4] = {a, b, c, d};
     
     printf("PING %d.%d.%d.%d\n", a, b, c, d);
-    printf("Note: ICMP echo not supported by QEMU user networking\n");
-    printf("Use 'arp' command to test network functionality\n");
-    
-    /* Send pings anyway for testing */
+
     for (int i = 1; i <= 4; i++) {
         icmp_send_echo_request(dst_ip, 1, i);
         
@@ -2405,5 +2419,26 @@ static void cmd_quota(int argc, char* argv[]) {
                q->max_blocks ? q->max_blocks : 0);
     } else {
         printf("No quota set for %s\n", uname);
+    }
+}
+
+static void cmd_connect(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    net_config_t* cfg = net_get_config();
+    if (!cfg->link_up) {
+        printf("connect: no network interface available\n");
+        return;
+    }
+
+    printf("Running DHCP discovery...\n");
+    if (dhcp_discover() == 0) {
+        /* Re-fetch config after DHCP updated it */
+        cfg = net_get_config();
+        printf("Network configured:\n");
+        printf("  IP:      "); net_print_ip(cfg->ip); printf("\n");
+        printf("  Netmask: "); net_print_ip(cfg->netmask); printf("\n");
+        printf("  Gateway: "); net_print_ip(cfg->gateway); printf("\n");
+    } else {
+        printf("connect: DHCP discovery failed\n");
     }
 }

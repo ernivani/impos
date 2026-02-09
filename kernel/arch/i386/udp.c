@@ -57,13 +57,18 @@ static uint16_t udp_checksum(const uint8_t src_ip[4], const uint8_t dst_ip[4],
                               const uint8_t* udp_pkt, size_t udp_len) {
     uint32_t sum = 0;
 
-    /* Pseudo-header */
-    sum += (src_ip[0] << 8) | src_ip[1];
-    sum += (src_ip[2] << 8) | src_ip[3];
-    sum += (dst_ip[0] << 8) | dst_ip[1];
-    sum += (dst_ip[2] << 8) | dst_ip[3];
-    sum += 17; /* protocol UDP */
-    sum += udp_len;
+    /* Build pseudo-header as raw bytes in network order, then sum as uint16_t
+     * to stay consistent with how the packet data is summed */
+    uint8_t pseudo[12];
+    memcpy(pseudo, src_ip, 4);
+    memcpy(pseudo + 4, dst_ip, 4);
+    pseudo[8] = 0;
+    pseudo[9] = 17; /* protocol UDP */
+    pseudo[10] = (udp_len >> 8) & 0xFF;
+    pseudo[11] = udp_len & 0xFF;
+
+    const uint16_t* pw = (const uint16_t*)pseudo;
+    for (int i = 0; i < 6; i++) sum += pw[i];
 
     /* UDP header + data */
     const uint16_t* words = (const uint16_t*)udp_pkt;

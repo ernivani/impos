@@ -21,7 +21,6 @@ int rtl8139_initialize(void) {
     
     
     if (pci_find_device(RTL8139_VENDOR_ID, RTL8139_DEVICE_ID, &pci_dev) != 0) {
-        printf("RTL8139 not found\n");
         return -1;
     }
     

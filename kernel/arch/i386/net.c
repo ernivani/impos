@@ -1,5 +1,6 @@
 #include <kernel/net.h>
 #include <kernel/rtl8139.h>
+#include <kernel/pcnet.h>
 #include <kernel/arp.h>
 #include <kernel/ip.h>
 #include <kernel/udp.h>
@@ -13,6 +14,7 @@
 
 static net_config_t net_config;
 static int net_initialized = 0;
+static int active_driver = 0;  /* 0=none, 1=rtl8139, 2=pcnet */
 
 void net_initialize(void) {
     if (net_initialized) {
@@ -60,11 +62,17 @@ void net_initialize(void) {
     dhcp_initialize();
     httpd_initialize();
     
-    /* Try to initialize RTL8139 driver */
+    /* Try to initialize NIC drivers: RTL8139 first, then PCnet */
     if (rtl8139_initialize() == 0) {
-        /* Get MAC address from hardware */
         rtl8139_get_mac(net_config.mac);
         net_config.link_up = 1;
+        active_driver = 1;
+        printf("Network: RTL8139 initialized\n");
+    } else if (pcnet_initialize() == 0) {
+        pcnet_get_mac(net_config.mac);
+        net_config.link_up = 1;
+        active_driver = 2;
+        printf("Network: PCnet-FAST III initialized\n");
     } else {
         printf("No network card detected\n");
     }
@@ -84,16 +92,14 @@ void net_set_ip(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 }
 
 int net_send_packet(const uint8_t* data, size_t len) {
-    if (rtl8139_is_initialized()) {
-        return rtl8139_send_packet(data, len);
-    }
+    if (active_driver == 1) return rtl8139_send_packet(data, len);
+    if (active_driver == 2) return pcnet_send_packet(data, len);
     return -1;
 }
 
 int net_receive_packet(uint8_t* buffer, size_t* len) {
-    if (rtl8139_is_initialized()) {
-        return rtl8139_receive_packet(buffer, len);
-    }
+    if (active_driver == 1) return rtl8139_receive_packet(buffer, len);
+    if (active_driver == 2) return pcnet_receive_packet(buffer, len);
     return -1;
 }
 
@@ -112,7 +118,7 @@ void net_print_ip(const uint8_t ip[4]) {
 }
 
 void net_process_packets(void) {
-    if (!rtl8139_is_initialized()) {
+    if (active_driver == 0) {
         return;
     }
     

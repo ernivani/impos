@@ -1,6 +1,5 @@
 #include <kernel/arp.h>
 #include <kernel/net.h>
-#include <kernel/rtl8139.h>
 #include <kernel/endian.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,11 +33,10 @@ int arp_resolve(const uint8_t ip[4], uint8_t mac[6]) {
 }
 
 int arp_send_request(const uint8_t target_ip[4]) {
-    if (!rtl8139_is_initialized()) {
+    net_config_t* config = net_get_config();
+    if (!config->link_up) {
         return -1;
     }
-    
-    net_config_t* config = net_get_config();
     uint8_t packet[60];  /* Minimum Ethernet frame size */
     memset(packet, 0, sizeof(packet));
     
