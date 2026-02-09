@@ -4,6 +4,7 @@
 #include <kernel/endian.h>
 #include <kernel/udp.h>
 #include <kernel/tcp.h>
+#include <kernel/firewall.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -112,7 +113,18 @@ void ip_handle_packet(const uint8_t* data, size_t len) {
     uint8_t ihl = (ip_hdr->version_ihl & 0x0F) * 4;
     const uint8_t* payload = data + ihl;
     size_t payload_len = ntohs(ip_hdr->total_length) - ihl;
-    
+
+    /* Firewall check: extract dst port for TCP/UDP */
+    uint16_t dst_port = 0;
+    if ((ip_hdr->protocol == IP_PROTOCOL_TCP || ip_hdr->protocol == IP_PROTOCOL_UDP)
+        && payload_len >= 4) {
+        dst_port = ntohs(*(const uint16_t*)(payload + 2));
+    }
+    if (firewall_check(ip_hdr->src_ip, ip_hdr->dst_ip,
+                        ip_hdr->protocol, dst_port) == FW_ACTION_DENY) {
+        return;  /* Packet dropped by firewall */
+    }
+
     /* Handle by protocol */
     if (ip_hdr->protocol == IP_PROTOCOL_ICMP) {
         icmp_handle_packet(payload, payload_len, ip_hdr->src_ip);

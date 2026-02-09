@@ -4,6 +4,9 @@
 #include <string.h>
 #include <stdio.h>
 
+/* From getchar.c — push raw scancode to keyboard ring buffer */
+extern void keyboard_push_scancode(uint8_t scancode);
+
 /* ========== GDT ========== */
 
 typedef struct {
@@ -181,11 +184,12 @@ static void pit_handler(registers_t* regs) {
     pit_ticks++;
 }
 
-/* Keyboard IRQ1 handler - do nothing, let getchar() poll port 0x60 */
+/* Keyboard IRQ1 handler — read scancode from port 0x60 and push to ring buffer.
+   This prevents mouse bytes from being misread as keyboard scancodes. */
 static void keyboard_irq_handler(registers_t* regs) {
     (void)regs;
-    /* Don't read port 0x60 here - let getchar() consume scancodes.
-       EOI is sent by isr_handler after this returns. */
+    uint8_t scancode = inb(0x60);
+    keyboard_push_scancode(scancode);
 }
 
 /* C-level ISR dispatcher, called from isr_common */
@@ -294,8 +298,8 @@ void idt_initialize(void) {
 
     /* Unmask IRQ0 (PIT), IRQ1 (keyboard), IRQ2 (cascade to slave PIC) */
     outb(PIC1_DATA, 0xF8);  /* 11111000 = IRQ0 + IRQ1 + IRQ2(cascade) */
-    /* Unmask IRQ11 (RTL8139 network card, mapped to slave IRQ3) */
-    outb(PIC2_DATA, 0xF7);  /* 11110111 = IRQ11 unmasked */
+    /* Unmask IRQ11 (network card) and IRQ12 (PS/2 mouse) on slave PIC */
+    outb(PIC2_DATA, 0xE7);  /* 11100111 = IRQ11 + IRQ12 unmasked */
 
     /* Enable interrupts */
     __asm__ volatile ("sti");

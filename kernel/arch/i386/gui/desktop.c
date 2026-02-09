@@ -7,14 +7,124 @@
 #include <kernel/group.h>
 #include <kernel/env.h>
 #include <kernel/config.h>
+#include <kernel/idt.h>
+#include <kernel/io.h>
+#include <kernel/mouse.h>
+#include <kernel/wm.h>
 #include <string.h>
 #include <stdio.h>
 #include "font8x16.h"
+
+static int desktop_first_show = 1;
 
 /* ═══ Helpers ════════════════════════════════════════════════════ */
 
 static void busy_wait(int n) {
     for (volatile int i = 0; i < n; i++);
+}
+
+/* ═══ Animation Helpers ═════════════════════════════════════════ */
+
+static void desktop_fade_in(int x, int y, int w, int h, int steps, int delay_ms) {
+    for (int i = steps; i >= 0; i--) {
+        uint32_t alpha = (uint32_t)(i * 255 / steps);
+        /* Flip the clean region first */
+        gfx_flip_rect(x, y, w, h);
+        /* Draw a dark overlay on top with decreasing alpha */
+        if (i > 0) {
+            uint32_t *fb = gfx_framebuffer();
+            uint32_t pitch4 = gfx_pitch() / 4;
+            int x0 = x < 0 ? 0 : x;
+            int y0 = y < 0 ? 0 : y;
+            int x1 = x + w; if (x1 > (int)gfx_width()) x1 = (int)gfx_width();
+            int y1 = y + h; if (y1 > (int)gfx_height()) y1 = (int)gfx_height();
+            uint32_t inv_a = 255 - alpha;
+            for (int row = y0; row < y1; row++) {
+                uint32_t *dst = fb + row * pitch4 + x0;
+                for (int col = 0; col < x1 - x0; col++) {
+                    uint32_t px = dst[col];
+                    uint32_t r = ((px >> 16) & 0xFF) * inv_a / 255;
+                    uint32_t g = ((px >> 8) & 0xFF) * inv_a / 255;
+                    uint32_t b = (px & 0xFF) * inv_a / 255;
+                    dst[col] = (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+        pit_sleep_ms(delay_ms);
+    }
+}
+
+static void desktop_fade_out(int x, int y, int w, int h, int steps, int delay_ms) {
+    for (int i = 0; i <= steps; i++) {
+        uint32_t alpha = (uint32_t)(i * 255 / steps);
+        gfx_flip_rect(x, y, w, h);
+        if (i < steps) {
+            uint32_t *fb = gfx_framebuffer();
+            uint32_t pitch4 = gfx_pitch() / 4;
+            int x0 = x < 0 ? 0 : x;
+            int y0 = y < 0 ? 0 : y;
+            int x1 = x + w; if (x1 > (int)gfx_width()) x1 = (int)gfx_width();
+            int y1 = y + h; if (y1 > (int)gfx_height()) y1 = (int)gfx_height();
+            uint32_t inv_a = 255 - alpha;
+            for (int row = y0; row < y1; row++) {
+                uint32_t *dst = fb + row * pitch4 + x0;
+                for (int col = 0; col < x1 - x0; col++) {
+                    uint32_t px = dst[col];
+                    uint32_t r = ((px >> 16) & 0xFF) * inv_a / 255;
+                    uint32_t g = ((px >> 8) & 0xFF) * inv_a / 255;
+                    uint32_t b = (px & 0xFF) * inv_a / 255;
+                    dst[col] = (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+        pit_sleep_ms(delay_ms);
+    }
+}
+
+#define SLIDE_FROM_LEFT   0
+#define SLIDE_FROM_RIGHT  1
+#define SLIDE_FROM_TOP    2
+#define SLIDE_FROM_BOTTOM 3
+
+static void desktop_slide_in(int x, int y, int w, int h, int direction, int steps, int delay_ms) {
+    uint32_t *fb = gfx_framebuffer();
+    uint32_t *bb = gfx_backbuffer();
+    uint32_t pitch4 = gfx_pitch() / 4;
+    int fw = (int)gfx_width(), fh = (int)gfx_height();
+
+    for (int i = 1; i <= steps; i++) {
+        int x0 = x < 0 ? 0 : x;
+        int y0 = y < 0 ? 0 : y;
+        int x1 = x + w; if (x1 > fw) x1 = fw;
+        int y1 = y + h; if (y1 > fh) y1 = fh;
+
+        /* Clear region in framebuffer */
+        for (int row = y0; row < y1; row++)
+            for (int col = x0; col < x1; col++)
+                fb[row * pitch4 + col] = 0;
+
+        /* Calculate offset based on direction */
+        int ox = 0, oy = 0;
+        int progress = i * 256 / steps;
+        switch (direction) {
+        case SLIDE_FROM_LEFT:   ox = -w + (w * progress / 256); break;
+        case SLIDE_FROM_RIGHT:  ox = w - (w * progress / 256);  break;
+        case SLIDE_FROM_TOP:    oy = -h + (h * progress / 256); break;
+        case SLIDE_FROM_BOTTOM: oy = h - (h * progress / 256);  break;
+        }
+
+        /* Copy from backbuffer with offset */
+        for (int row = y0; row < y1; row++) {
+            int src_y = row - oy;
+            if (src_y < y0 || src_y >= y1) continue;
+            for (int col = x0; col < x1; col++) {
+                int src_x = col - ox;
+                if (src_x < x0 || src_x >= x1) continue;
+                fb[row * pitch4 + col] = bb[src_y * pitch4 + src_x];
+            }
+        }
+        pit_sleep_ms(delay_ms);
+    }
 }
 
 /* Format a 2-digit value with leading zero (our snprintf has no %02d) */
@@ -191,17 +301,12 @@ void desktop_splash(void) {
         gfx_flip();
         busy_wait(2200000);
     }
-    for (int i = 0; i < 5; i++) {
-        gfx_clear(0);
-        int b = 230 - 50 * (i + 1); if (b < 0) b = 0;
-        draw_spaced(lx, ly, logo, GFX_RGB(b, b, b), sp);
-        if (b > 30)
-            draw_spin_ring(spin_cx, spin_cy, spin_r, 2, 14 + i);
-        gfx_flip();
-        busy_wait(1800000);
-    }
+    /* Fade out splash */
+    gfx_clear(0);
+    draw_spaced(lx, ly, logo, GFX_RGB(230, 230, 230), sp);
+    desktop_fade_out(0, 0, w, h, 8, 40);
     gfx_clear(0); gfx_flip();
-    busy_wait(1200000);
+    pit_sleep_ms(100);
 }
 
 /* ═══ Setup Wizard ══════════════════════════════════════════════ */
@@ -392,6 +497,9 @@ int desktop_login(void) {
                 if (auth) {
                     user_set_current(auth->username);
                     fs_change_directory(auth->home);
+                    /* Fade out login screen */
+                    desktop_fade_out(0, 0, w, h, 6, 30);
+                    desktop_first_show = 1;
                     return 0;
                 }
             }
@@ -688,7 +796,15 @@ void desktop_init(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
     draw_clock(fb_w, fb_h);
     desktop_draw_dock();
-    gfx_flip();
+
+    if (desktop_first_show) {
+        desktop_first_show = 0;
+        desktop_fade_in(0, 0, fb_w, fb_h, 8, 30);
+        desktop_slide_in(0, fb_h - TASKBAR_H, fb_w, TASKBAR_H,
+                         SLIDE_FROM_BOTTOM, 6, 25);
+    } else {
+        gfx_flip();
+    }
 }
 
 void desktop_draw_chrome(void) {
@@ -696,52 +812,146 @@ void desktop_draw_chrome(void) {
     gfx_flip();
 }
 
-/* ═══ Desktop Event Loop ════════════════════════════════════════ */
+/* ═══ Desktop Event Loop (WM-based) ════════════════════════════ */
+
+static int active_terminal_win = -1;
+
+/* Idle callback for desktop main loop: process mouse, break getchar on dock click */
+static void desktop_idle_main(void) {
+    wm_mouse_idle();
+    if (wm_get_dock_action()) {
+        keyboard_request_force_exit();
+    }
+}
+
+/* Idle callback: process mouse via WM while shell is running */
+static void desktop_idle_mouse(void) {
+    wm_mouse_idle();
+
+    /* If close was requested on the terminal window, trigger shell exit */
+    if (wm_close_was_requested()) {
+        wm_clear_close_request();
+        if (active_terminal_win >= 0) {
+            keyboard_request_force_exit();
+        }
+    }
+}
 
 int desktop_run(void) {
     dock_sel = 1;
-    desktop_init();
 
+    /* Initialize WM */
+    wm_initialize();
+
+    /* Draw desktop background + dock via WM composite */
+    gfx_clear(0);
+    int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
+    draw_clock(fb_w, fb_h);
+    desktop_draw_dock();
+
+    if (desktop_first_show) {
+        desktop_first_show = 0;
+        desktop_fade_in(0, 0, fb_w, fb_h, 8, 30);
+    } else {
+        gfx_flip();
+    }
+
+    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+
+    /* Set idle callback so mouse is processed while getchar blocks */
+    keyboard_set_idle_callback(desktop_idle_main);
+
+    /* Desktop event loop: wait for dock click or keyboard */
     while (1) {
+        /* Check WM dock actions from mouse (may have been set by idle callback) */
+        int da = wm_get_dock_action();
+        if (da) {
+            wm_clear_dock_action();
+            keyboard_set_idle_callback(0);
+            gfx_restore_mouse_cursor();
+            return da;
+        }
+
+        /* Keyboard: getchar will call idle callback for mouse */
         char c = getchar();
+
+        /* After getchar returns, check if dock was clicked */
+        da = wm_get_dock_action();
+        if (da) {
+            wm_clear_dock_action();
+            keyboard_set_idle_callback(0);
+            gfx_restore_mouse_cursor();
+            return da;
+        }
+
         if (c == KEY_LEFT) {
             if (dock_sel > 0) dock_sel--;
-            desktop_init();
+            gfx_clear(0); draw_clock(fb_w, fb_h);
+            desktop_draw_dock(); gfx_flip();
+            gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
             continue;
         }
         if (c == KEY_RIGHT) {
             if (dock_sel < DOCK_ITEMS - 1) dock_sel++;
-            desktop_init();
+            gfx_clear(0); draw_clock(fb_w, fb_h);
+            desktop_draw_dock(); gfx_flip();
+            gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
             continue;
         }
         if (c == '\n') {
+            keyboard_set_idle_callback(0);
+            gfx_restore_mouse_cursor();
             return dock_actions[dock_sel];
         }
-        /* Power shortcut: 'p' or Escape on desktop */
         if (c == KEY_ESCAPE) {
+            keyboard_set_idle_callback(0);
+            gfx_restore_mouse_cursor();
             return DESKTOP_ACTION_POWER;
         }
     }
 }
 
-/* ═══ Terminal Window ═══════════════════════════════════════════ */
+/* ═══ Terminal Window (WM-managed) ═════════════════════════════ */
 
 void desktop_open_terminal(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
-    gfx_fill_rect(0, 0, fb_w, fb_h - TASKBAR_H, 0);
 
-    size_t tty_col = 1;
-    size_t tty_row = 0;
-    size_t tty_w = (size_t)(fb_w / FONT_W) - 2;
-    size_t tty_h = (size_t)((fb_h - TASKBAR_H) / FONT_H);
+    /* Create a WM window for the terminal */
+    int win_w = fb_w - 80;
+    int win_h = fb_h - TASKBAR_H - 40;
+    int win_x = 40;
+    int win_y = 10;
+
+    active_terminal_win = wm_create_window(win_x, win_y, win_w, win_h, "Terminal");
+
+    /* Get content area */
+    int cx, cy, cw, ch;
+    wm_get_content_rect(active_terminal_win, &cx, &cy, &cw, &ch);
+
+    /* Set terminal to render inside the window content area */
+    size_t tty_col = (size_t)(cx / FONT_W);
+    size_t tty_row = (size_t)(cy / FONT_H);
+    size_t tty_w = (size_t)(cw / FONT_W);
+    size_t tty_h = (size_t)(ch / FONT_H);
 
     terminal_set_window(tty_col, tty_row, tty_w, tty_h);
     terminal_set_window_bg(DT_WIN_BG);
-    desktop_draw_dock();
-    gfx_flip();
+
+    /* Composite: draws window frame + dock + cursor */
+    wm_composite();
+
+    /* Set idle callback so mouse works while shell runs */
+    keyboard_set_idle_callback(desktop_idle_mouse);
 }
 
 void desktop_close_terminal(void) {
+    keyboard_set_idle_callback(0);
+
+    if (active_terminal_win >= 0) {
+        wm_destroy_window(active_terminal_win);
+        active_terminal_win = -1;
+    }
+
     size_t fb_w = gfx_width(), fb_h = gfx_height();
     terminal_set_window(0, 0, fb_w / FONT_W, fb_h / FONT_H);
     terminal_set_window_bg(0);

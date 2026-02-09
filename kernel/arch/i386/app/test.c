@@ -7,6 +7,8 @@
 #include <kernel/ip.h>
 #include <kernel/net.h>
 #include <kernel/endian.h>
+#include <kernel/firewall.h>
+#include <kernel/mouse.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -619,6 +621,93 @@ static void test_network(void) {
     TEST_ASSERT(mac_nonzero, "MAC address set");
 }
 
+/* ---- Firewall Tests ---- */
+
+static void test_firewall(void) {
+    printf("== Firewall Tests ==\n");
+
+    /* Save current state and reinit */
+    firewall_flush();
+    firewall_set_default(FW_ACTION_ALLOW);
+
+    uint8_t src[4] = {10, 0, 2, 15};
+    uint8_t dst[4] = {10, 0, 2, 1};
+
+    /* Default allow */
+    TEST_ASSERT(firewall_check(src, dst, FW_PROTO_TCP, 80) == FW_ACTION_ALLOW,
+                "fw default allow");
+
+    /* Add deny ICMP rule */
+    fw_rule_t rule;
+    memset(&rule, 0, sizeof(rule));
+    rule.protocol = FW_PROTO_ICMP;
+    rule.action = FW_ACTION_DENY;
+    rule.enabled = 1;
+    TEST_ASSERT(firewall_add_rule(&rule) == 0, "fw add rule");
+    TEST_ASSERT(firewall_rule_count() == 1, "fw rule count 1");
+
+    /* ICMP should be denied, TCP still allowed */
+    TEST_ASSERT(firewall_check(src, dst, FW_PROTO_ICMP, 0) == FW_ACTION_DENY,
+                "fw deny icmp");
+    TEST_ASSERT(firewall_check(src, dst, FW_PROTO_TCP, 80) == FW_ACTION_ALLOW,
+                "fw allow tcp with icmp rule");
+
+    /* Add deny TCP port 80 */
+    fw_rule_t rule2;
+    memset(&rule2, 0, sizeof(rule2));
+    rule2.protocol = FW_PROTO_TCP;
+    rule2.action = FW_ACTION_DENY;
+    rule2.dst_port_min = 80;
+    rule2.dst_port_max = 80;
+    rule2.enabled = 1;
+    firewall_add_rule(&rule2);
+
+    TEST_ASSERT(firewall_check(src, dst, FW_PROTO_TCP, 80) == FW_ACTION_DENY,
+                "fw deny tcp:80");
+    TEST_ASSERT(firewall_check(src, dst, FW_PROTO_TCP, 443) == FW_ACTION_ALLOW,
+                "fw allow tcp:443");
+
+    /* Test default deny */
+    firewall_set_default(FW_ACTION_DENY);
+    TEST_ASSERT(firewall_check(src, dst, FW_PROTO_UDP, 53) == FW_ACTION_DENY,
+                "fw default deny udp");
+
+    /* Test source IP matching */
+    fw_rule_t rule3;
+    memset(&rule3, 0, sizeof(rule3));
+    rule3.protocol = FW_PROTO_ALL;
+    rule3.action = FW_ACTION_ALLOW;
+    rule3.src_ip[0] = 10; rule3.src_ip[1] = 0; rule3.src_ip[2] = 2; rule3.src_ip[3] = 15;
+    memset(rule3.src_mask, 255, 4);
+    rule3.enabled = 1;
+    firewall_add_rule(&rule3);
+
+    TEST_ASSERT(firewall_check(src, dst, FW_PROTO_UDP, 53) == FW_ACTION_ALLOW,
+                "fw allow by src ip");
+    uint8_t other_src[4] = {192, 168, 1, 1};
+    TEST_ASSERT(firewall_check(other_src, dst, FW_PROTO_UDP, 53) == FW_ACTION_DENY,
+                "fw deny other src");
+
+    /* Delete rule and flush */
+    TEST_ASSERT(firewall_del_rule(0) == 0, "fw del rule 0");
+    TEST_ASSERT(firewall_rule_count() == 2, "fw count after del");
+
+    firewall_flush();
+    TEST_ASSERT(firewall_rule_count() == 0, "fw count after flush");
+    firewall_set_default(FW_ACTION_ALLOW);
+}
+
+/* ---- Mouse Tests ---- */
+
+static void test_mouse(void) {
+    printf("== Mouse Tests ==\n");
+
+    /* Mouse should be initialized */
+    TEST_ASSERT(mouse_get_x() >= 0, "mouse x >= 0");
+    TEST_ASSERT(mouse_get_y() >= 0, "mouse y >= 0");
+    TEST_ASSERT(mouse_get_buttons() == 0, "mouse buttons init 0");
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -640,6 +729,8 @@ void test_run_all(void) {
     test_gfx();
     test_quota();
     test_network();
+    test_firewall();
+    test_mouse();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {
