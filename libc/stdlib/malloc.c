@@ -3,7 +3,7 @@
 #include <string.h>
 
 #define HEAP_MAGIC 0xBEEF
-#define HEAP_MAX   (16 * 1024 * 1024)  /* 16 MB */
+#define HEAP_MAX   (32 * 1024 * 1024)  /* 32 MB */
 #define ALIGN(x)   (((x) + 7) & ~7)
 
 typedef struct block_header {

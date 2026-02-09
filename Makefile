@@ -15,7 +15,7 @@ build:
 iso: build
 	mkdir -p isodir/boot/grub
 	cp sysroot/boot/myos.kernel isodir/boot/myos.kernel
-	@printf 'menuentry "myos" {\n\tmultiboot /boot/myos.kernel\n}\n' > isodir/boot/grub/grub.cfg
+	@printf 'set gfxmode=1920x1080x32,1280x1024x32,1024x768x32,auto\nset gfxpayload=keep\nmenuentry "myos" {\n\tmultiboot /boot/myos.kernel\n}\n' > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o myos.iso isodir
 
 $(DISK_IMAGE):
@@ -34,7 +34,8 @@ run: iso $(DISK_IMAGE)
 		-netdev user,id=net0,hostfwd=tcp::8080-:80 \
 		-device rtl8139,netdev=net0 \
 		-boot d \
-		-m 128M
+		-m 256M \
+		-vga std
 
 run-vnc: iso $(DISK_IMAGE)
 	@echo "=== Running ImposOS with VNC display ==="
@@ -44,7 +45,8 @@ run-vnc: iso $(DISK_IMAGE)
 		-netdev user,id=net0 \
 		-device rtl8139,netdev=net0 \
 		-boot d \
-		-m 128M \
+		-m 256M \
+		-vga std \
 		-display vnc=:0 \
 		-k fr
 
@@ -58,11 +60,12 @@ run-us: iso $(DISK_IMAGE)
 		-netdev user,id=net0 \
 		-device rtl8139,netdev=net0 \
 		-boot d \
-		-m 128M \
+		-m 256M \
+		-vga std \
 		-k en-us
 
 run-gtk: iso
-	qemu-system-i386 -cdrom myos.iso
+	qemu-system-i386 -cdrom myos.iso -vga std -m 256M
 
 clean:
 	./clean.sh
