@@ -1,18 +1,22 @@
 #include <kernel/vi.h>
 #include <kernel/fs.h>
 #include <kernel/tty.h>
+#include <kernel/gfx.h>
+#include <kernel/desktop.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 
-#define VI_ROWS      24
-#define VI_COLS      80
-#define VI_STATUS    24
 #define VI_MAX_LINES 512
 #define VI_LINE_LEN  256
-#define VGA_W        80
-#define VGA_H        25
+
+static int VGA_W  = 80;
+static int VGA_H  = 25;
+static int VI_ROWS   = 24;
+static int VI_STATUS = 24;
+static int vi_win_x = 0;   /* Column offset for windowed mode */
+static int vi_win_y = 0;   /* Row offset for windowed mode */
 
 typedef enum { NORMAL, INSERT, COMMAND } vi_mode_t;
 
@@ -20,6 +24,13 @@ static uint16_t* const vga = (uint16_t*)0xB8000;
 static const uint8_t COL_TEXT   = 0x07;
 static const uint8_t COL_TILDE = 0x01;
 static const uint8_t COL_BAR   = 0x70;
+
+static const uint32_t vi_vga_to_rgb[16] = {
+    0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
+    0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
+    0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
+    0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
+};
 
 static char lines[VI_MAX_LINES][VI_LINE_LEN];
 static int  num_lines;
@@ -40,15 +51,25 @@ static inline void vi_outb(uint16_t port, uint8_t val) {
 }
 
 static void vi_putc(int row, int col, char c, uint8_t color) {
-    vga[row * VGA_W + col] = (uint16_t)(unsigned char)c | ((uint16_t)color << 8);
+    if (gfx_is_active()) {
+        uint32_t fg = vi_vga_to_rgb[color & 0x0F];
+        uint32_t bg = vi_vga_to_rgb[(color >> 4) & 0x0F];
+        gfx_putchar_at(vi_win_x + col, vi_win_y + row, (unsigned char)c, fg, bg);
+    } else {
+        vga[row * VGA_W + col] = (uint16_t)(unsigned char)c | ((uint16_t)color << 8);
+    }
 }
 
 static void vi_set_cursor(int row, int col) {
-    uint16_t pos = (uint16_t)(row * VGA_W + col);
-    vi_outb(0x3D4, 14);
-    vi_outb(0x3D5, (uint8_t)(pos >> 8));
-    vi_outb(0x3D4, 15);
-    vi_outb(0x3D5, (uint8_t)(pos & 0xFF));
+    if (gfx_is_active()) {
+        gfx_set_cursor(vi_win_x + col, vi_win_y + row);
+    } else {
+        uint16_t pos = (uint16_t)(row * VGA_W + col);
+        vi_outb(0x3D4, 14);
+        vi_outb(0x3D5, (uint8_t)(pos >> 8));
+        vi_outb(0x3D4, 15);
+        vi_outb(0x3D5, (uint8_t)(pos & 0xFF));
+    }
 }
 
 static int vi_draw_str(int row, int col, const char* s, uint8_t color) {
@@ -151,6 +172,9 @@ static void vi_draw(void) {
         }
     }
     vi_draw_status();
+
+    if (gfx_is_active())
+        gfx_flip();
 
     if (mode == COMMAND)
         vi_set_cursor(VI_STATUS, 1 + cmd_len);
@@ -445,6 +469,21 @@ static void vi_handle_command(char c) {
 }
 
 void vi_open(const char* filename) {
+    /* Set dynamic dimensions from window region */
+    if (gfx_is_active()) {
+        vi_win_x = (int)terminal_get_win_x();
+        vi_win_y = (int)terminal_get_win_y();
+        VGA_W = (int)terminal_get_win_w();
+        VGA_H = (int)terminal_get_win_h();
+    } else {
+        vi_win_x = 0;
+        vi_win_y = 0;
+        VGA_W = 80;
+        VGA_H = 25;
+    }
+    VI_ROWS = VGA_H - 1;
+    VI_STATUS = VGA_H - 1;
+
     cx = 0; cy = 0; scroll_off = 0;
     mode = NORMAL;
     cmd_len = 0;
@@ -478,4 +517,6 @@ void vi_open(const char* filename) {
     }
 
     terminal_clear();
+    if (gfx_is_active())
+        desktop_draw_chrome();
 }

@@ -11,7 +11,16 @@ void terminal_writestring(const char* data);
 void terminal_clear(void);
 size_t terminal_get_column(void);
 size_t terminal_get_row(void);
+size_t terminal_get_width(void);
 void terminal_set_cursor(size_t col, size_t row);
+
+/* Window region (for desktop windowed mode) */
+void terminal_set_window(size_t x, size_t y, size_t w, size_t h);
+size_t terminal_get_win_x(void);
+size_t terminal_get_win_y(void);
+size_t terminal_get_win_w(void);
+size_t terminal_get_win_h(void);
+void terminal_set_window_bg(uint32_t color);
 
 /* Color functions */
 void terminal_setcolor(enum vga_color fg, enum vga_color bg);
