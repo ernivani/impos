@@ -10,6 +10,8 @@
 #include <kernel/multiboot.h>
 #include <kernel/gfx.h>
 #include <kernel/desktop.h>
+#include <kernel/mouse.h>
+#include <kernel/firewall.h>
 
 #define PROMPT      "$ "
 
@@ -291,6 +293,10 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Set up GDT, IDT, PIC, PIT before anything else */
     idt_initialize();
+
+    /* Initialize PS/2 mouse and firewall */
+    mouse_initialize();
+    firewall_initialize();
 
     if (gfx_is_active())
         desktop_splash();

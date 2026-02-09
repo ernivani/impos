@@ -18,6 +18,8 @@
 #include <kernel/test.h>
 #include <kernel/gfx.h>
 #include <kernel/desktop.h>
+#include <kernel/firewall.h>
+#include <kernel/mouse.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,6 +80,7 @@ static void cmd_dhcp_cmd(int argc, char* argv[]);
 static void cmd_httpd(int argc, char* argv[]);
 static void cmd_quota(int argc, char* argv[]);
 static void cmd_connect(int argc, char* argv[]);
+static void cmd_firewall(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -723,6 +726,31 @@ static command_t commands[] = {
         "    then runs DHCP discovery to obtain an IP address,\n"
         "    netmask, and gateway from the network. Prints the\n"
         "    assigned configuration on success.\n"
+    },
+    {
+        "firewall", cmd_firewall,
+        "Manage packet filtering rules",
+        "firewall: firewall list|add|del|flush|default\n"
+        "    Manage the packet filtering firewall.\n",
+        "NAME\n"
+        "    firewall - manage packet filtering rules\n\n"
+        "SYNOPSIS\n"
+        "    firewall list\n"
+        "    firewall add allow|deny tcp|udp|icmp|all [SRC_IP[/MASK]] [PORT[-PORT]]\n"
+        "    firewall del INDEX\n"
+        "    firewall flush\n"
+        "    firewall default allow|deny\n\n"
+        "DESCRIPTION\n"
+        "    A minimal stateless packet filter. Rules are evaluated\n"
+        "    top-to-bottom; first match wins. Default policy applies\n"
+        "    if no rule matches (default: allow).\n\n"
+        "    list     Show all rules and default policy.\n"
+        "    add      Add a rule. Protocol: tcp, udp, icmp, or all.\n"
+        "             Optional SRC_IP with /MASK (e.g. 10.0.2.0/255.255.255.0).\n"
+        "             Optional port or port range (e.g. 80 or 1024-65535).\n"
+        "    del N    Delete rule at index N.\n"
+        "    flush    Remove all rules.\n"
+        "    default  Set default policy to allow or deny.\n"
     },
 };
 
@@ -2316,6 +2344,13 @@ static void cmd_gfxdemo(int argc, char* argv[]) {
         gfx_draw_rect(rx + i * 8, ry + i * 8, 120 - i * 16, 80 - i * 16, rc);
     }
 
+    /* Alpha blending demo: overlapping semi-transparent rectangles */
+    int ax = 40, ay = 340;
+    gfx_fill_rect(ax, ay, 120, 80, GFX_RGB(200, 0, 0));
+    gfx_fill_rect_alpha(ax + 40, ay + 20, 120, 80, GFX_RGBA(0, 0, 255, 128));
+    gfx_fill_rect_alpha(ax + 80, ay + 10, 120, 80, GFX_RGBA(0, 200, 0, 100));
+    gfx_draw_string(ax, ay + 84, "Alpha blending demo", GFX_WHITE, GFX_RGB(0, 0, 40));
+
     /* Gradient bar */
     int gy = (int)h - 100;
     for (int x = 40; x < (int)w - 40; x++) {
@@ -2440,5 +2475,143 @@ static void cmd_connect(int argc, char* argv[]) {
         printf("  Gateway: "); net_print_ip(cfg->gateway); printf("\n");
     } else {
         printf("connect: DHCP discovery failed\n");
+    }
+}
+
+static int parse_ip(const char *s, uint8_t ip[4]) {
+    int a, b, c, d;
+    const char *p = s;
+    a = atoi(p); while (*p && *p != '.') p++; if (*p) p++;
+    b = atoi(p); while (*p && *p != '.') p++; if (*p) p++;
+    c = atoi(p); while (*p && *p != '.') p++; if (*p) p++;
+    d = atoi(p);
+    if (a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255)
+        return -1;
+    ip[0] = a; ip[1] = b; ip[2] = c; ip[3] = d;
+    return 0;
+}
+
+static void cmd_firewall(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: firewall list|add|del|flush|default\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "list") == 0) {
+        int n = firewall_rule_count();
+        printf("Default policy: %s\n", firewall_get_default() == FW_ACTION_ALLOW ? "ALLOW" : "DENY");
+        if (n == 0) {
+            printf("No rules.\n");
+            return;
+        }
+        printf("%-4s %-6s %-5s %-16s %-12s\n", "Idx", "Action", "Proto", "Src IP", "Dst Port");
+        for (int i = 0; i < n; i++) {
+            const fw_rule_t *r = firewall_get_rule(i);
+            if (!r) continue;
+            const char *act = r->action == FW_ACTION_ALLOW ? "ALLOW" : "DENY";
+            const char *proto = "all";
+            if (r->protocol == FW_PROTO_TCP)  proto = "tcp";
+            if (r->protocol == FW_PROTO_UDP)  proto = "udp";
+            if (r->protocol == FW_PROTO_ICMP) proto = "icmp";
+
+            char src[32] = "any";
+            uint8_t zero[4] = {0,0,0,0};
+            if (memcmp(r->src_ip, zero, 4) != 0 || memcmp(r->src_mask, zero, 4) != 0) {
+                snprintf(src, sizeof(src), "%d.%d.%d.%d",
+                         r->src_ip[0], r->src_ip[1], r->src_ip[2], r->src_ip[3]);
+            }
+
+            char port[20] = "any";
+            if (r->dst_port_max > 0) {
+                if (r->dst_port_min == r->dst_port_max)
+                    snprintf(port, sizeof(port), "%d", r->dst_port_min);
+                else
+                    snprintf(port, sizeof(port), "%d-%d", r->dst_port_min, r->dst_port_max);
+            }
+
+            printf("%-4d %-6s %-5s %-16s %-12s\n", i, act, proto, src, port);
+        }
+    } else if (strcmp(argv[1], "add") == 0) {
+        if (argc < 4) {
+            printf("Usage: firewall add allow|deny tcp|udp|icmp|all [src_ip[/mask]] [port[-port]]\n");
+            return;
+        }
+        fw_rule_t rule;
+        memset(&rule, 0, sizeof(rule));
+        rule.enabled = 1;
+
+        if (strcmp(argv[2], "allow") == 0)      rule.action = FW_ACTION_ALLOW;
+        else if (strcmp(argv[2], "deny") == 0)   rule.action = FW_ACTION_DENY;
+        else { printf("firewall: action must be allow or deny\n"); return; }
+
+        if (strcmp(argv[3], "tcp") == 0)        rule.protocol = FW_PROTO_TCP;
+        else if (strcmp(argv[3], "udp") == 0)    rule.protocol = FW_PROTO_UDP;
+        else if (strcmp(argv[3], "icmp") == 0)   rule.protocol = FW_PROTO_ICMP;
+        else if (strcmp(argv[3], "all") == 0)    rule.protocol = FW_PROTO_ALL;
+        else { printf("firewall: protocol must be tcp, udp, icmp, or all\n"); return; }
+
+        for (int i = 4; i < argc; i++) {
+            /* Check if it's an IP with optional mask */
+            char *slash = strchr(argv[i], '/');
+            if (slash && strchr(argv[i], '.')) {
+                *slash = '\0';
+                if (parse_ip(argv[i], rule.src_ip) != 0) {
+                    printf("firewall: bad IP '%s'\n", argv[i]);
+                    return;
+                }
+                if (parse_ip(slash + 1, rule.src_mask) != 0) {
+                    printf("firewall: bad mask '%s'\n", slash + 1);
+                    return;
+                }
+            } else if (strchr(argv[i], '.')) {
+                if (parse_ip(argv[i], rule.src_ip) != 0) {
+                    printf("firewall: bad IP '%s'\n", argv[i]);
+                    return;
+                }
+                memset(rule.src_mask, 255, 4);
+            } else if (strcmp(argv[i], "all") == 0 || strcmp(argv[i], "any") == 0) {
+                /* Leave src as 0.0.0.0/0.0.0.0 = any */
+            } else {
+                /* Port or port range */
+                char *dash = strchr(argv[i], '-');
+                if (dash) {
+                    *dash = '\0';
+                    rule.dst_port_min = (uint16_t)atoi(argv[i]);
+                    rule.dst_port_max = (uint16_t)atoi(dash + 1);
+                } else {
+                    rule.dst_port_min = (uint16_t)atoi(argv[i]);
+                    rule.dst_port_max = rule.dst_port_min;
+                }
+            }
+        }
+
+        if (firewall_add_rule(&rule) == 0)
+            printf("Rule added (%d/%d)\n", firewall_rule_count(), FW_MAX_RULES);
+        else
+            printf("firewall: rule table full\n");
+
+    } else if (strcmp(argv[1], "del") == 0) {
+        if (argc < 3) { printf("Usage: firewall del INDEX\n"); return; }
+        int idx = atoi(argv[2]);
+        if (firewall_del_rule(idx) == 0)
+            printf("Rule %d deleted\n", idx);
+        else
+            printf("firewall: invalid index\n");
+
+    } else if (strcmp(argv[1], "flush") == 0) {
+        firewall_flush();
+        printf("All rules flushed\n");
+
+    } else if (strcmp(argv[1], "default") == 0) {
+        if (argc < 3) { printf("Usage: firewall default allow|deny\n"); return; }
+        if (strcmp(argv[2], "allow") == 0)
+            firewall_set_default(FW_ACTION_ALLOW);
+        else if (strcmp(argv[2], "deny") == 0)
+            firewall_set_default(FW_ACTION_DENY);
+        else { printf("firewall: must be allow or deny\n"); return; }
+        printf("Default policy: %s\n", argv[2]);
+
+    } else {
+        printf("Usage: firewall list|add|del|flush|default\n");
     }
 }

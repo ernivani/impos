@@ -94,6 +94,7 @@ uint32_t gfx_cols(void)   { return fb_width / FONT_W; }
 uint32_t gfx_rows(void)   { return fb_height / FONT_H; }
 
 uint32_t* gfx_backbuffer(void) { return backbuf; }
+uint32_t* gfx_framebuffer(void) { return framebuffer; }
 
 /* --- Pixel primitives --- */
 
@@ -153,6 +154,148 @@ void gfx_clear(uint32_t color) {
         for (uint32_t x = 0; x < fb_width; x++)
             row[x] = color;
     }
+}
+
+/* --- Alpha blending --- */
+
+static inline uint32_t alpha_blend(uint32_t dst, uint32_t src) {
+    uint32_t a = (src >> 24) & 0xFF;
+    if (a == 255) return src & 0x00FFFFFF;
+    if (a == 0) return dst;
+    uint32_t inv_a = 255 - a;
+    uint32_t sr = (src >> 16) & 0xFF, sg = (src >> 8) & 0xFF, sb = src & 0xFF;
+    uint32_t dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
+    uint32_t or_ = (sr * a + dr * inv_a) / 255;
+    uint32_t og = (sg * a + dg * inv_a) / 255;
+    uint32_t ob = (sb * a + db * inv_a) / 255;
+    return (or_ << 16) | (og << 8) | ob;
+}
+
+void gfx_blend_pixel(int x, int y, uint32_t color) {
+    if (x < 0 || y < 0 || (uint32_t)x >= fb_width || (uint32_t)y >= fb_height)
+        return;
+    uint32_t idx = y * (fb_pitch / 4) + x;
+    backbuf[idx] = alpha_blend(backbuf[idx], color);
+}
+
+void gfx_fill_rect_alpha(int x, int y, int w, int h, uint32_t color) {
+    int x0 = x, y0 = y;
+    int x1 = x + w, y1 = y + h;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)fb_width) x1 = (int)fb_width;
+    if (y1 > (int)fb_height) y1 = (int)fb_height;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    uint32_t pitch4 = fb_pitch / 4;
+    for (int row = y0; row < y1; row++) {
+        uint32_t* dst = backbuf + row * pitch4 + x0;
+        for (int col = 0; col < x1 - x0; col++)
+            dst[col] = alpha_blend(dst[col], color);
+    }
+}
+
+void gfx_draw_char_alpha(int px, int py, char c, uint32_t fg_with_alpha) {
+    unsigned char uc = (unsigned char)c;
+    const uint8_t* glyph = font8x16[uc];
+    uint32_t pitch4 = fb_pitch / 4;
+
+    for (int row = 0; row < FONT_H; row++) {
+        int yy = py + row;
+        if (yy < 0 || (uint32_t)yy >= fb_height) continue;
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < FONT_W; col++) {
+            if (bits & (0x80 >> col)) {
+                int xx = px + col;
+                if (xx >= 0 && (uint32_t)xx < fb_width) {
+                    uint32_t idx = yy * pitch4 + xx;
+                    backbuf[idx] = alpha_blend(backbuf[idx], fg_with_alpha);
+                }
+            }
+        }
+    }
+}
+
+/* --- Mouse cursor rendering --- */
+
+#define CURSOR_W 12
+#define CURSOR_H 16
+
+static const uint8_t cursor_bitmap[CURSOR_H] = {
+    0x80, 0xC0, 0xE0, 0xF0,
+    0xF8, 0xFC, 0xFE, 0xFF,
+    0xFC, 0xF8, 0xF0, 0xD0,
+    0x88, 0x08, 0x04, 0x04,
+};
+static const uint8_t cursor_mask[CURSOR_H] = {
+    0xC0, 0xE0, 0xF0, 0xF8,
+    0xFC, 0xFE, 0xFF, 0xFF,
+    0xFE, 0xFC, 0xF8, 0xF8,
+    0xCC, 0x0C, 0x06, 0x06,
+};
+
+static uint32_t cursor_save[CURSOR_W * CURSOR_H];
+static int cursor_saved_x = -1, cursor_saved_y = -1;
+static int cursor_visible = 0;
+
+void gfx_draw_mouse_cursor(int x, int y) {
+    if (!gfx_active) return;
+    uint32_t pitch4 = fb_pitch / 4;
+
+    /* Restore previous position first */
+    if (cursor_visible)
+        gfx_restore_mouse_cursor();
+
+    /* Save pixels under cursor */
+    for (int row = 0; row < CURSOR_H; row++) {
+        int yy = y + row;
+        if (yy < 0 || (uint32_t)yy >= fb_height) {
+            for (int col = 0; col < CURSOR_W; col++)
+                cursor_save[row * CURSOR_W + col] = 0;
+            continue;
+        }
+        for (int col = 0; col < CURSOR_W; col++) {
+            int xx = x + col;
+            if (xx < 0 || (uint32_t)xx >= fb_width)
+                cursor_save[row * CURSOR_W + col] = 0;
+            else
+                cursor_save[row * CURSOR_W + col] = framebuffer[yy * pitch4 + xx];
+        }
+    }
+    cursor_saved_x = x;
+    cursor_saved_y = y;
+    cursor_visible = 1;
+
+    /* Draw cursor to framebuffer */
+    for (int row = 0; row < CURSOR_H; row++) {
+        int yy = y + row;
+        if (yy < 0 || (uint32_t)yy >= fb_height) continue;
+        uint8_t mask_bits = cursor_mask[row];
+        uint8_t bmp_bits  = cursor_bitmap[row];
+        for (int col = 0; col < 8; col++) {
+            int xx = x + col;
+            if (xx < 0 || (uint32_t)xx >= fb_width) continue;
+            if (mask_bits & (0x80 >> col)) {
+                uint32_t c = (bmp_bits & (0x80 >> col)) ? GFX_WHITE : GFX_BLACK;
+                framebuffer[yy * pitch4 + xx] = c;
+            }
+        }
+    }
+}
+
+void gfx_restore_mouse_cursor(void) {
+    if (!cursor_visible || cursor_saved_x < 0) return;
+    uint32_t pitch4 = fb_pitch / 4;
+    for (int row = 0; row < CURSOR_H; row++) {
+        int yy = cursor_saved_y + row;
+        if (yy < 0 || (uint32_t)yy >= fb_height) continue;
+        for (int col = 0; col < CURSOR_W; col++) {
+            int xx = cursor_saved_x + col;
+            if (xx < 0 || (uint32_t)xx >= fb_width) continue;
+            framebuffer[yy * pitch4 + xx] = cursor_save[row * CURSOR_W + col];
+        }
+    }
+    cursor_visible = 0;
 }
 
 /* --- Text rendering --- */

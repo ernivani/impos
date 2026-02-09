@@ -5,9 +5,6 @@
 #include <kernel/tty.h>
 #include <kernel/io.h>
 
-#define KEYBOARD_DATA_PORT    0x60
-#define KEYBOARD_STATUS_PORT  0x64
-
 #define CAPSLOCK_SCANCODE    0x3A
 #define NUMLOCK_SCANCODE     0x45
 #define LEFT_SHIFT_SCANCODE  0x2A
@@ -21,6 +18,52 @@ static int shift_pressed = 0;
 static int ctrl_pressed = 0;
 static int altgr_pressed = 0;
 static int extended_scancode = 0;
+
+/* ═══ Keyboard ring buffer (filled by IRQ1 handler) ═════════════ */
+
+#define KBD_BUF_SIZE 128
+static volatile uint8_t kbd_buf[KBD_BUF_SIZE];
+static volatile int kbd_head = 0;
+static volatile int kbd_tail = 0;
+
+void keyboard_push_scancode(uint8_t scancode) {
+    int next = (kbd_head + 1) % KBD_BUF_SIZE;
+    if (next != kbd_tail) {
+        kbd_buf[kbd_head] = scancode;
+        kbd_head = next;
+    }
+}
+
+static int kbd_available(void) {
+    return kbd_head != kbd_tail;
+}
+
+static uint8_t kbd_pop(void) {
+    uint8_t sc = kbd_buf[kbd_tail];
+    kbd_tail = (kbd_tail + 1) % KBD_BUF_SIZE;
+    return sc;
+}
+
+/* ═══ Idle callback (for mouse processing while waiting) ════════ */
+
+static void (*idle_callback)(void) = 0;
+static volatile int force_exit_flag = 0;
+
+void keyboard_set_idle_callback(void (*cb)(void)) {
+    idle_callback = cb;
+}
+
+int keyboard_force_exit(void) {
+    if (force_exit_flag) {
+        force_exit_flag = 0;
+        return 1;
+    }
+    return 0;
+}
+
+void keyboard_request_force_exit(void) {
+    force_exit_flag = 1;
+}
 
 /* -------------------------------------------------------------------
  * Scancode-to-character tables  (PS/2 Scancode Set 1, indices 0x00-0x58)
@@ -207,10 +250,22 @@ int keyboard_get_layout(void) {
 
 char getchar(void) {
     while (1) {
-        if ((inb(KEYBOARD_STATUS_PORT) & 1) == 0)
-            continue;
+        /* Check force-exit (WM close button clicked) */
+        if (force_exit_flag) {
+            force_exit_flag = 0;
+            return KEY_ESCAPE;
+        }
 
-        uint8_t scancode = inb(KEYBOARD_DATA_PORT);
+        /* Read from interrupt-driven ring buffer */
+        if (!kbd_available()) {
+            /* Idle: process mouse and other events */
+            if (idle_callback)
+                idle_callback();
+            __asm__ volatile ("hlt");
+            continue;
+        }
+
+        uint8_t scancode = kbd_pop();
 
         /* E0 prefix: next scancode is an extended key */
         if (scancode == 0xE0) {
@@ -360,4 +415,8 @@ char getchar(void) {
 }
 void keyboard_set_layout(int layout) { (void)layout; }
 int  keyboard_get_layout(void) { return 0; }
+void keyboard_push_scancode(uint8_t sc) { (void)sc; }
+void keyboard_set_idle_callback(void (*cb)(void)) { (void)cb; }
+int  keyboard_force_exit(void) { return 0; }
+void keyboard_request_force_exit(void) { }
 #endif
