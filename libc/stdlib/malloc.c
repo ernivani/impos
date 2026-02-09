@@ -19,11 +19,11 @@ static char* heap_end = NULL;
 
 static void heap_init(void) {
     free_list = (block_header_t*)(void*)_heap_start;
-    heap_end = (char*)_heap_start;
     free_list->size = 0;
     free_list->magic = HEAP_MAGIC;
     free_list->free = 1;
     free_list->next = NULL;
+    heap_end = (char*)_heap_start + sizeof(block_header_t);
 }
 
 static block_header_t* request_space(block_header_t* last, size_t size) {

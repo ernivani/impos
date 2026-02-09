@@ -9,6 +9,7 @@
 void shell_initialize(void);
 void shell_process_command(char* command);
 size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size);
+int shell_login(void);
 
 /* History management (used by kernel line editor + history command) */
 void        shell_history_add(const char *cmd);

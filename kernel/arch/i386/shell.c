@@ -63,6 +63,7 @@ static void cmd_id(int argc, char* argv[]);
 static void cmd_useradd(int argc, char* argv[]);
 static void cmd_userdel(int argc, char* argv[]);
 static void cmd_test(int argc, char* argv[]);
+static void cmd_logout(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -611,6 +612,19 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Run all built-in test suites and print results.\n"
     },
+    {
+        "logout", cmd_logout,
+        "Log out and return to login prompt",
+        "logout: logout\n"
+        "    Log out of the current session.\n",
+        "NAME\n"
+        "    logout - log out of the shell\n\n"
+        "SYNOPSIS\n"
+        "    logout\n\n"
+        "DESCRIPTION\n"
+        "    Saves state and returns to the login prompt.\n"
+        "    The current user session is ended.\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -654,6 +668,70 @@ const char *shell_history_entry(int index) {
         return NULL;
     int slot = (history_next - history_count + index + SHELL_HIST_SIZE) % SHELL_HIST_SIZE;
     return history_buf[slot];
+}
+
+int shell_login(void) {
+    printf("\n");
+    printf("ImposOS Login\n");
+    printf("\n");
+
+    while (1) {
+        printf("Username: ");
+        char username[64];
+        size_t username_len = 0;
+
+        while (username_len < sizeof(username) - 1) {
+            int c = getchar();
+            if (c == '\n' || c == '\r') {
+                break;
+            } else if (c == '\b' || c == 127) {
+                if (username_len > 0) {
+                    username_len--;
+                    printf("\b \b");
+                }
+            } else if (c >= 32 && c < 127) {
+                username[username_len++] = c;
+                putchar(c);
+            }
+        }
+        username[username_len] = '\0';
+        printf("\n");
+
+        if (username[0] == '\0') {
+            continue;
+        }
+
+        printf("Password: ");
+        char password[64];
+        size_t password_len = 0;
+
+        while (password_len < sizeof(password) - 1) {
+            int c = getchar();
+            if (c == '\n' || c == '\r') {
+                break;
+            } else if (c == '\b' || c == 127) {
+                if (password_len > 0) {
+                    password_len--;
+                    printf("\b \b");
+                }
+            } else if (c >= 32 && c < 127) {
+                password[password_len++] = c;
+                putchar('*');
+            }
+        }
+        password[password_len] = '\0';
+        printf("\n");
+
+        user_t* authenticated = user_authenticate(username, password);
+        if (authenticated) {
+            user_set_current(authenticated->username);
+            fs_change_directory(authenticated->home);
+            printf("Welcome, %s!\n\n", authenticated->username);
+            return 0;
+        } else {
+            printf("Login incorrect\n\n");
+        }
+    }
 }
 
 void shell_initialize(void) {
@@ -814,68 +892,7 @@ void shell_initialize(void) {
         printf("\n");
     } else {
         /* System already initialized - prompt for login */
-        printf("\n");
-        printf("ImposOS Login\n");
-        printf("\n");
-        
-        while (1) {
-            printf("Username: ");
-            char username[64];
-            size_t username_len = 0;
-            
-            while (username_len < sizeof(username) - 1) {
-                int c = getchar();
-                if (c == '\n' || c == '\r') {
-                    break;
-                } else if (c == '\b' || c == 127) {
-                    if (username_len > 0) {
-                        username_len--;
-                        printf("\b \b");
-                    }
-                } else if (c >= 32 && c < 127) {
-                    username[username_len++] = c;
-                    putchar(c);
-                }
-            }
-            username[username_len] = '\0';
-            printf("\n");
-            
-            if (username[0] == '\0') {
-                continue;  /* Empty username, try again */
-            }
-            
-            printf("Password: ");
-            char password[64];
-            size_t password_len = 0;
-            
-            while (password_len < sizeof(password) - 1) {
-                int c = getchar();
-                if (c == '\n' || c == '\r') {
-                    break;
-                } else if (c == '\b' || c == 127) {
-                    if (password_len > 0) {
-                        password_len--;
-                        printf("\b \b");
-                    }
-                } else if (c >= 32 && c < 127) {
-                    password[password_len++] = c;
-                    putchar('*');
-                }
-            }
-            password[password_len] = '\0';
-            printf("\n");
-            
-            /* Authenticate */
-            user_t* authenticated = user_authenticate(username, password);
-            if (authenticated) {
-                user_set_current(authenticated->username);
-                fs_change_directory(authenticated->home);
-                printf("Welcome, %s!\n\n", authenticated->username);
-                break;
-            } else {
-                printf("Login incorrect\n\n");
-            }
-        }
+        shell_login();
     }
     
     printf("Type 'help' for a list of commands.\n");
@@ -1116,9 +1133,9 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
                 // Read target directory
                 inode_t dir_inode;
                 if (fs_read_inode(target_inode, &dir_inode) == 0 && dir_inode.type == INODE_DIR) {
-                    uint8_t dir_data[MAX_FILE_SIZE];
+                    uint8_t dir_data[MAX_DIRECT_SIZE];
                     size_t dir_size = dir_inode.size;
-                    if (dir_size > MAX_FILE_SIZE) dir_size = MAX_FILE_SIZE;
+                    if (dir_size > MAX_DIRECT_SIZE) dir_size = MAX_DIRECT_SIZE;
 
                     size_t bytes_read = 0;
                     for (uint8_t i = 0; i < dir_inode.num_blocks && bytes_read < dir_size; i++) {
@@ -1269,7 +1286,11 @@ static void cmd_cat(int argc, char* argv[]) {
         return;
     }
 
-    uint8_t buffer[MAX_FILE_SIZE];
+    uint8_t* buffer = (uint8_t*)malloc(MAX_FILE_SIZE);
+    if (!buffer) {
+        printf("cat: out of memory\n");
+        return;
+    }
     size_t size;
     if (fs_read_file(argv[1], buffer, &size) == 0) {
         for (size_t i = 0; i < size; i++) {
@@ -1279,6 +1300,7 @@ static void cmd_cat(int argc, char* argv[]) {
     } else {
         printf("cat: %s: No such file\n", argv[1]);
     }
+    free(buffer);
 }
 
 static int parse_ls_flags(int argc, char* argv[]) {
@@ -1414,6 +1436,7 @@ static void cmd_exit(int argc, char* argv[]) {
     config_save();
     fs_sync();
     printf("End\n");
+    terminal_clear();
     exit(status);
 }
 
@@ -2088,4 +2111,14 @@ static void cmd_test(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
     test_run_all();
+}
+
+static void cmd_logout(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    config_save_history();
+    config_save();
+    fs_sync();
+    printf("Logging out...\n");
+    exit(0);
 }

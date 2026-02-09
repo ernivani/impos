@@ -79,6 +79,42 @@ static void test_string(void) {
     TEST_ASSERT(memcmp(overlap, "ababcd", 6) == 0, "memmove overlap");
 }
 
+/* ---- New String Tests (strrchr, strnlen, memchr, strcspn, strspn, strpbrk) ---- */
+
+static void test_string_extra(void) {
+    printf("== String Extra Tests ==\n");
+
+    /* strrchr */
+    TEST_ASSERT(strrchr("hello", 'l') == &"hello"[3], "strrchr last match");
+    TEST_ASSERT(strrchr("hello", 'z') == NULL, "strrchr not found");
+    TEST_ASSERT(strrchr("hello", 'h') == &"hello"[0], "strrchr first char");
+
+    /* strnlen */
+    TEST_ASSERT(strnlen("hello", 10) == 5, "strnlen within bound");
+    TEST_ASSERT(strnlen("hello", 3) == 3, "strnlen truncated");
+    TEST_ASSERT(strnlen("", 5) == 0, "strnlen empty");
+
+    /* memchr */
+    const char* s = "abcdef";
+    TEST_ASSERT(memchr(s, 'c', 6) == s + 2, "memchr found");
+    TEST_ASSERT(memchr(s, 'z', 6) == NULL, "memchr not found");
+    TEST_ASSERT(memchr(s, 'e', 3) == NULL, "memchr out of range");
+
+    /* strcspn */
+    TEST_ASSERT(strcspn("hello", "lo") == 2, "strcspn basic");
+    TEST_ASSERT(strcspn("hello", "xyz") == 5, "strcspn no match");
+    TEST_ASSERT(strcspn("hello", "h") == 0, "strcspn first char");
+
+    /* strspn */
+    TEST_ASSERT(strspn("hello", "hel") == 4, "strspn basic");
+    TEST_ASSERT(strspn("hello", "xyz") == 0, "strspn no match");
+    TEST_ASSERT(strspn("aaab", "a") == 3, "strspn repeated");
+
+    /* strpbrk */
+    TEST_ASSERT(strpbrk("hello", "lo") == &"hello"[2], "strpbrk found");
+    TEST_ASSERT(strpbrk("hello", "xyz") == NULL, "strpbrk not found");
+}
+
 /* ---- Stdlib Tests ---- */
 
 static void test_stdlib(void) {
@@ -128,6 +164,87 @@ static void test_stdlib(void) {
     free(p3);
 }
 
+/* ---- New Stdlib Tests (realloc, calloc, abs, div, rand, qsort, bsearch) ---- */
+
+static int int_compare(const void* a, const void* b) {
+    return *(const int*)a - *(const int*)b;
+}
+
+static void test_stdlib_extra(void) {
+    printf("== Stdlib Extra Tests ==\n");
+
+    /* realloc */
+    void* p = realloc(NULL, 32);
+    TEST_ASSERT(p != NULL, "realloc NULL is malloc");
+    memset(p, 0x42, 32);
+
+    void* p2 = realloc(p, 64);
+    TEST_ASSERT(p2 != NULL, "realloc grow");
+    TEST_ASSERT(((unsigned char*)p2)[0] == 0x42, "realloc preserves data");
+
+    void* p3 = realloc(p2, 16);
+    TEST_ASSERT(p3 != NULL, "realloc shrink");
+
+    void* p4 = realloc(p3, 0);
+    TEST_ASSERT(p4 == NULL, "realloc zero frees");
+
+    /* calloc */
+    int* arr = (int*)calloc(10, sizeof(int));
+    TEST_ASSERT(arr != NULL, "calloc non-null");
+    int all_zero = 1;
+    for (int i = 0; i < 10; i++) {
+        if (arr[i] != 0) { all_zero = 0; break; }
+    }
+    TEST_ASSERT(all_zero, "calloc zeroed");
+    free(arr);
+
+    /* abs / labs */
+    TEST_ASSERT(abs(5) == 5, "abs positive");
+    TEST_ASSERT(abs(-5) == 5, "abs negative");
+    TEST_ASSERT(abs(0) == 0, "abs zero");
+    TEST_ASSERT(labs(-100L) == 100L, "labs negative");
+
+    /* div / ldiv */
+    div_t d = div(17, 5);
+    TEST_ASSERT(d.quot == 3, "div quot");
+    TEST_ASSERT(d.rem == 2, "div rem");
+
+    ldiv_t ld = ldiv(-17L, 5L);
+    TEST_ASSERT(ld.quot == -3L, "ldiv quot");
+    TEST_ASSERT(ld.rem == -2L, "ldiv rem");
+
+    /* rand / srand */
+    srand(42);
+    int r1 = rand();
+    int r2 = rand();
+    srand(42);
+    int r3 = rand();
+    TEST_ASSERT(r1 == r3, "srand deterministic");
+    TEST_ASSERT(r1 != r2 || r1 == r2, "rand returns int");  /* always passes, just exercises rand */
+    TEST_ASSERT(r1 >= 0 && r1 <= RAND_MAX, "rand in range");
+
+    /* qsort */
+    int data[] = {5, 3, 8, 1, 9, 2, 7, 4, 6, 0};
+    qsort(data, 10, sizeof(int), int_compare);
+    int sorted = 1;
+    for (int i = 0; i < 9; i++) {
+        if (data[i] > data[i + 1]) { sorted = 0; break; }
+    }
+    TEST_ASSERT(sorted, "qsort sorts");
+    TEST_ASSERT(data[0] == 0, "qsort first");
+    TEST_ASSERT(data[9] == 9, "qsort last");
+
+    /* bsearch */
+    int key = 5;
+    int* found = (int*)bsearch(&key, data, 10, sizeof(int), int_compare);
+    TEST_ASSERT(found != NULL, "bsearch found");
+    TEST_ASSERT(found && *found == 5, "bsearch value");
+
+    int missing = 42;
+    int* nf = (int*)bsearch(&missing, data, 10, sizeof(int), int_compare);
+    TEST_ASSERT(nf == NULL, "bsearch not found");
+}
+
 /* ---- snprintf Tests ---- */
 
 static void test_snprintf(void) {
@@ -171,6 +288,10 @@ static void test_snprintf(void) {
 
 static void test_fs(void) {
     printf("== Filesystem Tests ==\n");
+
+    /* Switch to root for FS tests (need write on / directory) */
+    const char* saved_user = user_get_current();
+    user_set_current("root");
 
     /* Create and read back a file */
     int ret = fs_create_file("/tmp_test_file", 0);
@@ -229,6 +350,75 @@ static void test_fs(void) {
     ret = fs_chmod("/tmp_perm_test", 0644);
     TEST_ASSERT(ret == 0, "fs chmod");
     fs_delete_file("/tmp_perm_test");
+
+    /* Restore original user */
+    if (saved_user)
+        user_set_current(saved_user);
+}
+
+/* ---- Indirect Block Tests ---- */
+
+static void test_fs_indirect(void) {
+    printf("== FS Indirect Block Tests ==\n");
+
+    const char* saved_user = user_get_current();
+    user_set_current("root");
+
+    /* Create a large file (8192 bytes > 4096 direct limit) */
+    size_t large_size = 8192;
+    uint8_t* wbuf = (uint8_t*)malloc(large_size);
+    TEST_ASSERT(wbuf != NULL, "indirect: malloc write buf");
+    if (!wbuf) {
+        if (saved_user) user_set_current(saved_user);
+        return;
+    }
+
+    /* Fill with pattern */
+    for (size_t i = 0; i < large_size; i++)
+        wbuf[i] = (uint8_t)(i & 0xFF);
+
+    int ret = fs_create_file("/tmp_large_file", 0);
+    TEST_ASSERT(ret == 0, "indirect: create large file");
+
+    ret = fs_write_file("/tmp_large_file", wbuf, large_size);
+    TEST_ASSERT(ret == 0, "indirect: write 8192 bytes");
+
+    /* Read back */
+    uint8_t* rbuf = (uint8_t*)malloc(large_size);
+    TEST_ASSERT(rbuf != NULL, "indirect: malloc read buf");
+    if (!rbuf) {
+        free(wbuf);
+        fs_delete_file("/tmp_large_file");
+        if (saved_user) user_set_current(saved_user);
+        return;
+    }
+
+    size_t rsize;
+    ret = fs_read_file("/tmp_large_file", rbuf, &rsize);
+    TEST_ASSERT(ret == 0, "indirect: read large file");
+    TEST_ASSERT(rsize == large_size, "indirect: read size matches");
+
+    int data_ok = 1;
+    for (size_t i = 0; i < large_size; i++) {
+        if (rbuf[i] != (uint8_t)(i & 0xFF)) {
+            data_ok = 0;
+            break;
+        }
+    }
+    TEST_ASSERT(data_ok, "indirect: data integrity");
+
+    /* Delete and verify */
+    ret = fs_delete_file("/tmp_large_file");
+    TEST_ASSERT(ret == 0, "indirect: delete large file");
+
+    ret = fs_read_file("/tmp_large_file", rbuf, &rsize);
+    TEST_ASSERT(ret != 0, "indirect: deleted file unreadable");
+
+    free(wbuf);
+    free(rbuf);
+
+    if (saved_user)
+        user_set_current(saved_user);
 }
 
 /* ---- User Tests ---- */
@@ -263,9 +453,12 @@ void test_run_all(void) {
     printf("\n=== ImposOS Regression Tests ===\n\n");
 
     test_string();
+    test_string_extra();
     test_stdlib();
+    test_stdlib_extra();
     test_snprintf();
     test_fs();
+    test_fs_indirect();
     test_user();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);

@@ -3,6 +3,7 @@
 #include <kernel/tty.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 
 #define VI_ROWS      24
@@ -158,7 +159,12 @@ static void vi_draw(void) {
 }
 
 static void vi_load(void) {
-    uint8_t buf[MAX_FILE_SIZE];
+    uint8_t* buf = (uint8_t*)malloc(MAX_FILE_SIZE);
+    if (!buf) {
+        num_lines = 1;
+        lines[0][0] = '\0';
+        return;
+    }
     size_t size;
 
     num_lines = 0;
@@ -167,6 +173,7 @@ static void vi_load(void) {
     if (fs_read_file(vi_fname, buf, &size) < 0) {
         num_lines = 1;
         lines[0][0] = '\0';
+        free(buf);
         return;
     }
 
@@ -188,15 +195,17 @@ static void vi_load(void) {
         num_lines = 1;
         lines[0][0] = '\0';
     }
+    free(buf);
 }
 
 static int vi_save(void) {
-    uint8_t buf[MAX_FILE_SIZE];
+    uint8_t* buf = (uint8_t*)malloc(MAX_FILE_SIZE);
+    if (!buf) return -1;
     size_t pos = 0;
 
     for (int i = 0; i < num_lines; i++) {
         int len = (int)strlen(lines[i]);
-        if (pos + (size_t)len + 1 > MAX_FILE_SIZE) return -1;
+        if (pos + (size_t)len + 1 > MAX_FILE_SIZE) { free(buf); return -1; }
         memcpy(buf + pos, lines[i], (size_t)len);
         pos += (size_t)len;
         if (i < num_lines - 1) buf[pos++] = '\n';
@@ -204,11 +213,13 @@ static int vi_save(void) {
 
     if (fs_write_file(vi_fname, buf, pos) == 0) {
         modified = 0;
+        free(buf);
         return 0;
     }
-    if (fs_create_file(vi_fname, 0) < 0) return -1;
-    if (fs_write_file(vi_fname, buf, pos) < 0) return -1;
+    if (fs_create_file(vi_fname, 0) < 0) { free(buf); return -1; }
+    if (fs_write_file(vi_fname, buf, pos) < 0) { free(buf); return -1; }
     modified = 0;
+    free(buf);
     return 0;
 }
 

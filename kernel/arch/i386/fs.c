@@ -257,6 +257,7 @@ static int init_dir_inode(int inode_idx, uint32_t parent_inode) {
     inode->type = INODE_DIR;
     inode->size = 0;
     inode->num_blocks = 0;
+    inode->indirect_block = 0;
 
     int blk = alloc_block();
     if (blk < 0) return -1;
@@ -349,6 +350,11 @@ int fs_load(void) {
         return -1;
     }
 
+    /* Validate superblock fields */
+    if (sb.num_inodes != NUM_INODES || sb.num_blocks != NUM_BLOCKS) {
+        return -1;
+    }
+
     /* Read inodes */
     if (ata_read_sectors(DISK_SECTOR_INODES, INODE_SECTORS, (uint8_t*)inodes) != 0) {
         return -1;
@@ -361,6 +367,34 @@ int fs_load(void) {
                 return -1;
             }
         }
+    }
+
+    /* Validate active inodes */
+    for (uint32_t i = 0; i < NUM_INODES; i++) {
+        if (!bitmap_test(sb.inode_bitmap, i))
+            continue;
+        inode_t* node = &inodes[i];
+        if (node->type > INODE_SYMLINK) {
+            return -1;
+        }
+        if (node->num_blocks > DIRECT_BLOCKS) {
+            return -1;
+        }
+        for (uint8_t b = 0; b < node->num_blocks; b++) {
+            if (node->blocks[b] >= NUM_BLOCKS) {
+                return -1;
+            }
+        }
+        if (node->indirect_block != 0 && node->indirect_block >= NUM_BLOCKS) {
+            return -1;
+        }
+    }
+
+    /* Validate cwd_inode */
+    if (sb.cwd_inode >= NUM_INODES ||
+        !bitmap_test(sb.inode_bitmap, sb.cwd_inode) ||
+        inodes[sb.cwd_inode].type != INODE_DIR) {
+        sb.cwd_inode = ROOT_INODE;
     }
 
     fs_dirty = 0;
@@ -391,6 +425,7 @@ void fs_initialize(void) {
     inodes[ROOT_INODE].mode = 0755;
     inodes[ROOT_INODE].owner_uid = 0;
     inodes[ROOT_INODE].owner_gid = 0;
+    inodes[ROOT_INODE].indirect_block = 0;
 
     /* create default directory hierarchy */
     fs_create_file("/home", 1);
@@ -428,6 +463,7 @@ int fs_create_file(const char* filename, uint8_t is_directory) {
         inodes[idx].type = INODE_FILE;
         inodes[idx].size = 0;
         inodes[idx].num_blocks = 0;
+        inodes[idx].indirect_block = 0;
         inodes[idx].mode = 0644;
     }
     inodes[idx].owner_uid = user_get_current_uid();
@@ -460,16 +496,30 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
     if (size > MAX_FILE_SIZE) return -1;
     if (!check_permission(inode, PERM_W)) return -1;
 
-    /* free old blocks */
+    /* free old direct blocks */
     for (uint8_t b = 0; b < inode->num_blocks; b++)
         free_block(inode->blocks[b]);
+
+    /* free old indirect blocks */
+    if (inode->indirect_block != 0) {
+        uint32_t* ptrs = (uint32_t*)data_blocks[inode->indirect_block];
+        for (size_t i = 0; i < INDIRECT_PTRS; i++) {
+            if (ptrs[i] != 0)
+                free_block(ptrs[i]);
+        }
+        free_block(inode->indirect_block);
+        inode->indirect_block = 0;
+    }
+
     inode->num_blocks = 0;
     inode->size = 0;
 
     /* allocate new blocks and write data */
     size_t remaining = size;
     size_t offset = 0;
-    while (remaining > 0) {
+
+    /* Fill direct blocks first */
+    while (remaining > 0 && inode->num_blocks < DIRECT_BLOCKS) {
         int blk = alloc_block();
         if (blk < 0) return -1;
         inode->blocks[inode->num_blocks++] = blk;
@@ -479,14 +529,36 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
         offset += chunk;
         remaining -= chunk;
     }
+
+    /* If more data, use indirect block */
+    if (remaining > 0) {
+        int ind_blk = alloc_block();
+        if (ind_blk < 0) return -1;
+        inode->indirect_block = ind_blk;
+        uint32_t* ptrs = (uint32_t*)data_blocks[ind_blk];
+        memset(ptrs, 0, BLOCK_SIZE);
+
+        size_t ind_idx = 0;
+        while (remaining > 0 && ind_idx < INDIRECT_PTRS) {
+            int blk = alloc_block();
+            if (blk < 0) return -1;
+            ptrs[ind_idx++] = blk;
+
+            size_t chunk = remaining > BLOCK_SIZE ? BLOCK_SIZE : remaining;
+            memcpy(data_blocks[blk], data + offset, chunk);
+            offset += chunk;
+            remaining -= chunk;
+        }
+    }
+
     inode->size = size;
     fs_dirty = 1;
-    
+
     /* Auto-sync if disk available */
     if (ata_is_available()) {
         fs_sync();
     }
-    
+
     return 0;
 }
 
@@ -512,12 +584,27 @@ int fs_read_file(const char* filename, uint8_t* buffer, size_t* size) {
 
     size_t remaining = inode->size;
     size_t offset = 0;
+
+    /* Read direct blocks */
     for (uint8_t b = 0; b < inode->num_blocks && remaining > 0; b++) {
         size_t chunk = remaining > BLOCK_SIZE ? BLOCK_SIZE : remaining;
         memcpy(buffer + offset, data_blocks[inode->blocks[b]], chunk);
         offset += chunk;
         remaining -= chunk;
     }
+
+    /* Read indirect blocks */
+    if (remaining > 0 && inode->indirect_block != 0) {
+        uint32_t* ptrs = (uint32_t*)data_blocks[inode->indirect_block];
+        for (size_t i = 0; i < INDIRECT_PTRS && remaining > 0; i++) {
+            if (ptrs[i] == 0) break;
+            size_t chunk = remaining > BLOCK_SIZE ? BLOCK_SIZE : remaining;
+            memcpy(buffer + offset, data_blocks[ptrs[i]], chunk);
+            offset += chunk;
+            remaining -= chunk;
+        }
+    }
+
     *size = inode->size;
     return 0;
 }
@@ -550,9 +637,20 @@ int fs_delete_file(const char* filename) {
         }
     }
 
-    /* free data blocks */
+    /* free direct data blocks */
     for (uint8_t b = 0; b < inode->num_blocks; b++)
         free_block(inode->blocks[b]);
+
+    /* free indirect blocks */
+    if (inode->indirect_block != 0) {
+        uint32_t* ptrs = (uint32_t*)data_blocks[inode->indirect_block];
+        for (size_t i = 0; i < INDIRECT_PTRS; i++) {
+            if (ptrs[i] != 0)
+                free_block(ptrs[i]);
+        }
+        free_block(inode->indirect_block);
+    }
+
     free_inode(inode_idx);
 
     /* remove from parent */
@@ -764,6 +862,7 @@ int fs_create_symlink(const char* target, const char* linkname) {
 
     inodes[idx].type = INODE_SYMLINK;
     inodes[idx].mode = 0777;
+    inodes[idx].indirect_block = 0;
     inodes[idx].owner_uid = user_get_current_uid();
     inodes[idx].owner_gid = user_get_current_gid();
 

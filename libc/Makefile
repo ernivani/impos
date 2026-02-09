@@ -55,6 +55,19 @@ string/strtok.o \
 string/strchr.o \
 string/strstr.o \
 string/strdup.o \
+stdlib/realloc.o \
+stdlib/calloc.o \
+stdlib/rand.o \
+stdlib/qsort.o \
+stdlib/bsearch.o \
+stdlib/abs.o \
+string/strrchr.o \
+string/strnlen.o \
+string/memchr.o \
+string/strcspn.o \
+string/strspn.o \
+string/strpbrk.o \
+string/strndup.o \
 
 HOSTEDOBJS=\
 $(ARCH_HOSTEDOBJS) \
