@@ -22,8 +22,8 @@
 
 # Video mode fields (hints only — actual resolution from multiboot info)
 .long 0     # mode_type: 0 = linear graphics
-.long 1024  # width hint
-.long 768   # height hint
+.long 1920  # width hint
+.long 1080  # height hint
 .long 32    # depth hint (bits per pixel)
 
 # Reserve a stack for the initial thread.

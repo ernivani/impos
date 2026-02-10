@@ -54,6 +54,7 @@ int  keyboard_force_exit(void);
 void keyboard_request_force_exit(void);
 int  keyboard_data_available(void);
 int  keyboard_check_double_ctrl(void);
+void keyboard_run_idle(void);
 
 /* FILE I/O */
 FILE* fopen(const char* path, const char* mode);

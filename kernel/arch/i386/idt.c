@@ -1,6 +1,7 @@
 #include <kernel/idt.h>
 #include <kernel/io.h>
 #include <kernel/config.h>
+#include <kernel/task.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -145,8 +146,8 @@ static void pic_remap(void) {
 #define PIT_CHANNEL0 0x40
 #define PIT_CMD      0x43
 #define PIT_FREQ     1193182
-#define TARGET_HZ    100
-#define PIT_DIVISOR   (PIT_FREQ / TARGET_HZ)  /* ~11932 */
+#define TARGET_HZ    120
+#define PIT_DIVISOR   (PIT_FREQ / TARGET_HZ)  /* ~9943 */
 
 volatile uint32_t pit_ticks = 0;
 static volatile uint32_t pit_idle_ticks = 0;
@@ -165,12 +166,16 @@ uint32_t pit_get_ticks(void) {
 }
 
 void pit_sleep_ms(uint32_t ms) {
-    uint32_t target = pit_ticks + (ms / 10);
-    if (ms % 10) target++; /* Round up */
+    int saved_task = task_get_current();
+    task_set_current(TASK_IDLE);
+    uint32_t target = pit_ticks + (ms * TARGET_HZ / 1000);
+    if (ms * TARGET_HZ % 1000) target++; /* Round up */
     while (pit_ticks < target) {
         cpu_halting = 1;
         __asm__ volatile ("hlt");
     }
+    cpu_halting = 0;
+    task_set_current(saved_task);
 }
 
 void pit_get_cpu_stats(uint32_t *idle, uint32_t *busy) {
@@ -189,14 +194,23 @@ void irq_register_handler(int irq, irq_handler_t handler) {
 }
 
 /* PIT IRQ0 handler */
+static int second_counter = 0;
+
 static void pit_handler(registers_t* regs) {
     (void)regs;
     pit_ticks++;
-    if (cpu_halting) { pit_idle_ticks++; cpu_halting = 0; }
-    else { pit_busy_ticks++; }
-    /* Advance system clock every 100 ticks (1 second at 100Hz) */
-    if ((pit_ticks % TARGET_HZ) == 0)
+    if (cpu_halting) {
+        pit_idle_ticks++;
+    } else {
+        pit_busy_ticks++;
+    }
+    task_tick();
+    second_counter++;
+    if (second_counter >= TARGET_HZ) {
+        second_counter = 0;
         config_tick_second();
+        task_sample();
+    }
 }
 
 /* Keyboard IRQ1 handler — read scancode from port 0x60 and push to ring buffer.

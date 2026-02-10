@@ -16,6 +16,7 @@
 #include <kernel/settings_app.h>
 #include <kernel/monitor_app.h>
 #include <kernel/finder.h>
+#include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -66,9 +67,12 @@ static uint32_t lerp_color(uint32_t a, uint32_t b, int t) {
     int r = (int)((a >> 16) & 0xFF) + (((int)((b >> 16) & 0xFF) - (int)((a >> 16) & 0xFF)) * t / 255);
     int g = (int)((a >> 8) & 0xFF) + (((int)((b >> 8) & 0xFF) - (int)((a >> 8) & 0xFF)) * t / 255);
     int bl = (int)(a & 0xFF) + (((int)(b & 0xFF) - (int)(a & 0xFF)) * t / 255);
-    if (r < 0) r = 0; if (r > 255) r = 255;
-    if (g < 0) g = 0; if (g > 255) g = 255;
-    if (bl < 0) bl = 0; if (bl > 255) bl = 255;
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (bl < 0) bl = 0;
+    if (bl > 255) bl = 255;
     return GFX_RGB(r, g, bl);
 }
 
@@ -231,6 +235,7 @@ static void desktop_update_clock(void) {
         }
     }
     desktop_draw_menubar();
+    wm_invalidate_bg(); /* Clock changed — refresh cached background */
     gfx_flip_rect(0, 0, fb_w, MENUBAR_H);
 }
 
@@ -301,8 +306,6 @@ void desktop_draw_menubar(void) {
 #define DOCK_ITEMS    7
 #define DOCK_SEP_POS  5   /* separator before index 5 (Settings) */
 
-static int dock_sel = 1;
-
 static const char *dock_labels[DOCK_ITEMS] = {
     "Files", "Terminal", "Activity", "Editor",
     "Power", "Settings", "Monitor"
@@ -372,6 +375,7 @@ typedef struct {
     void (*on_event)(ui_window_t *, ui_event_t *);
     void (*on_close)(ui_window_t *);
     int is_terminal;
+    int task_id;              /* task tracker id (-1 if none) */
 } running_app_t;
 
 static running_app_t running_apps[MAX_RUNNING_APPS];
@@ -395,7 +399,8 @@ static int find_running_app_by_wm(int wm_id) {
 
 static int register_app(int wm_id, int dock_idx, ui_window_t *ui_win,
                         void (*on_event)(ui_window_t *, ui_event_t *),
-                        void (*on_close)(ui_window_t *)) {
+                        void (*on_close)(ui_window_t *),
+                        const char *app_name) {
     for (int i = 0; i < MAX_RUNNING_APPS; i++) {
         if (!running_apps[i].active) {
             running_apps[i].active = 1;
@@ -405,6 +410,7 @@ static int register_app(int wm_id, int dock_idx, ui_window_t *ui_win,
             running_apps[i].on_event = on_event;
             running_apps[i].on_close = on_close;
             running_apps[i].is_terminal = 0;
+            running_apps[i].task_id = task_register(app_name, 1, wm_id);
             return i;
         }
     }
@@ -412,8 +418,11 @@ static int register_app(int wm_id, int dock_idx, ui_window_t *ui_win,
 }
 
 static void unregister_app(int idx) {
-    if (idx >= 0 && idx < MAX_RUNNING_APPS)
+    if (idx >= 0 && idx < MAX_RUNNING_APPS) {
+        if (running_apps[idx].task_id >= 0)
+            task_unregister(running_apps[idx].task_id);
         running_apps[idx].active = 0;
+    }
 }
 
 static int is_dock_app_running(int dock_idx) {
@@ -445,8 +454,7 @@ void desktop_draw_dock(void) {
         }
 
         int hover = wm_get_dock_hover();
-        int selected = (i == dock_sel);
-        int highlighted = selected || (i == hover);
+        int highlighted = (i == hover);
 
         /* Hover/selection highlight behind item */
         if (highlighted) {
@@ -468,7 +476,7 @@ void desktop_draw_dock(void) {
         }
 
         /* Tooltip on hover (floating label above dock item) */
-        if (hover == i && !selected) {
+        if (hover == i) {
             const char *label = dock_labels[i];
             int lw = (int)strlen(label) * FONT_W;
             int tip_w = lw + 12;
@@ -525,8 +533,23 @@ extern void shell_loop(void);
 /* ═══ Unified Idle Callback (Phase 3) ═════════════════════════ */
 
 static void desktop_unified_idle(void) {
+    task_set_current(TASK_WM);
     wm_mouse_idle();
     desktop_update_clock();
+
+    /* Watchdog: check for killed apps */
+    for (int i = 0; i < MAX_RUNNING_APPS; i++) {
+        if (running_apps[i].active && running_apps[i].task_id >= 0 &&
+            task_check_killed(running_apps[i].task_id)) {
+            if (running_apps[i].on_close && running_apps[i].ui_win)
+                running_apps[i].on_close(running_apps[i].ui_win);
+            if (running_apps[i].ui_win)
+                ui_window_destroy(running_apps[i].ui_win);
+            unregister_app(i);
+            wm_invalidate_bg();
+            wm_composite();
+        }
+    }
 
     /* Check close request from WM */
     if (wm_close_was_requested()) {
@@ -599,24 +622,38 @@ static void desktop_unified_idle(void) {
         }
     }
 
-    /* Composite if any window is dirty */
+    /* Composite if any window is dirty — credit redraw to the app */
     int needs_composite = 0;
     for (int i = 0; i < MAX_RUNNING_APPS; i++) {
         if (running_apps[i].active && running_apps[i].ui_win &&
             running_apps[i].ui_win->dirty) {
+            if (running_apps[i].task_id >= 0)
+                task_set_current(running_apps[i].task_id);
             ui_window_redraw(running_apps[i].ui_win);
             needs_composite = 1;
         }
     }
-    if (needs_composite)
+    if (needs_composite) {
+        task_set_current(TASK_WM);
         wm_composite();
+    }
+
+    task_set_current(TASK_IDLE);
 }
 
 /* Idle callback for terminal: process mouse via WM, update clock */
 static void desktop_idle_terminal(void) {
+    task_set_current(TASK_WM);
     wm_mouse_idle();
-    wm_composite();
     desktop_update_clock();
+
+    /* Throttled composite — ~30fps to show terminal output without burning CPU */
+    static uint32_t last_composite_tick = 0;
+    uint32_t now = pit_get_ticks();
+    if (now - last_composite_tick >= 4) { /* 120Hz / 4 = 30fps */
+        last_composite_tick = now;
+        wm_composite();
+    }
 
     if (wm_close_was_requested()) {
         wm_clear_close_request();
@@ -624,6 +661,18 @@ static void desktop_idle_terminal(void) {
             keyboard_request_force_exit();
         }
     }
+
+    int da = wm_get_dock_action();
+    if (da) {
+        ui_event_t ev;
+        ev.type = UI_EVENT_DOCK;
+        ev.dock.action = da;
+        ui_push_event(&ev);
+        keyboard_request_force_exit();
+        return;
+    }
+
+    task_set_current(TASK_IDLE);
 }
 
 /* ═══ Terminal Window (WM-managed) ═════════════════════════════ */
@@ -704,14 +753,20 @@ static void desktop_launch_app(int action) {
             running_apps[ti].on_event = 0;
             running_apps[ti].on_close = 0;
             running_apps[ti].is_terminal = 1;
+            running_apps[ti].task_id = task_register("Terminal", 1, active_terminal_win);
         }
 
         /* Blocking shell loop */
+        task_set_current(TASK_SHELL);
         shell_loop();
 
         /* Clean up terminal */
         desktop_close_terminal();
-        if (ti >= 0) running_apps[ti].active = 0;
+        if (ti >= 0) {
+            if (running_apps[ti].task_id >= 0)
+                task_unregister(running_apps[ti].task_id);
+            running_apps[ti].active = 0;
+        }
 
         /* Restore unified idle and redraw */
         keyboard_set_idle_callback(desktop_unified_idle);
@@ -733,11 +788,17 @@ static void desktop_launch_app(int action) {
             running_apps[ti].on_event = 0;
             running_apps[ti].on_close = 0;
             running_apps[ti].is_terminal = 1;
+            running_apps[ti].task_id = task_register("Editor", 1, active_terminal_win);
         }
         printf("vi: open a file with 'vi <filename>'\n");
+        task_set_current(TASK_SHELL);
         shell_loop();
         desktop_close_terminal();
-        if (ti >= 0) running_apps[ti].active = 0;
+        if (ti >= 0) {
+            if (running_apps[ti].task_id >= 0)
+                task_unregister(running_apps[ti].task_id);
+            running_apps[ti].active = 0;
+        }
         keyboard_set_idle_callback(desktop_unified_idle);
         wm_composite();
         break;
@@ -747,7 +808,7 @@ static void desktop_launch_app(int action) {
         ui_window_t *win = app_filemgr_create();
         if (win) {
             int ri = register_app(win->wm_id, dock_idx, win,
-                                  app_filemgr_on_event, app_filemgr_on_close);
+                                  app_filemgr_on_event, app_filemgr_on_close, "Files");
             (void)ri;
             ui_window_redraw(win);
             wm_composite();
@@ -759,7 +820,7 @@ static void desktop_launch_app(int action) {
         ui_window_t *win = app_taskmgr_create();
         if (win) {
             int ri = register_app(win->wm_id, dock_idx, win,
-                                  app_taskmgr_on_event, 0);
+                                  app_taskmgr_on_event, 0, "Activity");
             (void)ri;
             ui_window_redraw(win);
             wm_composite();
@@ -771,7 +832,7 @@ static void desktop_launch_app(int action) {
         ui_window_t *win = app_settings_create();
         if (win) {
             int ri = register_app(win->wm_id, dock_idx, win,
-                                  app_settings_on_event, 0);
+                                  app_settings_on_event, 0, "Settings");
             (void)ri;
             ui_window_redraw(win);
             wm_composite();
@@ -783,7 +844,7 @@ static void desktop_launch_app(int action) {
         ui_window_t *win = app_monitor_create();
         if (win) {
             int ri = register_app(win->wm_id, dock_idx, win,
-                                  app_monitor_on_event, 0);
+                                  app_monitor_on_event, 0, "Monitor");
             (void)ri;
             ui_window_redraw(win);
             wm_composite();
@@ -817,17 +878,7 @@ static void desktop_close_focused_app(void) {
 
 /* ═══ Self-contained desktop_run() — Central Event Loop ════════ */
 
-static void desktop_redraw(int fb_w, int fb_h) {
-    draw_gradient(fb_w, fb_h);
-    desktop_draw_menubar();
-    desktop_draw_dock();
-    gfx_flip();
-    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
-}
-
 int desktop_run(void) {
-    dock_sel = 1;
-
     /* Clear app registry */
     for (int i = 0; i < MAX_RUNNING_APPS; i++)
         running_apps[i].active = 0;
@@ -862,17 +913,21 @@ int desktop_run(void) {
 
     /* Main event loop */
     while (1) {
-        /* Redraw dirty app windows */
+        /* Redraw dirty app windows — credit redraw to the app */
         int needs_composite = 0;
         for (int i = 0; i < MAX_RUNNING_APPS; i++) {
             if (running_apps[i].active && running_apps[i].ui_win &&
                 running_apps[i].ui_win->dirty) {
+                if (running_apps[i].task_id >= 0)
+                    task_set_current(running_apps[i].task_id);
                 ui_window_redraw(running_apps[i].ui_win);
                 needs_composite = 1;
             }
         }
-        if (needs_composite)
+        if (needs_composite) {
+            task_set_current(TASK_WM);
             wm_composite();
+        }
 
         /* Check for queued events first */
         ui_event_t ev;
@@ -961,6 +1016,10 @@ int desktop_run(void) {
             int ri = (fid >= 0) ? find_running_app_by_wm(fid) : -1;
 
             if (ri >= 0 && running_apps[ri].ui_win) {
+                /* Set current task for CPU tracking */
+                if (running_apps[ri].task_id >= 0)
+                    task_set_current(running_apps[ri].task_id);
+
                 /* Escape closes focused app */
                 if (c == KEY_ESCAPE) {
                     desktop_close_focused_app();
@@ -985,36 +1044,7 @@ int desktop_run(void) {
                 continue;
             }
 
-            /* No app focused — dock navigation */
-            if (c == KEY_LEFT) {
-                if (dock_sel > 0) dock_sel--;
-                desktop_redraw(fb_w, fb_h);
-                continue;
-            }
-            if (c == KEY_RIGHT) {
-                if (dock_sel < DOCK_ITEMS - 1) dock_sel++;
-                desktop_redraw(fb_w, fb_h);
-                continue;
-            }
-            if (c == '\n') {
-                int act = dock_actions[dock_sel];
-                if (act == DESKTOP_ACTION_POWER) {
-                    keyboard_set_idle_callback(0);
-                    gfx_restore_mouse_cursor();
-                    return DESKTOP_ACTION_POWER;
-                }
-                desktop_launch_app(act);
-                draw_gradient(fb_w, fb_h);
-                desktop_draw_menubar();
-                desktop_draw_dock();
-                wm_composite();
-                continue;
-            }
-            if (c == KEY_ESCAPE) {
-                keyboard_set_idle_callback(0);
-                gfx_restore_mouse_cursor();
-                return DESKTOP_ACTION_POWER;
-            }
+            /* Dock is mouse-only — no keyboard navigation */
         }
 
         /* Mouse events: dispatch to focused app */
@@ -1022,6 +1052,8 @@ int desktop_run(void) {
             int fid = wm_get_focused_id();
             int ri = (fid >= 0) ? find_running_app_by_wm(fid) : -1;
             if (ri >= 0 && running_apps[ri].ui_win) {
+                if (running_apps[ri].task_id >= 0)
+                    task_set_current(running_apps[ri].task_id);
                 ui_dispatch_event(running_apps[ri].ui_win, &ev);
                 if (running_apps[ri].active && running_apps[ri].ui_win->dirty) {
                     ui_window_redraw(running_apps[ri].ui_win);

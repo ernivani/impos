@@ -22,6 +22,8 @@
 #include <kernel/mouse.h>
 #include <kernel/wm.h>
 #include <kernel/idt.h>
+#include <kernel/arp.h>
+#include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1226,7 +1228,7 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
                         completion_matches_count++;
                     }
                 }
-            } else if (prefix_len >= 0) {
+            } else {
                 // Complete filenames
                 // Extract the current word being completed
                 char word[256] = {0};
@@ -1610,19 +1612,19 @@ static void cmd_timedatectl(int argc, char* argv[]) {
         
         /* Local time */
         printf("      Local time: %d-", dt.year);
-        if (dt.month < 10) putchar('0'); printf("%d-", dt.month);
-        if (dt.day < 10) putchar('0'); printf("%d ", dt.day);
-        if (dt.hour < 10) putchar('0'); printf("%d:", dt.hour);
-        if (dt.minute < 10) putchar('0'); printf("%d:", dt.minute);
-        if (dt.second < 10) putchar('0'); printf("%d\n", dt.second);
-        
+        if (dt.month < 10) { putchar('0'); } printf("%d-", dt.month);
+        if (dt.day < 10) { putchar('0'); } printf("%d ", dt.day);
+        if (dt.hour < 10) { putchar('0'); } printf("%d:", dt.hour);
+        if (dt.minute < 10) { putchar('0'); } printf("%d:", dt.minute);
+        if (dt.second < 10) { putchar('0'); } printf("%d\n", dt.second);
+
         /* Universal time */
         printf("  Universal time: %d-", dt.year);
-        if (dt.month < 10) putchar('0'); printf("%d-", dt.month);
-        if (dt.day < 10) putchar('0'); printf("%d ", dt.day);
-        if (dt.hour < 10) putchar('0'); printf("%d:", dt.hour);
-        if (dt.minute < 10) putchar('0'); printf("%d:", dt.minute);
-        if (dt.second < 10) putchar('0'); printf("%d\n", dt.second);
+        if (dt.month < 10) { putchar('0'); } printf("%d-", dt.month);
+        if (dt.day < 10) { putchar('0'); } printf("%d ", dt.day);
+        if (dt.hour < 10) { putchar('0'); } printf("%d:", dt.hour);
+        if (dt.minute < 10) { putchar('0'); } printf("%d:", dt.minute);
+        if (dt.second < 10) { putchar('0'); } printf("%d\n", dt.second);
         
         printf("        Timezone: %s\n", config_get_timezone());
         printf("     Time format: %s\n", cfg->use_24h_format ? "24-hour" : "12-hour");
@@ -1674,9 +1676,9 @@ static void cmd_timedatectl(int argc, char* argv[]) {
         dt.second = second;
         config_set_datetime(&dt);
         printf("Time set to ");
-        if (hour < 10) putchar('0'); printf("%d:", hour);
-        if (minute < 10) putchar('0'); printf("%d:", minute);
-        if (second < 10) putchar('0'); printf("%d\n", second);
+        if (hour < 10) { putchar('0'); } printf("%d:", hour);
+        if (minute < 10) { putchar('0'); } printf("%d:", minute);
+        if (second < 10) { putchar('0'); } printf("%d\n", second);
         
     } else if (strcmp(argv[1], "set-date") == 0) {
         if (argc < 3) {
@@ -1719,8 +1721,8 @@ static void cmd_timedatectl(int argc, char* argv[]) {
         dt.day = day;
         config_set_datetime(&dt);
         printf("Date set to %d-", year);
-        if (month < 10) putchar('0'); printf("%d-", month);
-        if (day < 10) putchar('0'); printf("%d\n", day);
+        if (month < 10) { putchar('0'); } printf("%d-", month);
+        if (day < 10) { putchar('0'); } printf("%d\n", day);
         
     } else if (strcmp(argv[1], "set-timezone") == 0) {
         if (argc < 3) {
@@ -2642,16 +2644,16 @@ static void cmd_firewall(int argc, char* argv[]) {
 static void cmd_top(int argc, char* argv[]) {
     (void)argc; (void)argv;
 
-    /* Take initial CPU snapshot for delta calculation */
-    uint32_t prev_idle = 0, prev_busy = 0;
-    pit_get_cpu_stats(&prev_idle, &prev_busy);
-
+    int first = 1;
     while (1) {
         terminal_clear();
-        if (gfx_is_active()) desktop_draw_chrome();
+        if (first && gfx_is_active()) {
+            desktop_draw_chrome();
+            first = 0;
+        }
 
         /* Header: uptime + user@hostname */
-        uint32_t secs = pit_get_ticks() / 100;
+        uint32_t secs = pit_get_ticks() / 120;
         uint32_t hrs = secs / 3600;
         uint32_t mins = (secs % 3600) / 60;
         uint32_t sec = secs % 60;
@@ -2659,16 +2661,13 @@ static void cmd_top(int argc, char* argv[]) {
                (int)hrs, (int)mins, (int)sec,
                user_get_current(), hostname_get());
 
-        /* CPU usage via idle/busy delta */
-        uint32_t cur_idle = 0, cur_busy = 0;
-        pit_get_cpu_stats(&cur_idle, &cur_busy);
-        uint32_t d_idle = cur_idle - prev_idle;
-        uint32_t d_busy = cur_busy - prev_busy;
-        uint32_t d_total = d_idle + d_busy;
-        int cpu_pct = d_total > 0 ? (int)(d_busy * 100 / d_total) : 0;
+        /* CPU usage derived from idle task */
+        task_info_t *idle_t = task_get(TASK_IDLE);
+        int cpu_pct = 0;
+        if (idle_t && idle_t->sample_total > 0)
+            cpu_pct = 100 - (int)(idle_t->prev_ticks * 100 / idle_t->sample_total);
+        if (cpu_pct < 0) cpu_pct = 0;
         int cpu_bar = cpu_pct / 5;
-        prev_idle = cur_idle;
-        prev_busy = cur_busy;
 
         printf("CPU:   %3d%%  [", cpu_pct);
         for (int i = 0; i < 20; i++)
@@ -2716,96 +2715,48 @@ static void cmd_top(int argc, char* argv[]) {
                (int)tx_p, (int)(tx_b / 1024),
                (int)rx_p, (int)(rx_b / 1024));
 
-        /* Process table: kernel subsystems + windows */
-        int pid = 0;
-        int wcount = wm_get_window_count();
-        net_config_t *ncfg = net_get_config();
-        int net_up = ncfg && ncfg->link_up;
-
-        /* Count total tasks */
-        int total_tasks = 6;
-        if (net_up) total_tasks++;
-        if (gfx_is_active()) total_tasks++;
-        total_tasks += wcount;
-
+        /* Process table from task tracker */
+        int total_tasks = task_count();
         printf("Tasks: %d total\n\n", total_tasks);
-        printf("  %-4s %-16s %-10s %-9s %s\n", "PID", "NAME", "STATE", "MEM(KB)", "INFO");
-        printf("  %-4s %-16s %-10s %-9s %s\n", "---", "----", "-----", "-------", "----");
+        printf("  %-4s %-16s %-10s %-6s %-9s\n", "PID", "NAME", "STATE", "CPU%", "MEM(KB)");
+        printf("  %-4s %-16s %-10s %-6s %-9s\n", "---", "----", "-----", "----", "-------");
 
-        /* PID 0: kernel */
-        printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "kernel", "running", "-", "i386 multiboot");
+        for (int i = 0; i < TASK_MAX; i++) {
+            task_info_t *t = task_get(i);
+            if (!t) continue;
 
-        /* PID 1: pit_timer */
-        {
-            char info[48];
-            snprintf(info, sizeof(info), "100Hz, %d ticks", (int)pit_get_ticks());
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "pit_timer", "running", "-", info);
-        }
+            int task_cpu = t->sample_total > 0
+                ? (int)(t->prev_ticks * 100 / t->sample_total) : 0;
 
-        /* PID 2: keyboard */
-        {
-            const char *layout = keyboard_get_layout() == KB_LAYOUT_FR ? "FR" : "US";
-            char info[32];
-            snprintf(info, sizeof(info), "IRQ1, layout %s", layout);
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "keyboard", "running", "-", info);
-        }
+            const char *state;
+            if (i == TASK_IDLE) state = "idle";
+            else if (task_cpu > 0) state = "running";
+            else state = "sleeping";
 
-        /* PID 3: mouse */
-        printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "mouse", "running", "-", "IRQ12, PS/2");
+            char mem_str[16];
+            if (t->mem_kb > 0)
+                snprintf(mem_str, sizeof(mem_str), "%d", t->mem_kb);
+            else
+                strcpy(mem_str, "-");
 
-        /* PID 4: fs — memory = inode table + used data blocks */
-        {
-            int fs_mem = (int)((NUM_INODES * sizeof(inode_t) + (uint32_t)used_blocks * BLOCK_SIZE) / 1024);
-            char mem[16];
-            snprintf(mem, sizeof(mem), "%d", fs_mem);
-            char info[48];
-            snprintf(info, sizeof(info), "%d/%d inodes, %dKB",
-                     used_inodes, NUM_INODES, (int)(used_blocks * BLOCK_SIZE / 1024));
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "fs", "running", mem, info);
-        }
-
-        /* PID 5: net (if up) */
-        if (net_up) {
-            char info[48];
-            snprintf(info, sizeof(info), "%d.%d.%d.%d",
-                     ncfg->ip[0], ncfg->ip[1], ncfg->ip[2], ncfg->ip[3]);
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "net", "running", "-", info);
-        }
-
-        /* WM (if active) — memory = framebuffer */
-        if (gfx_is_active()) {
-            int fb_kb = (int)(gfx_width() * gfx_height() * 4 / 1024);
-            char mem[16];
-            snprintf(mem, sizeof(mem), "%d", fb_kb);
-            char info[48];
-            snprintf(info, sizeof(info), "%d windows, fb=%dKB", wcount, fb_kb);
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "wm", "running", mem, info);
-        }
-
-        /* PID N: shell */
-        printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "shell", "sleeping", "-", "waiting (top)");
-
-        /* Windows as tasks */
-        for (int i = 0; i < wcount; i++) {
-            wm_window_t *w = wm_get_window_by_index(i);
-            if (!w) continue;
-            int win_mem = w->canvas_w * w->canvas_h * 4 / 1024;
-            char mem[16];
-            snprintf(mem, sizeof(mem), "%d", win_mem);
-            char info[64];
-            snprintf(info, sizeof(info), "%dx%d%s",
-                     w->w, w->h,
-                     (w->flags & WM_WIN_FOCUSED) ? " [focused]" : "");
-            const char *state = (w->flags & WM_WIN_MINIMIZED) ? "suspended" : "running";
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, w->title, state, mem, info);
+            printf("  %-4d %-16s %-10s %3d%%   %-9s\n",
+                   i, t->name, state, task_cpu, mem_str);
         }
 
         printf("\nPress 'q' to quit, refreshes every 1s\n");
 
-        /* Wait ~1s, checking for 'q' every 100ms */
-        for (int i = 0; i < 10; i++) {
-            pit_sleep_ms(100);
+        /* Wait ~1s while keeping WM responsive */
+        uint32_t wait_end = pit_get_ticks() + 120;
+        while (pit_get_ticks() < wait_end) {
+            cpu_halting = 0;
+            keyboard_run_idle();         /* WM/mouse work (sets TASK_WM internally) */
+            task_set_current(TASK_IDLE); /* restore idle before HLT */
+            cpu_halting = 1;
+            __asm__ volatile ("hlt");
+
             if (keyboard_data_available()) {
+                cpu_halting = 0;
+                task_set_current(TASK_SHELL);
                 char c = getchar();
                 if (c == 'q' || c == 'Q') {
                     terminal_clear();
@@ -2814,5 +2765,7 @@ static void cmd_top(int argc, char* argv[]) {
                 }
             }
         }
+        cpu_halting = 0;
+        task_set_current(TASK_SHELL);
     }
 }

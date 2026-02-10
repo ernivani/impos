@@ -5,6 +5,7 @@
 #include <kernel/tty.h>
 #include <kernel/io.h>
 #include <kernel/idt.h>
+#include <kernel/task.h>
 
 #define CAPSLOCK_SCANCODE    0x3A
 #define NUMLOCK_SCANCODE     0x45
@@ -81,6 +82,11 @@ int keyboard_check_double_ctrl(void) {
         return 1;
     }
     return 0;
+}
+
+void keyboard_run_idle(void) {
+    if (idle_callback)
+        idle_callback();
 }
 
 /* -------------------------------------------------------------------
@@ -267,23 +273,34 @@ int keyboard_get_layout(void) {
 #define KEYMAP_SIZE 89
 
 char getchar(void) {
+    /* Save caller's task so we can restore it when returning */
+    int caller_task = task_get_current();
+
     while (1) {
         /* Check force-exit (WM close button clicked) */
         if (force_exit_flag) {
             force_exit_flag = 0;
+            cpu_halting = 0;
+            task_set_current(caller_task);
             return KEY_ESCAPE;
         }
 
         /* Read from interrupt-driven ring buffer */
         if (!kbd_available()) {
-            /* Idle: process mouse and other events */
-            if (idle_callback)
+            /* Idle: only HLT is truly idle; callback does real work */
+            task_set_current(TASK_IDLE);
+            if (idle_callback) {
+                cpu_halting = 0;  /* callback does real WM/mouse work */
                 idle_callback();
-            cpu_halting = 1;
+            }
+            task_set_current(TASK_IDLE); /* restore idle before HLT */
+            cpu_halting = 1;      /* truly idle: about to HLT */
             __asm__ volatile ("hlt");
             continue;
         }
 
+        cpu_halting = 0;
+        task_set_current(caller_task);
         uint8_t scancode = kbd_pop();
 
         /* E0 prefix: next scancode is an extended key */
@@ -459,4 +476,5 @@ int  keyboard_force_exit(void) { return 0; }
 void keyboard_request_force_exit(void) { }
 int  keyboard_data_available(void) { return 0; }
 int  keyboard_check_double_ctrl(void) { return 0; }
+void keyboard_run_idle(void) { }
 #endif
