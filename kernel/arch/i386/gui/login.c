@@ -344,16 +344,14 @@ void login_show_splash(void) {
     int ly = h / 2 - (FONT_H * logo_scale) / 2 - 20;
     int spin_cx = w / 2, spin_cy = ly + FONT_H * logo_scale + 28, spin_r = 14;
 
-    /* Phase 1: Fade in — dark overlay lifts to reveal gradient + logo */
-    int fade_steps = 10;
-    for (int i = 0; i <= fade_steps; i++) {
-        draw_gradient(w, h);
-        gfx_draw_string_smooth(lx, ly, logo, GFX_RGB(240, 240, 248), logo_scale);
-        uint8_t dark = (uint8_t)(255 - i * 255 / fade_steps);
-        gfx_overlay_darken(0, 0, w, h, dark);
-        gfx_flip();
-        pit_sleep_ms(35);
-    }
+    /* Start: black screen */
+    gfx_clear(0);
+    gfx_flip();
+
+    /* Phase 1: Crossfade black → gradient + logo */
+    draw_gradient(w, h);
+    gfx_draw_string_smooth(lx, ly, logo, GFX_RGB(240, 240, 248), logo_scale);
+    gfx_crossfade(8, 40);
 
     /* Phase 2: Spinner over gradient */
     for (int i = 0; i < 14; i++) {
@@ -364,26 +362,9 @@ void login_show_splash(void) {
         busy_wait(2200000);
     }
 
-    /* Phase 3: Fade out logo+spinner, keep gradient visible.
-       Only darken to ~60% so the gradient stays on screen for
-       a seamless transition into the login screen. */
-    for (int i = 0; i <= fade_steps; i++) {
-        draw_gradient(w, h);
-        /* Fade logo+spinner text alpha from full to 0 */
-        int text_alpha = 255 - i * 255 / fade_steps;
-        if (text_alpha > 0) {
-            gfx_draw_string_smooth(lx, ly, logo,
-                GFX_RGB(text_alpha * 240 / 255,
-                         text_alpha * 240 / 255,
-                         text_alpha * 248 / 255), logo_scale);
-        }
-        /* Slight overall dim toward login brightness (not black!) */
-        uint8_t dim = (uint8_t)(i * 100 / fade_steps);
-        gfx_overlay_darken(0, 0, w, h, dim);
-        gfx_flip();
-        pit_sleep_ms(30);
-    }
-    pit_sleep_ms(60);
+    /* Phase 3: Crossfade splash → clean gradient (logo disappears) */
+    draw_gradient(w, h);
+    gfx_crossfade(6, 30);
 }
 
 /* ═══ Setup Wizard (Modern UI) ══════════════════════════════ */
@@ -1115,18 +1096,8 @@ int login_run(void) {
                     keyboard_set_idle_callback(0);
                     gfx_set_cursor_type(GFX_CURSOR_ARROW);
                     gfx_restore_mouse_cursor();
-                    /* Crossfade: dissolve login UI to clean gradient.
-                       Each frame redraws just the gradient (no UI), then
-                       applies a light dim that lifts over the steps. */
-                    for (int fi = 0; fi <= 8; fi++) {
-                        draw_gradient(w, h);
-                        /* Start dimmed (matching login look), end bright */
-                        uint8_t dim = (uint8_t)(80 - fi * 80 / 8);
-                        if (dim > 0)
-                            gfx_overlay_darken(0, 0, w, h, dim);
-                        gfx_flip();
-                        pit_sleep_ms(30);
-                    }
+                    /* Leave framebuffer with login screen visible;
+                       desktop_run will crossfade from it. */
                     return 0;
                 }
             }
