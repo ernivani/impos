@@ -10,6 +10,7 @@
 #include <kernel/multiboot.h>
 #include <kernel/gfx.h>
 #include <kernel/desktop.h>
+#include <kernel/login.h>
 #include <kernel/mouse.h>
 #include <kernel/firewall.h>
 #include <kernel/wm.h>
@@ -312,7 +313,7 @@ void kernel_main(multiboot_info_t* mbi) {
     firewall_initialize();
 
     if (gfx_is_active())
-        desktop_splash();
+        login_show_splash();
 
     ata_initialize();
     acpi_initialize();
@@ -322,9 +323,10 @@ void kernel_main(multiboot_info_t* mbi) {
         shell_initialize_subsystems();
 
         if (shell_needs_setup())
-            desktop_setup();
+            login_run_setup();
         else
-            desktop_login();
+            login_run();
+        desktop_notify_login();
 
         /* Set up restart point for logout */
         jmp_buf restart_point;
@@ -332,7 +334,8 @@ void kernel_main(multiboot_info_t* mbi) {
 
         if (setjmp(restart_point) != 0) {
             /* Returned from logout — re-authenticate */
-            desktop_login();
+            login_run();
+            desktop_notify_login();
         }
 
         /* Desktop event loop */

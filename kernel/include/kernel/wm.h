@@ -30,9 +30,6 @@ typedef struct {
     int  x, y, w, h;      /* outer bounds (including decorations) */
     char title[64];
     uint16_t flags;
-    /* Legacy accessors — kept for compatibility */
-    int  visible;
-    int  focused;
     uint32_t *canvas;      /* pixel buffer for content area */
     int canvas_w, canvas_h;
     /* Saved geometry for restore from maximize */

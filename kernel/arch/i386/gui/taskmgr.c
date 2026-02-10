@@ -63,7 +63,7 @@ static void refresh_data(ui_window_t *win) {
         wm_window_t *w = wm_get_window_by_index(i);
         if (!w) continue;
         snprintf(win_item_bufs[win_item_count], 64, "%s%s  (%dx%d)",
-                 w->focused ? "> " : "  ", w->title, w->w, w->h);
+                 (w->flags & WM_WIN_FOCUSED) ? "> " : "  ", w->title, w->w, w->h);
         win_items[win_item_count] = win_item_bufs[win_item_count];
         win_item_count++;
     }
