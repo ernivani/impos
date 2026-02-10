@@ -50,10 +50,13 @@ static uint8_t mouse_read(void) {
 static void mouse_irq_handler(registers_t *regs) {
     (void)regs;
     uint8_t status = inb(PS2_STATUS);
-    if (!(status & 0x20))
-        return;  /* Not from mouse (bit 5 = auxiliary data) */
+    if (!(status & 0x01))
+        return;  /* No data available */
 
     uint8_t data = inb(PS2_DATA);
+
+    if (!(status & 0x20))
+        return;  /* Keyboard data — already consumed, discard */
 
     switch (mouse_cycle) {
     case 0:
