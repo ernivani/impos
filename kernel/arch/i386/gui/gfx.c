@@ -889,3 +889,25 @@ void gfx_flip_rect(int x, int y, int w, int h) {
                (size_t)w * 4);
     }
 }
+
+void gfx_overlay_darken(int x, int y, int w, int h, uint8_t alpha) {
+    if (!have_backbuffer) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > (int)fb_width) w = (int)fb_width - x;
+    if (y + h > (int)fb_height) h = (int)fb_height - y;
+    if (w <= 0 || h <= 0 || alpha == 0) return;
+
+    uint32_t inv_a = 255 - (uint32_t)alpha;
+    uint32_t pitch4 = fb_pitch / 4;
+    for (int row = y; row < y + h; row++) {
+        uint32_t *dst = backbuf + row * pitch4 + x;
+        for (int col = 0; col < w; col++) {
+            uint32_t px = dst[col];
+            uint32_t r = ((px >> 16) & 0xFF) * inv_a / 255;
+            uint32_t g = ((px >> 8) & 0xFF) * inv_a / 255;
+            uint32_t b = (px & 0xFF) * inv_a / 255;
+            dst[col] = (r << 16) | (g << 8) | b;
+        }
+    }
+}

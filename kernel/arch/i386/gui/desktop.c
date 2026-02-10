@@ -26,31 +26,27 @@ void desktop_notify_login(void) {
     desktop_first_show = 1;
 }
 
+/* Forward declarations */
+static void draw_gradient(int w, int h);
+void desktop_draw_menubar(void);
+void desktop_draw_dock(void);
+
 /* ═══ Animation Helpers ═════════════════════════════════════════ */
 
 static void desktop_fade_in(int x, int y, int w, int h, int steps, int delay_ms) {
+    /* Snapshot the fully-drawn backbuffer content, then for each frame:
+       restore it, apply a dark overlay, and flip once (no tearing). */
+    int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
     for (int i = steps; i >= 0; i--) {
-        uint32_t alpha = (uint32_t)(i * 255 / steps);
-        gfx_flip_rect(x, y, w, h);
+        /* Redraw desktop content fresh each frame */
+        draw_gradient(fb_w, fb_h);
+        desktop_draw_menubar();
+        desktop_draw_dock();
         if (i > 0) {
-            uint32_t *fb = gfx_framebuffer();
-            uint32_t pitch4 = gfx_pitch() / 4;
-            int x0 = x < 0 ? 0 : x;
-            int y0 = y < 0 ? 0 : y;
-            int x1 = x + w; if (x1 > (int)gfx_width()) x1 = (int)gfx_width();
-            int y1 = y + h; if (y1 > (int)gfx_height()) y1 = (int)gfx_height();
-            uint32_t inv_a = 255 - alpha;
-            for (int row = y0; row < y1; row++) {
-                uint32_t *dst = fb + row * pitch4 + x0;
-                for (int col = 0; col < x1 - x0; col++) {
-                    uint32_t px = dst[col];
-                    uint32_t r = ((px >> 16) & 0xFF) * inv_a / 255;
-                    uint32_t g = ((px >> 8) & 0xFF) * inv_a / 255;
-                    uint32_t b = (px & 0xFF) * inv_a / 255;
-                    dst[col] = (r << 16) | (g << 8) | b;
-                }
-            }
+            uint8_t dark = (uint8_t)(i * 200 / steps);
+            gfx_overlay_darken(x, y, w, h, dark);
         }
+        gfx_flip();
         pit_sleep_ms(delay_ms);
     }
 }
