@@ -1,5 +1,7 @@
 #include <kernel/idt.h>
 #include <kernel/io.h>
+#include <kernel/config.h>
+#include <kernel/task.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -144,8 +146,8 @@ static void pic_remap(void) {
 #define PIT_CHANNEL0 0x40
 #define PIT_CMD      0x43
 #define PIT_FREQ     1193182
-#define TARGET_HZ    100
-#define PIT_DIVISOR   (PIT_FREQ / TARGET_HZ)  /* ~11932 */
+#define TARGET_HZ    120
+#define PIT_DIVISOR   (PIT_FREQ / TARGET_HZ)  /* ~9943 */
 
 volatile uint32_t pit_ticks = 0;
 static volatile uint32_t pit_idle_ticks = 0;
@@ -164,12 +166,16 @@ uint32_t pit_get_ticks(void) {
 }
 
 void pit_sleep_ms(uint32_t ms) {
-    uint32_t target = pit_ticks + (ms / 10);
-    if (ms % 10) target++; /* Round up */
+    int saved_task = task_get_current();
+    task_set_current(TASK_IDLE);
+    uint32_t target = pit_ticks + (ms * TARGET_HZ / 1000);
+    if (ms * TARGET_HZ % 1000) target++; /* Round up */
     while (pit_ticks < target) {
         cpu_halting = 1;
         __asm__ volatile ("hlt");
     }
+    cpu_halting = 0;
+    task_set_current(saved_task);
 }
 
 void pit_get_cpu_stats(uint32_t *idle, uint32_t *busy) {
@@ -188,11 +194,23 @@ void irq_register_handler(int irq, irq_handler_t handler) {
 }
 
 /* PIT IRQ0 handler */
+static int second_counter = 0;
+
 static void pit_handler(registers_t* regs) {
     (void)regs;
     pit_ticks++;
-    if (cpu_halting) { pit_idle_ticks++; cpu_halting = 0; }
-    else { pit_busy_ticks++; }
+    if (cpu_halting) {
+        pit_idle_ticks++;
+    } else {
+        pit_busy_ticks++;
+    }
+    task_tick();
+    second_counter++;
+    if (second_counter >= TARGET_HZ) {
+        second_counter = 0;
+        config_tick_second();
+        task_sample();
+    }
 }
 
 /* Keyboard IRQ1 handler — read scancode from port 0x60 and push to ring buffer.
@@ -228,6 +246,55 @@ void isr_handler(registers_t* regs) {
             __asm__ volatile ("cli; hlt");
         }
     }
+}
+
+/* ========== CMOS RTC ========== */
+
+#define CMOS_ADDR 0x70
+#define CMOS_DATA 0x71
+
+static uint8_t cmos_read(uint8_t reg) {
+    outb(CMOS_ADDR, reg);
+    return inb(CMOS_DATA);
+}
+
+static uint8_t bcd_to_bin(uint8_t val) {
+    return (val >> 4) * 10 + (val & 0x0F);
+}
+
+void rtc_read_datetime(datetime_t *dt) {
+    /* Wait until CMOS not updating */
+    while (cmos_read(0x0A) & 0x80);
+
+    uint8_t sec  = cmos_read(0x00);
+    uint8_t min  = cmos_read(0x02);
+    uint8_t hour = cmos_read(0x04);
+    uint8_t day  = cmos_read(0x07);
+    uint8_t mon  = cmos_read(0x08);
+    uint8_t year = cmos_read(0x09);
+    uint8_t regB = cmos_read(0x0B);
+
+    /* Convert from BCD if needed */
+    if (!(regB & 0x04)) {
+        sec  = bcd_to_bin(sec);
+        min  = bcd_to_bin(min);
+        hour = bcd_to_bin(hour & 0x7F) | (hour & 0x80);
+        day  = bcd_to_bin(day);
+        mon  = bcd_to_bin(mon);
+        year = bcd_to_bin(year);
+    }
+
+    /* Convert 12h to 24h if needed */
+    if (!(regB & 0x02) && (hour & 0x80)) {
+        hour = ((hour & 0x7F) + 12) % 24;
+    }
+
+    dt->second = sec;
+    dt->minute = min;
+    dt->hour   = hour;
+    dt->day    = day;
+    dt->month  = mon;
+    dt->year   = 2000 + year;
 }
 
 /* ========== Initialize ========== */

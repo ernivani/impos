@@ -44,7 +44,7 @@ static void build_items(void) {
     row_items[3] = row_bufs[3];
 }
 
-static void set_on_event(ui_window_t *win, ui_event_t *ev) {
+void app_settings_on_event(ui_window_t *win, ui_event_t *ev) {
     if (ev->type != UI_EVENT_KEY_PRESS) return;
     char key = ev->key.key;
 
@@ -65,14 +65,14 @@ static void set_on_event(ui_window_t *win, ui_event_t *ev) {
     win->dirty = 1;
 }
 
-void app_settings(void) {
+ui_window_t *app_settings_create(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
     int win_w = 500, win_h = 280;
 
     ui_window_t *win = ui_window_create(fb_w / 2 - win_w / 2,
                                          fb_h / 2 - win_h / 2 - 30,
                                          win_w, win_h, "Settings");
-    if (!win) return;
+    if (!win) return 0;
 
     int cw, ch;
     wm_get_canvas(win->wm_id, &cw, &ch);
@@ -91,6 +91,16 @@ void app_settings(void) {
                  "Up/Down: select  Left/Right: change  Esc: close",
                  GFX_RGB(60, 60, 60));
 
-    ui_app_run(win, set_on_event);
+    /* Auto-focus first focusable widget */
+    if (win->focused_widget < 0)
+        ui_focus_next(win);
+
+    return win;
+}
+
+void app_settings(void) {
+    ui_window_t *win = app_settings_create();
+    if (!win) return;
+    ui_app_run(win, app_settings_on_event);
     ui_window_destroy(win);
 }

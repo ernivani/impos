@@ -4,6 +4,7 @@
 #include <kernel/fs.h>
 #include <kernel/net.h>
 #include <kernel/idt.h>
+#include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@
 
 static int httpd_running = 0;
 static int listen_fd = -1;
+static int httpd_task_id = -1;
 
 static const char* http_200 = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
 static const char* http_404 = "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n"
@@ -56,6 +58,7 @@ int httpd_start(void) {
     }
 
     httpd_running = 1;
+    httpd_task_id = task_register("httpd", 1, -1);
     printf("httpd: listening on port %d\n", HTTP_PORT);
     return 0;
 }
@@ -65,6 +68,10 @@ void httpd_stop(void) {
     if (listen_fd >= 0) {
         socket_close(listen_fd);
         listen_fd = -1;
+    }
+    if (httpd_task_id >= 0) {
+        task_unregister(httpd_task_id);
+        httpd_task_id = -1;
     }
     httpd_running = 0;
     printf("httpd: stopped\n");
@@ -125,6 +132,12 @@ static void handle_request(int client_fd) {
 
 void httpd_poll(void) {
     if (!httpd_running || listen_fd < 0) return;
+
+    /* Check if killed via task system */
+    if (httpd_task_id >= 0 && task_check_killed(httpd_task_id)) {
+        httpd_stop();
+        return;
+    }
 
     /* Non-blocking accept: check if a connection is waiting */
     net_process_packets();

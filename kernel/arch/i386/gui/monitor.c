@@ -146,7 +146,7 @@ static void on_tab_change(ui_window_t *win, int idx) {
     refresh_tab(win);
 }
 
-static void mon_on_event(ui_window_t *win, ui_event_t *ev) {
+void app_monitor_on_event(ui_window_t *win, ui_event_t *ev) {
     if (ev->type == UI_EVENT_KEY_PRESS) {
         ui_widget_t *tabs = ui_get_widget(win, w_tabs);
         if (tabs) {
@@ -158,7 +158,7 @@ static void mon_on_event(ui_window_t *win, ui_event_t *ev) {
     }
 }
 
-void app_monitor(void) {
+ui_window_t *app_monitor_create(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
     int win_w = fb_w - 300;
     int win_h = fb_h - TASKBAR_H - 80;
@@ -166,7 +166,7 @@ void app_monitor(void) {
     pci_count = pci_enumerate_devices(pci_devs, MON_MAX_PCI);
 
     ui_window_t *win = ui_window_create(150, 30, win_w, win_h, "System Monitor");
-    if (!win) return;
+    if (!win) return 0;
 
     int cw, ch;
     wm_get_canvas(win->wm_id, &cw, &ch);
@@ -182,6 +182,16 @@ void app_monitor(void) {
     populate_hardware();
     refresh_tab(win);
 
-    ui_app_run(win, mon_on_event);
+    /* Auto-focus first focusable widget */
+    if (win->focused_widget < 0)
+        ui_focus_next(win);
+
+    return win;
+}
+
+void app_monitor(void) {
+    ui_window_t *win = app_monitor_create();
+    if (!win) return;
+    ui_app_run(win, app_monitor_on_event);
     ui_window_destroy(win);
 }

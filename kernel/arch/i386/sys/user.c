@@ -351,3 +351,13 @@ int user_count(void) {
     }
     return count;
 }
+
+void user_create_home_dirs(const char *home) {
+    if (!home || !home[0]) return;
+    char path[256];
+    const char *subdirs[] = {"Desktop", "Downloads", "Documents", "Images"};
+    for (int i = 0; i < 4; i++) {
+        snprintf(path, sizeof(path), "%s/%s", home, subdirs[i]);
+        fs_create_file(path, 1);
+    }
+}

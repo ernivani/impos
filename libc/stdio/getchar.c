@@ -5,6 +5,7 @@
 #include <kernel/tty.h>
 #include <kernel/io.h>
 #include <kernel/idt.h>
+#include <kernel/task.h>
 
 #define CAPSLOCK_SCANCODE    0x3A
 #define NUMLOCK_SCANCODE     0x45
@@ -69,6 +70,23 @@ int keyboard_force_exit(void) {
 
 void keyboard_request_force_exit(void) {
     force_exit_flag = 1;
+}
+
+/* Double-Ctrl detection for Finder */
+static volatile uint32_t ctrl_release_tick = 0;
+static volatile int ctrl_double_tap = 0;
+
+int keyboard_check_double_ctrl(void) {
+    if (ctrl_double_tap) {
+        ctrl_double_tap = 0;
+        return 1;
+    }
+    return 0;
+}
+
+void keyboard_run_idle(void) {
+    if (idle_callback)
+        idle_callback();
 }
 
 /* -------------------------------------------------------------------
@@ -255,23 +273,34 @@ int keyboard_get_layout(void) {
 #define KEYMAP_SIZE 89
 
 char getchar(void) {
+    /* Save caller's task so we can restore it when returning */
+    int caller_task = task_get_current();
+
     while (1) {
         /* Check force-exit (WM close button clicked) */
         if (force_exit_flag) {
             force_exit_flag = 0;
+            cpu_halting = 0;
+            task_set_current(caller_task);
             return KEY_ESCAPE;
         }
 
         /* Read from interrupt-driven ring buffer */
         if (!kbd_available()) {
-            /* Idle: process mouse and other events */
-            if (idle_callback)
+            /* Idle: only HLT is truly idle; callback does real work */
+            task_set_current(TASK_IDLE);
+            if (idle_callback) {
+                cpu_halting = 0;  /* callback does real WM/mouse work */
                 idle_callback();
-            cpu_halting = 1;
+            }
+            task_set_current(TASK_IDLE); /* restore idle before HLT */
+            cpu_halting = 1;      /* truly idle: about to HLT */
             __asm__ volatile ("hlt");
             continue;
         }
 
+        cpu_halting = 0;
+        task_set_current(caller_task);
         uint8_t scancode = kbd_pop();
 
         /* E0 prefix: next scancode is an extended key */
@@ -287,14 +316,25 @@ char getchar(void) {
                 extended_scancode = 0;
                 if (released == 0x38)
                     altgr_pressed = 0;
-                else if (released == LEFT_CTRL_SCANCODE)
+                else if (released == LEFT_CTRL_SCANCODE) {
                     ctrl_pressed = 0;
+                    uint32_t now = pit_get_ticks();
+                    if (ctrl_release_tick > 0 && (now - ctrl_release_tick) < 30)
+                        ctrl_double_tap = 1;
+                    ctrl_release_tick = now;
+                }
                 continue;
             }
             if (released == LEFT_SHIFT_SCANCODE || released == RIGHT_SHIFT_SCANCODE)
                 shift_pressed = 0;
-            else if (released == LEFT_CTRL_SCANCODE)
+            else if (released == LEFT_CTRL_SCANCODE) {
                 ctrl_pressed = 0;
+                /* Double-ctrl detection: check if within 30 ticks (300ms) */
+                uint32_t now = pit_get_ticks();
+                if (ctrl_release_tick > 0 && (now - ctrl_release_tick) < 30)
+                    ctrl_double_tap = 1;
+                ctrl_release_tick = now;
+            }
             else if (released == LEFT_ALT_SCANCODE)
                 alt_pressed = 0;
             continue;
@@ -435,4 +475,6 @@ void keyboard_set_idle_callback(void (*cb)(void)) { (void)cb; }
 int  keyboard_force_exit(void) { return 0; }
 void keyboard_request_force_exit(void) { }
 int  keyboard_data_available(void) { return 0; }
+int  keyboard_check_double_ctrl(void) { return 0; }
+void keyboard_run_idle(void) { }
 #endif

@@ -43,7 +43,7 @@ typedef enum {
 #define TCP_BUFFER_SIZE     4096
 #define TCP_MSS             1400
 #define TCP_MAX_RETRIES     5
-#define TCP_RTO_INIT        100  /* 1 second in ticks (100Hz) */
+#define TCP_RTO_INIT        120  /* 1 second in ticks (120Hz) */
 
 typedef struct {
     uint8_t  buf[TCP_BUFFER_SIZE];

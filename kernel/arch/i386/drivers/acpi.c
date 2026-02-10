@@ -37,7 +37,9 @@ static struct rsdp_descriptor *acpi_scan_region(uint32_t start, uint32_t length)
 
 static struct rsdp_descriptor *acpi_find_rsdp(void) {
     /* Search EBDA: BDA at 0x040E contains EBDA segment >> 4 */
-    uint16_t ebda_seg = *(uint16_t *)(uintptr_t)0x040E;
+    volatile uint16_t *bda_ptr = (volatile uint16_t *)(uintptr_t)0x040E;
+    uint16_t ebda_seg;
+    __asm__ volatile("mov (%1), %0" : "=r"(ebda_seg) : "r"(bda_ptr) : "memory");
     uint32_t ebda_addr = (uint32_t)ebda_seg << 4;
     if (ebda_addr >= 0x80000 && ebda_addr < 0xA0000) {
         struct rsdp_descriptor *r = acpi_scan_region(ebda_addr, 1024);

@@ -22,12 +22,21 @@
 #include <kernel/mouse.h>
 #include <kernel/wm.h>
 #include <kernel/idt.h>
+#include <kernel/arp.h>
+#include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 
 int shell_exit_requested = 0;
+
+/* Foreground app (non-blocking command like top) */
+static shell_fg_app_t *active_fg_app = NULL;
+
+void shell_register_fg_app(shell_fg_app_t *app) { active_fg_app = app; }
+void shell_unregister_fg_app(void) { active_fg_app = NULL; }
+shell_fg_app_t *shell_get_fg_app(void) { return active_fg_app; }
 
 #define MAX_ARGS 64
 
@@ -84,6 +93,7 @@ static void cmd_quota(int argc, char* argv[]);
 static void cmd_connect(int argc, char* argv[]);
 static void cmd_firewall(int argc, char* argv[]);
 static void cmd_top(int argc, char* argv[]);
+static void cmd_kill(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -772,6 +782,20 @@ static command_t commands[] = {
         "    usage, and a list of open windows. Refreshes every second.\n\n"
         "    Press 'q' to exit and return to the shell.\n"
     },
+    {
+        "kill", cmd_kill,
+        "Terminate a process by PID",
+        "kill: kill PID\n"
+        "    Send a termination signal to the process with the given PID.\n",
+        "NAME\n"
+        "    kill - terminate a process by PID\n\n"
+        "SYNOPSIS\n"
+        "    kill PID\n\n"
+        "DESCRIPTION\n"
+        "    Terminates the process identified by PID. System processes\n"
+        "    (idle, kernel, wm, shell) cannot be killed. Use 'top' to\n"
+        "    see running processes and their PIDs.\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -1226,7 +1250,7 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
                         completion_matches_count++;
                     }
                 }
-            } else if (prefix_len >= 0) {
+            } else {
                 // Complete filenames
                 // Extract the current word being completed
                 char word[256] = {0};
@@ -1610,19 +1634,19 @@ static void cmd_timedatectl(int argc, char* argv[]) {
         
         /* Local time */
         printf("      Local time: %d-", dt.year);
-        if (dt.month < 10) putchar('0'); printf("%d-", dt.month);
-        if (dt.day < 10) putchar('0'); printf("%d ", dt.day);
-        if (dt.hour < 10) putchar('0'); printf("%d:", dt.hour);
-        if (dt.minute < 10) putchar('0'); printf("%d:", dt.minute);
-        if (dt.second < 10) putchar('0'); printf("%d\n", dt.second);
-        
+        if (dt.month < 10) { putchar('0'); } printf("%d-", dt.month);
+        if (dt.day < 10) { putchar('0'); } printf("%d ", dt.day);
+        if (dt.hour < 10) { putchar('0'); } printf("%d:", dt.hour);
+        if (dt.minute < 10) { putchar('0'); } printf("%d:", dt.minute);
+        if (dt.second < 10) { putchar('0'); } printf("%d\n", dt.second);
+
         /* Universal time */
         printf("  Universal time: %d-", dt.year);
-        if (dt.month < 10) putchar('0'); printf("%d-", dt.month);
-        if (dt.day < 10) putchar('0'); printf("%d ", dt.day);
-        if (dt.hour < 10) putchar('0'); printf("%d:", dt.hour);
-        if (dt.minute < 10) putchar('0'); printf("%d:", dt.minute);
-        if (dt.second < 10) putchar('0'); printf("%d\n", dt.second);
+        if (dt.month < 10) { putchar('0'); } printf("%d-", dt.month);
+        if (dt.day < 10) { putchar('0'); } printf("%d ", dt.day);
+        if (dt.hour < 10) { putchar('0'); } printf("%d:", dt.hour);
+        if (dt.minute < 10) { putchar('0'); } printf("%d:", dt.minute);
+        if (dt.second < 10) { putchar('0'); } printf("%d\n", dt.second);
         
         printf("        Timezone: %s\n", config_get_timezone());
         printf("     Time format: %s\n", cfg->use_24h_format ? "24-hour" : "12-hour");
@@ -1674,9 +1698,9 @@ static void cmd_timedatectl(int argc, char* argv[]) {
         dt.second = second;
         config_set_datetime(&dt);
         printf("Time set to ");
-        if (hour < 10) putchar('0'); printf("%d:", hour);
-        if (minute < 10) putchar('0'); printf("%d:", minute);
-        if (second < 10) putchar('0'); printf("%d\n", second);
+        if (hour < 10) { putchar('0'); } printf("%d:", hour);
+        if (minute < 10) { putchar('0'); } printf("%d:", minute);
+        if (second < 10) { putchar('0'); } printf("%d\n", second);
         
     } else if (strcmp(argv[1], "set-date") == 0) {
         if (argc < 3) {
@@ -1719,8 +1743,8 @@ static void cmd_timedatectl(int argc, char* argv[]) {
         dt.day = day;
         config_set_datetime(&dt);
         printf("Date set to %d-", year);
-        if (month < 10) putchar('0'); printf("%d-", month);
-        if (day < 10) putchar('0'); printf("%d\n", day);
+        if (month < 10) { putchar('0'); } printf("%d-", month);
+        if (day < 10) { putchar('0'); } printf("%d\n", day);
         
     } else if (strcmp(argv[1], "set-timezone") == 0) {
         if (argc < 3) {
@@ -1865,19 +1889,22 @@ static void cmd_ping(int argc, char* argv[]) {
     
     printf("PING %d.%d.%d.%d\n", a, b, c, d);
 
+    int ping_tid = task_register("ping", 1, -1);
     for (int i = 1; i <= 4; i++) {
+        if (ping_tid >= 0 && task_check_killed(ping_tid)) break;
         icmp_send_echo_request(dst_ip, 1, i);
-        
+
         /* Wait and process packets */
         for (int attempts = 0; attempts < 20; attempts++) {
             net_process_packets();
             for (volatile int j = 0; j < 500000; j++);
         }
-        
+
         /* Delay between pings */
         for (volatile int j = 0; j < 1000000; j++);
     }
-    
+    if (ping_tid >= 0) task_unregister(ping_tid);
+
     printf("\n");
 }
 
@@ -2201,6 +2228,9 @@ static void cmd_useradd(int argc, char* argv[]) {
         return;
     }
 
+    /* Create standard home subdirectories */
+    user_create_home_dirs(home);
+
     /* Set home directory ownership */
     fs_chown(home, uid, gid);
 
@@ -2268,8 +2298,333 @@ static void cmd_logout(int argc, char* argv[]) {
     config_save_history();
     config_save();
     fs_sync();
+    if (gfx_is_active()) {
+        shell_exit_requested = 1;
+        return;
+    }
     printf("Logging out...\n");
     exit(0);
+}
+
+/* ═══ Integer sine/cosine table (0..63 → 0..255, quarter-wave) ══ */
+static const int16_t sin_tab64[65] = {
+      0,  6, 13, 19, 25, 31, 37, 44, 50, 56, 62, 68, 74, 80, 86, 92,
+     97,103,109,114,120,125,130,136,141,146,150,155,160,164,169,173,
+    177,181,185,189,193,196,200,203,206,209,212,215,218,220,223,225,
+    227,229,231,233,234,236,237,238,240,241,241,242,243,243,243,244,244
+};
+
+/* Returns sin(angle)*256 where angle is 0..1023 for full circle */
+static int isin(int angle) {
+    angle = angle & 1023;
+    int q = angle >> 8;          /* quadrant 0-3 */
+    int idx = angle & 255;       /* position in quadrant (0-255) */
+    /* Map 0-255 to 0-64 table index */
+    int ti = idx >> 2;           /* 0..63 */
+    int val = sin_tab64[ti];
+    switch (q) {
+        case 0: return  val;
+        case 1: return  sin_tab64[64 - ti];
+        case 2: return -val;
+        case 3: return -sin_tab64[64 - ti];
+    }
+    return 0;
+}
+static int icos(int angle) { return isin(angle + 256); }
+
+/* Interpolate between two colors by t (0..255) */
+static uint32_t color_lerp(uint32_t a, uint32_t b, int t) {
+    int ra = (a >> 16) & 0xFF, ga = (a >> 8) & 0xFF, ba = a & 0xFF;
+    int rb = (b >> 16) & 0xFF, gb = (b >> 8) & 0xFF, bb = b & 0xFF;
+    int r = ra + (rb - ra) * t / 255;
+    int g = ga + (gb - ga) * t / 255;
+    int bl = ba + (bb - ba) * t / 255;
+    return GFX_RGB(r, g, bl);
+}
+
+/* HSV to RGB: h 0..1023, s,v 0..255 */
+static uint32_t hsv_to_rgb(int h, int s, int v) {
+    h = h & 1023;
+    int region = h * 6 / 1024;
+    int remainder = (h * 6 - region * 1024) * 255 / 1024;
+    int p = v * (255 - s) / 255;
+    int q = v * (255 - (s * remainder / 255)) / 255;
+    int t2 = v * (255 - (s * (255 - remainder) / 255)) / 255;
+    switch (region) {
+        case 0:  return GFX_RGB(v, t2, p);
+        case 1:  return GFX_RGB(q, v, p);
+        case 2:  return GFX_RGB(p, v, t2);
+        case 3:  return GFX_RGB(p, q, v);
+        case 4:  return GFX_RGB(t2, p, v);
+        default: return GFX_RGB(v, p, q);
+    }
+}
+
+/* Draw animated background gradient */
+static void demo_draw_bg(int W, int H, int frame) {
+    /* Shifting dark gradient */
+    int phase = frame * 2;
+    for (int y = 0; y < H; y++) {
+        int t = y * 255 / H;
+        int r = 8 + (isin(phase + y) * 8 / 256);
+        int g = 10 + (isin(phase + y + 200) * 6 / 256);
+        int b = 25 + t * 20 / 255 + (isin(phase + y + 400) * 5 / 256);
+        if (r < 0) r = 0; if (g < 0) g = 0; if (b < 0) b = 0;
+        if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+        gfx_fill_rect(0, y, W, 1, GFX_RGB(r, g, b));
+    }
+}
+
+/* Scene 1: Orbiting circles with trails */
+static void demo_scene_orbits(int W, int H, int frame) {
+    demo_draw_bg(W, H, frame);
+
+    int cx = W / 2, cy = H / 2 - 30;
+
+    /* Title */
+    gfx_draw_string_smooth(cx - gfx_string_scaled_w("Orbital Motion", 3) / 2,
+                           40, "Orbital Motion", GFX_WHITE, 3);
+
+    /* Central glow */
+    for (int r = 50; r > 0; r -= 2) {
+        int a = 10 + (50 - r) * 3;
+        if (a > 200) a = 200;
+        gfx_fill_circle_aa(cx, cy, r, GFX_RGB(a/3, a/4, a));
+    }
+
+    /* Orbit rings */
+    for (int ring = 0; ring < 4; ring++) {
+        int radius = 100 + ring * 70;
+        gfx_circle_ring(cx, cy, radius, 1, GFX_RGB(40, 45, 60));
+    }
+
+    /* Orbiting bodies with trails */
+    for (int i = 0; i < 6; i++) {
+        int radius = 100 + (i % 4) * 70;
+        int speed = 3 + i * 2;
+        int angle = frame * speed + i * 170;
+        int hue = (i * 170) & 1023;
+        uint32_t col = hsv_to_rgb(hue, 220, 255);
+
+        /* Trail: 8 ghost positions */
+        for (int t = 7; t >= 0; t--) {
+            int ta = angle - t * speed * 2;
+            int tx = cx + icos(ta) * radius / 244;
+            int ty = cy + isin(ta) * radius / 244;
+            int tr = 8 - t;
+            int alpha = (8 - t) * 18;
+            gfx_fill_circle_aa(tx, ty, tr, color_lerp(GFX_BLACK, col, alpha));
+        }
+
+        /* Main body */
+        int bx = cx + icos(angle) * radius / 244;
+        int by = cy + isin(angle) * radius / 244;
+        gfx_fill_circle_aa(bx, by, 10, col);
+        gfx_fill_circle_aa(bx - 2, by - 2, 4, GFX_WHITE);
+    }
+
+    /* FPS counter */
+    char fps_str[32];
+    snprintf(fps_str, sizeof(fps_str), "frame %d", frame);
+    gfx_draw_string(10, H - 20, fps_str, GFX_RGB(100, 100, 100), GFX_BLACK);
+}
+
+/* Scene 2: Particle fountain */
+#define DEMO_MAX_PARTICLES 120
+static struct { int x, y, vx, vy; uint32_t col; int life; } particles[DEMO_MAX_PARTICLES];
+static int particle_init_done = 0;
+
+static void demo_scene_particles(int W, int H, int frame) {
+    demo_draw_bg(W, H, frame);
+
+    gfx_draw_string_smooth(W / 2 - gfx_string_scaled_w("Particle System", 3) / 2,
+                           40, "Particle System", GFX_WHITE, 3);
+
+    if (!particle_init_done) {
+        memset(particles, 0, sizeof(particles));
+        particle_init_done = 1;
+    }
+
+    /* Spawn new particles from center-bottom */
+    for (int i = 0; i < DEMO_MAX_PARTICLES; i++) {
+        if (particles[i].life <= 0) {
+            particles[i].x = (W / 2) * 256;
+            particles[i].y = (H - 120) * 256;
+            int spread = (frame * 7 + i * 31) % 512 - 256;
+            particles[i].vx = spread;
+            particles[i].vy = -600 - ((frame * 13 + i * 17) % 400);
+            particles[i].col = hsv_to_rgb((frame * 4 + i * 40) & 1023, 240, 255);
+            particles[i].life = 60 + (i * 7) % 40;
+            break;
+        }
+    }
+
+    /* Update and draw */
+    for (int i = 0; i < DEMO_MAX_PARTICLES; i++) {
+        if (particles[i].life <= 0) continue;
+        particles[i].x += particles[i].vx;
+        particles[i].y += particles[i].vy;
+        particles[i].vy += 10; /* gravity */
+        particles[i].life--;
+
+        int px = particles[i].x / 256;
+        int py = particles[i].y / 256;
+        int sz = 2 + particles[i].life / 20;
+        int fade = particles[i].life * 255 / 100;
+        if (fade > 255) fade = 255;
+
+        uint32_t c = color_lerp(GFX_BLACK, particles[i].col, fade);
+        gfx_fill_circle_aa(px, py, sz, c);
+    }
+
+    /* Emitter glow */
+    for (int r = 30; r > 0; r -= 3) {
+        int a = (30 - r) * 6;
+        uint32_t gc = hsv_to_rgb((frame * 6) & 1023, 200, a > 255 ? 255 : a);
+        gfx_fill_circle_aa(W / 2, H - 120, r, gc);
+    }
+}
+
+/* Scene 3: Card showcase (rounded rects, alpha, smooth text) */
+static void demo_scene_cards(int W, int H, int frame) {
+    demo_draw_bg(W, H, frame);
+
+    gfx_draw_string_smooth(W / 2 - gfx_string_scaled_w("Modern UI", 3) / 2,
+                           40, "Modern UI", GFX_WHITE, 3);
+
+    /* Floating cards */
+    struct { const char *title; const char *sub; uint32_t accent; } cards[] = {
+        { "Graphics",  "Shapes & AA", GFX_RGB(88, 166, 255) },
+        { "Alpha",     "Transparency", GFX_RGB(255, 120, 88) },
+        { "Smooth",    "SDF Fonts",   GFX_RGB(88, 255, 166) },
+        { "Animate",   "60+ FPS",     GFX_RGB(200, 130, 255) },
+    };
+
+    int card_w = 280, card_h = 320, gap = 40;
+    int total_w = 4 * card_w + 3 * gap;
+    int start_x = (W - total_w) / 2;
+    int base_y = 120;
+
+    for (int i = 0; i < 4; i++) {
+        /* Floating animation: each card bobs independently */
+        int bob = isin(frame * 4 + i * 256) * 15 / 244;
+        int cx = start_x + i * (card_w + gap);
+        int cy = base_y + bob;
+
+        /* Card shadow */
+        gfx_rounded_rect_alpha(cx + 6, cy + 8, card_w, card_h, 16,
+                               GFX_RGB(0, 0, 0), 80);
+
+        /* Card body */
+        gfx_rounded_rect(cx, cy, card_w, card_h, 16, GFX_RGB(30, 33, 40));
+        gfx_rounded_rect_outline(cx, cy, card_w, card_h, 16, GFX_RGB(55, 60, 75));
+
+        /* Accent bar at top */
+        gfx_fill_rect(cx + 20, cy + 16, card_w - 40, 4, cards[i].accent);
+
+        /* Icon area: animated circle */
+        int icon_cx = cx + card_w / 2;
+        int icon_cy = cy + 90;
+        int pulse = 30 + isin(frame * 6 + i * 200) * 8 / 244;
+        gfx_fill_circle_aa(icon_cx, icon_cy, pulse, cards[i].accent);
+        gfx_fill_circle_aa(icon_cx, icon_cy, pulse - 8, GFX_RGB(30, 33, 40));
+
+        /* Spinning ring */
+        int ring_r = pulse + 12;
+        gfx_circle_ring(icon_cx, icon_cy, ring_r, 2, cards[i].accent);
+
+        /* Orbiting dot */
+        int dot_a = frame * 8 + i * 256;
+        int dot_x = icon_cx + icos(dot_a) * ring_r / 244;
+        int dot_y = icon_cy + isin(dot_a) * ring_r / 244;
+        gfx_fill_circle_aa(dot_x, dot_y, 5, GFX_WHITE);
+
+        /* Title text */
+        int tw = gfx_string_scaled_w(cards[i].title, 2);
+        gfx_draw_string_smooth(icon_cx - tw / 2, cy + 160,
+                               cards[i].title, GFX_WHITE, 2);
+
+        /* Subtitle */
+        int sw = gfx_string_scaled_w(cards[i].sub, 1);
+        gfx_draw_string(icon_cx - sw / 2, cy + 200,
+                         cards[i].sub, GFX_RGB(140, 145, 160), GFX_RGB(30, 33, 40));
+
+        /* Faux progress bar */
+        int bar_y = cy + 240;
+        int bar_w = card_w - 60;
+        int bar_x = cx + 30;
+        gfx_rounded_rect(bar_x, bar_y, bar_w, 8, 4, GFX_RGB(45, 48, 58));
+        int fill_w = (isin(frame * 3 + i * 300) + 244) * bar_w / 488;
+        if (fill_w < 8) fill_w = 8;
+        gfx_rounded_rect(bar_x, bar_y, fill_w, 8, 4, cards[i].accent);
+
+        /* Bottom stat numbers */
+        char stat[16];
+        int pct = (isin(frame * 3 + i * 300) + 244) * 100 / 488;
+        snprintf(stat, sizeof(stat), "%d%%", pct);
+        gfx_draw_string(bar_x + bar_w + 8, bar_y - 4, stat,
+                         cards[i].accent, GFX_RGB(30, 33, 40));
+    }
+}
+
+/* Scene 4: Wave visualizer */
+static void demo_scene_waves(int W, int H, int frame) {
+    demo_draw_bg(W, H, frame);
+
+    gfx_draw_string_smooth(W / 2 - gfx_string_scaled_w("Wave Synthesis", 3) / 2,
+                           40, "Wave Synthesis", GFX_WHITE, 3);
+
+    int cy = H / 2;
+
+    /* Draw 5 layered waves */
+    for (int wave = 0; wave < 5; wave++) {
+        int amp = 60 - wave * 8;
+        int freq = 3 + wave;
+        int speed = 4 + wave * 2;
+        uint32_t col = hsv_to_rgb((wave * 200 + frame * 3) & 1023, 200, 220);
+        int prev_y = cy;
+
+        for (int x = 0; x < W; x += 2) {
+            int angle = x * freq + frame * speed;
+            int y = cy + isin(angle) * amp / 244 +
+                    isin(angle * 2 + frame * 3) * (amp / 3) / 244;
+
+            /* Fill from wave to bottom with alpha */
+            int fill_h = H - y;
+            if (fill_h > 0) {
+                uint32_t fill_col = GFX_RGBA(
+                    (col >> 16) & 0xFF,
+                    (col >> 8) & 0xFF,
+                    col & 0xFF,
+                    20 + wave * 10);
+                gfx_fill_rect_alpha(x, y, 2, fill_h > 200 ? 200 : fill_h, fill_col);
+            }
+
+            /* Wave line */
+            if (x > 0)
+                gfx_draw_line(x - 2, prev_y, x, y, col);
+            prev_y = y;
+        }
+    }
+
+    /* Pulsing center orb */
+    int orb_r = 40 + isin(frame * 8) * 15 / 244;
+    for (int r = orb_r; r > 0; r -= 2) {
+        int brightness = (orb_r - r) * 200 / orb_r;
+        gfx_fill_circle_aa(W / 2, cy, r,
+                           GFX_RGB(brightness / 2, brightness, brightness));
+    }
+
+    /* Frequency bars at bottom */
+    int bar_count = 32;
+    int bar_w = (W - 100) / bar_count;
+    int bar_base = H - 80;
+    for (int i = 0; i < bar_count; i++) {
+        int bh = 20 + (isin(frame * 6 + i * 32) + 244) * 40 / 488;
+        uint32_t bc = hsv_to_rgb((i * 32 + frame * 4) & 1023, 240, 230);
+        int bx = 50 + i * bar_w;
+        gfx_rounded_rect(bx, bar_base - bh, bar_w - 2, bh, 3, bc);
+    }
 }
 
 static void cmd_gfxdemo(int argc, char* argv[]) {
@@ -2281,117 +2636,89 @@ static void cmd_gfxdemo(int argc, char* argv[]) {
         return;
     }
 
-    uint32_t w = gfx_width();
-    uint32_t h = gfx_height();
+    int W = (int)gfx_width();
+    int H = (int)gfx_height();
 
-    /* Clear to dark blue background */
-    gfx_clear(GFX_RGB(0, 0, 40));
+    /* Suspend WM compositing so the demo owns the framebuffer */
+    keyboard_set_idle_callback(0);
 
-    /* Draw border */
-    gfx_draw_rect(2, 2, (int)w - 4, (int)h - 4, GFX_WHITE);
+    particle_init_done = 0;
+    int scene = 0;
+    int frame = 0;
+    uint32_t start_tick = pit_get_ticks();
+    int total_scenes = 4;
+    int demo_tid = task_register("gfxdemo", 1, -1);
 
-    /* Title */
-    gfx_draw_string((int)w / 2 - 100, 20, "ImposOS GFX Demo", GFX_WHITE, GFX_RGB(0, 0, 40));
-    char info[80];
-    snprintf(info, sizeof(info), "Resolution: %dx%d  Grid: %dx%d",
-             (int)w, (int)h, (int)gfx_cols(), (int)gfx_rows());
-    gfx_draw_string((int)w / 2 - 120, 40, info, GFX_CYAN, GFX_RGB(0, 0, 40));
+    while (1) {
+        uint32_t frame_start = pit_get_ticks();
 
-    /* Filled rectangles - color palette */
-    int bx = 40, by = 80, bw = 60, bh = 40;
-    uint32_t colors[] = {
-        GFX_RED, GFX_GREEN, GFX_BLUE, GFX_CYAN,
-        GFX_YELLOW, GFX_MAGENTA, GFX_WHITE, GFX_RGB(255, 128, 0)
-    };
-    const char* names[] = {
-        "Red", "Green", "Blue", "Cyan",
-        "Yellow", "Magenta", "White", "Orange"
-    };
-    for (int i = 0; i < 8; i++) {
-        int x = bx + i * (bw + 10);
-        gfx_fill_rect(x, by, bw, bh, colors[i]);
-        gfx_draw_rect(x, by, bw, bh, GFX_WHITE);
-        gfx_draw_string(x + 4, by + bh + 4, names[i], colors[i], GFX_RGB(0, 0, 40));
-    }
-
-    /* Diagonal lines - starburst pattern */
-    int cx = (int)w / 2;
-    int cy_base = 220;
-    for (int angle = 0; angle < 360; angle += 15) {
-        /* Simple angle approximation using integer math */
-        int dx = 0, dy = 0;
-        int r = 80;
-        /* Use lookup for sin/cos approximation at key angles */
-        switch (angle % 360) {
-            case 0:   dx = r;    dy = 0;    break;
-            case 15:  dx = r*97/100; dy = r*26/100; break;
-            case 30:  dx = r*87/100; dy = r/2;      break;
-            case 45:  dx = r*71/100; dy = r*71/100;  break;
-            case 60:  dx = r/2;      dy = r*87/100;  break;
-            case 75:  dx = r*26/100; dy = r*97/100;  break;
-            case 90:  dx = 0;    dy = r;    break;
-            case 105: dx = -r*26/100; dy = r*97/100; break;
-            case 120: dx = -r/2;      dy = r*87/100; break;
-            case 135: dx = -r*71/100; dy = r*71/100; break;
-            case 150: dx = -r*87/100; dy = r/2;      break;
-            case 165: dx = -r*97/100; dy = r*26/100; break;
-            case 180: dx = -r;   dy = 0;    break;
-            case 195: dx = -r*97/100; dy = -r*26/100; break;
-            case 210: dx = -r*87/100; dy = -r/2;      break;
-            case 225: dx = -r*71/100; dy = -r*71/100; break;
-            case 240: dx = -r/2;      dy = -r*87/100; break;
-            case 255: dx = -r*26/100; dy = -r*97/100; break;
-            case 270: dx = 0;    dy = -r;   break;
-            case 285: dx = r*26/100;  dy = -r*97/100; break;
-            case 300: dx = r/2;       dy = -r*87/100; break;
-            case 315: dx = r*71/100;  dy = -r*71/100; break;
-            case 330: dx = r*87/100;  dy = -r/2;      break;
-            case 345: dx = r*97/100;  dy = -r*26/100; break;
+        /* Draw current scene */
+        switch (scene) {
+            case 0: demo_scene_orbits(W, H, frame); break;
+            case 1: demo_scene_particles(W, H, frame); break;
+            case 2: demo_scene_cards(W, H, frame); break;
+            case 3: demo_scene_waves(W, H, frame); break;
         }
-        /* Color cycle */
-        uint32_t lc = GFX_RGB(
-            128 + (angle * 127 / 360),
-            255 - (angle * 200 / 360),
-            (angle * 255 / 360)
-        );
-        gfx_draw_line(cx, cy_base, cx + dx, cy_base + dy, lc);
+
+        /* Scene indicator dots */
+        int dot_y = H - 40;
+        int dot_cx = W / 2;
+        for (int i = 0; i < total_scenes; i++) {
+            int dx = dot_cx + (i - total_scenes / 2) * 24 + 12;
+            if (i == scene) {
+                gfx_fill_circle_aa(dx, dot_y, 6, GFX_WHITE);
+            } else {
+                gfx_circle_ring(dx, dot_y, 6, 2, GFX_RGB(100, 100, 110));
+            }
+        }
+
+        /* Help text */
+        gfx_draw_string(W / 2 - 140, H - 20,
+                         "SPACE: next scene  Q: quit",
+                         GFX_RGB(120, 125, 140), GFX_BLACK);
+
+        gfx_flip();
+        frame++;
+
+        /* Auto-advance scene every ~8 seconds (960 ticks at 120Hz) */
+        if ((pit_get_ticks() - start_tick) > 960) {
+            scene = (scene + 1) % total_scenes;
+            start_tick = pit_get_ticks();
+            particle_init_done = 0;
+        }
+
+        /* Check for killed flag */
+        if (demo_tid >= 0 && task_check_killed(demo_tid)) break;
+
+        /* Check for input (non-blocking) */
+        if (keyboard_data_available()) {
+            char c = getchar();
+            if (c == 'q' || c == 'Q' || c == 27) break;
+            if (c == ' ' || c == '\n') {
+                scene = (scene + 1) % total_scenes;
+                start_tick = pit_get_ticks();
+                particle_init_done = 0;
+            }
+        }
+
+        /* Cap at ~30fps: wait for at least 4 ticks */
+        while (pit_get_ticks() - frame_start < 4) {
+            task_set_current(TASK_IDLE);
+            cpu_halting = 1;
+            __asm__ volatile ("hlt");
+            cpu_halting = 0;
+        }
+        task_set_current(TASK_SHELL);
     }
 
-    /* Nested rectangles */
-    int rx = (int)w - 250, ry = 160;
-    for (int i = 0; i < 8; i++) {
-        uint32_t rc = GFX_RGB(255 - i * 30, i * 30, 128);
-        gfx_draw_rect(rx + i * 8, ry + i * 8, 120 - i * 16, 80 - i * 16, rc);
-    }
+    /* Unregister process */
+    if (demo_tid >= 0) task_unregister(demo_tid);
 
-    /* Alpha blending demo: overlapping semi-transparent rectangles */
-    int ax = 40, ay = 340;
-    gfx_fill_rect(ax, ay, 120, 80, GFX_RGB(200, 0, 0));
-    gfx_fill_rect_alpha(ax + 40, ay + 20, 120, 80, GFX_RGBA(0, 0, 255, 128));
-    gfx_fill_rect_alpha(ax + 80, ay + 10, 120, 80, GFX_RGBA(0, 200, 0, 100));
-    gfx_draw_string(ax, ay + 84, "Alpha blending demo", GFX_WHITE, GFX_RGB(0, 0, 40));
-
-    /* Gradient bar */
-    int gy = (int)h - 100;
-    for (int x = 40; x < (int)w - 40; x++) {
-        int t = (x - 40) * 255 / ((int)w - 80);
-        gfx_fill_rect(x, gy, 1, 30, GFX_RGB(t, 0, 255 - t));
-    }
-    gfx_draw_string(40, gy + 34, "Red <-- Gradient --> Blue", GFX_WHITE, GFX_RGB(0, 0, 40));
-
-    /* Bottom message */
-    gfx_draw_string((int)w / 2 - 80, (int)h - 30, "Press any key to exit...",
-                    GFX_YELLOW, GFX_RGB(0, 0, 40));
-
-    gfx_flip();
-
-    /* Wait for keypress */
-    getchar();
-
-    /* Restore terminal */
+    /* Restore idle callback, then full WM composite to redraw desktop */
+    keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
     terminal_clear();
     if (gfx_is_active())
-        desktop_draw_chrome();
+        wm_composite();
 }
 
 static void cmd_nslookup(int argc, char* argv[]) {
@@ -2636,180 +2963,336 @@ static void cmd_firewall(int argc, char* argv[]) {
     }
 }
 
-static void cmd_top(int argc, char* argv[]) {
-    (void)argc; (void)argv;
+static void cmd_kill(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: kill PID\n");
+        return;
+    }
+    int pid = atoi(argv[1]);
+    int rc = task_kill_by_pid(pid);
+    if (rc == 0)
+        printf("Killed process %d\n", pid);
+    else if (rc == -2)
+        printf("kill: cannot kill system process (PID %d)\n", pid);
+    else
+        printf("kill: no such process (PID %d)\n", pid);
+}
 
-    /* Take initial CPU snapshot for delta calculation */
-    uint32_t prev_idle = 0, prev_busy = 0;
-    pit_get_cpu_stats(&prev_idle, &prev_busy);
+/* ── Helpers for colored output ── */
+#define TOP_C_HEADER  VGA_COLOR_LIGHT_CYAN
+#define TOP_C_VALUE   VGA_COLOR_WHITE
+#define TOP_C_LABEL   VGA_COLOR_LIGHT_GREY
+#define TOP_C_BAR_FG  VGA_COLOR_LIGHT_GREEN
+#define TOP_C_BAR_BG  VGA_COLOR_DARK_GREY
+#define TOP_C_RUN     VGA_COLOR_LIGHT_GREEN
+#define TOP_C_SLEEP   VGA_COLOR_LIGHT_GREY
+#define TOP_C_IDLE_C  VGA_COLOR_LIGHT_BLUE
+#define TOP_C_BG      VGA_COLOR_BLACK
 
-    while (1) {
-        terminal_clear();
-        if (gfx_is_active()) desktop_draw_chrome();
+static void top_bar(int pct, int width) {
+    int fill = pct * width / 100;
+    if (fill > width) fill = width;
+    terminal_setcolor(TOP_C_BAR_FG, TOP_C_BG);
+    printf("[");
+    for (int i = 0; i < width; i++) {
+        if (i < fill) printf("|");
+        else { terminal_setcolor(TOP_C_BAR_BG, TOP_C_BG); printf("."); terminal_setcolor(TOP_C_BAR_FG, TOP_C_BG); }
+    }
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("]");
+}
 
-        /* Header: uptime + user@hostname */
-        uint32_t secs = pit_get_ticks() / 100;
-        uint32_t hrs = secs / 3600;
-        uint32_t mins = (secs % 3600) / 60;
-        uint32_t sec = secs % 60;
-        printf("top - %dh %dm %ds up, user: %s@%s\n",
-               (int)hrs, (int)mins, (int)sec,
-               user_get_current(), hostname_get());
+/* ── Non-blocking top: foreground app callbacks ── */
+static int top_tid = -1;
+static int top_first_render = 1;
 
-        /* CPU usage via idle/busy delta */
-        uint32_t cur_idle = 0, cur_busy = 0;
-        pit_get_cpu_stats(&cur_idle, &cur_busy);
-        uint32_t d_idle = cur_idle - prev_idle;
-        uint32_t d_busy = cur_busy - prev_busy;
-        uint32_t d_total = d_idle + d_busy;
-        int cpu_pct = d_total > 0 ? (int)(d_busy * 100 / d_total) : 0;
-        int cpu_bar = cpu_pct / 5;
-        prev_idle = cur_idle;
-        prev_busy = cur_busy;
+static void top_render(void) {
+    task_set_current(top_tid);
 
-        printf("CPU:   %3d%%  [", cpu_pct);
-        for (int i = 0; i < 20; i++)
-            printf(i < cpu_bar ? "#" : ".");
-        printf("]\n");
+    terminal_clear();
+    if (top_first_render && gfx_is_active()) {
+        desktop_draw_chrome();
+        top_first_render = 0;
+    }
 
-        /* Heap memory */
-        size_t used = heap_used();
-        size_t total = heap_total();
-        int pct = total > 0 ? (int)((uint64_t)used * 100 / total) : 0;
-        int bar_fill = pct / 5;
-        printf("Heap:  %dKB / %dKB  [", (int)(used / 1024), (int)(total / 1024));
-        for (int i = 0; i < 20; i++)
-            printf(i < bar_fill ? "#" : ".");
-        printf("] %d%%\n", pct);
-        printf("RAM:   %dMB physical\n", (int)gfx_get_system_ram_mb());
+    /* ═══ Header ════════════════════════════════════════════ */
+    datetime_t dt;
+    config_get_datetime(&dt);
+    uint32_t up_secs = pit_get_ticks() / 120;
+    uint32_t up_h = up_secs / 3600;
+    uint32_t up_m = (up_secs % 3600) / 60;
+    uint32_t up_s = up_secs % 60;
 
-        /* FS stats */
-        int used_inodes = 0;
-        int used_blocks = 0;
-        for (int i = 0; i < NUM_INODES; i++) {
-            inode_t tmp;
-            if (fs_read_inode(i, &tmp) == 0 && tmp.type != INODE_FREE) {
-                used_inodes++;
-                used_blocks += tmp.num_blocks;
-                if (tmp.indirect_block)
-                    used_blocks++;
-            }
-        }
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("top");
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" - %02d:%02d:%02d up ",
+           (int)dt.hour, (int)dt.minute, (int)dt.second);
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d:%02d:%02d", (int)up_h, (int)up_m, (int)up_s);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(",  1 user\n\n");
 
-        /* Disk line with I/O stats */
-        uint32_t rd_ops = 0, rd_bytes = 0, wr_ops = 0, wr_bytes = 0;
-        fs_get_io_stats(&rd_ops, &rd_bytes, &wr_ops, &wr_bytes);
-        printf("Disk:  %d/%d inodes, %d/%d blocks (%dKB)  R: %d ops (%dKB)  W: %d ops (%dKB)\n",
-               used_inodes, NUM_INODES,
-               used_blocks, NUM_BLOCKS,
-               (int)(used_blocks * BLOCK_SIZE / 1024),
-               (int)rd_ops, (int)(rd_bytes / 1024),
-               (int)wr_ops, (int)(wr_bytes / 1024));
+    /* ═══ CPU bar ═══════════════════════════════════════════ */
+    task_info_t *idle_t = task_get(TASK_IDLE);
+    int user_x10 = 0, sys_x10 = 0, idle_x10 = 0;
+    if (idle_t && idle_t->sample_total > 0)
+        idle_x10 = (int)(idle_t->prev_ticks * 1000 / idle_t->sample_total);
+    for (int i = 1; i < TASK_MAX; i++) {
+        task_info_t *t = task_get(i);
+        if (!t) continue;
+        int pct_x10 = t->sample_total > 0
+            ? (int)(t->prev_ticks * 1000 / t->sample_total) : 0;
+        if (t->killable) user_x10 += pct_x10;
+        else sys_x10 += pct_x10;
+    }
+    int cpu_pct = (1000 - idle_x10) / 10;
+    if (cpu_pct < 0) cpu_pct = 0;
 
-        /* Net line with I/O stats */
-        uint32_t tx_p = 0, tx_b = 0, rx_p = 0, rx_b = 0;
-        net_get_stats(&tx_p, &tx_b, &rx_p, &rx_b);
-        printf("Net:   TX: %d pkts (%dKB)  RX: %d pkts (%dKB)\n\n",
-               (int)tx_p, (int)(tx_b / 1024),
-               (int)rx_p, (int)(rx_b / 1024));
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("CPU  ");
+    top_bar(cpu_pct, 30);
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf(" %2d%%", cpu_pct);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("  (");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.%d", user_x10 / 10, user_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" us, ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.%d", sys_x10 / 10, sys_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" sy, ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.%d", idle_x10 / 10, idle_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" id)\n");
 
-        /* Process table: kernel subsystems + windows */
-        int pid = 0;
-        int wcount = wm_get_window_count();
-        net_config_t *ncfg = net_get_config();
-        int net_up = ncfg && ncfg->link_up;
+    /* ═══ Memory bar ════════════════════════════════════════ */
+    uint32_t ram_mb = gfx_get_system_ram_mb();
+    size_t h_used = heap_used();
+    size_t h_total = heap_total();
+    size_t h_free = h_total > h_used ? h_total - h_used : 0;
+    int used_mib_x10 = (int)(h_used / (1024 * 1024 / 10));
+    int free_mib_x10 = (int)(h_free / (1024 * 1024 / 10));
+    int mem_pct = (int)(h_used * 100 / h_total);
 
-        /* Count total tasks */
-        int total_tasks = 6;
-        if (net_up) total_tasks++;
-        if (gfx_is_active()) total_tasks++;
-        total_tasks += wcount;
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("Mem  ");
+    top_bar(mem_pct, 30);
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf(" %d.%d", used_mib_x10 / 10, used_mib_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("MiB / ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.0", (int)ram_mb);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("MiB  (");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.%d", free_mib_x10 / 10, free_mib_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("MiB free)\n");
 
-        printf("Tasks: %d total\n\n", total_tasks);
-        printf("  %-4s %-16s %-10s %-9s %s\n", "PID", "NAME", "STATE", "MEM(KB)", "INFO");
-        printf("  %-4s %-16s %-10s %-9s %s\n", "---", "----", "-----", "-------", "----");
-
-        /* PID 0: kernel */
-        printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "kernel", "running", "-", "i386 multiboot");
-
-        /* PID 1: pit_timer */
-        {
-            char info[48];
-            snprintf(info, sizeof(info), "100Hz, %d ticks", (int)pit_get_ticks());
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "pit_timer", "running", "-", info);
-        }
-
-        /* PID 2: keyboard */
-        {
-            const char *layout = keyboard_get_layout() == KB_LAYOUT_FR ? "FR" : "US";
-            char info[32];
-            snprintf(info, sizeof(info), "IRQ1, layout %s", layout);
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "keyboard", "running", "-", info);
-        }
-
-        /* PID 3: mouse */
-        printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "mouse", "running", "-", "IRQ12, PS/2");
-
-        /* PID 4: fs — memory = inode table + used data blocks */
-        {
-            int fs_mem = (int)((NUM_INODES * sizeof(inode_t) + (uint32_t)used_blocks * BLOCK_SIZE) / 1024);
-            char mem[16];
-            snprintf(mem, sizeof(mem), "%d", fs_mem);
-            char info[48];
-            snprintf(info, sizeof(info), "%d/%d inodes, %dKB",
-                     used_inodes, NUM_INODES, (int)(used_blocks * BLOCK_SIZE / 1024));
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "fs", "running", mem, info);
-        }
-
-        /* PID 5: net (if up) */
-        if (net_up) {
-            char info[48];
-            snprintf(info, sizeof(info), "%d.%d.%d.%d",
-                     ncfg->ip[0], ncfg->ip[1], ncfg->ip[2], ncfg->ip[3]);
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "net", "running", "-", info);
-        }
-
-        /* WM (if active) — memory = framebuffer */
-        if (gfx_is_active()) {
-            int fb_kb = (int)(gfx_width() * gfx_height() * 4 / 1024);
-            char mem[16];
-            snprintf(mem, sizeof(mem), "%d", fb_kb);
-            char info[48];
-            snprintf(info, sizeof(info), "%d windows, fb=%dKB", wcount, fb_kb);
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "wm", "running", mem, info);
-        }
-
-        /* PID N: shell */
-        printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "shell", "sleeping", "-", "waiting (top)");
-
-        /* Windows as tasks */
-        for (int i = 0; i < wcount; i++) {
-            wm_window_t *w = wm_get_window_by_index(i);
-            if (!w) continue;
-            int win_mem = w->canvas_w * w->canvas_h * 4 / 1024;
-            char mem[16];
-            snprintf(mem, sizeof(mem), "%d", win_mem);
-            char info[64];
-            snprintf(info, sizeof(info), "%dx%d%s",
-                     w->w, w->h,
-                     (w->flags & WM_WIN_FOCUSED) ? " [focused]" : "");
-            const char *state = (w->flags & WM_WIN_MINIMIZED) ? "suspended" : "running";
-            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, w->title, state, mem, info);
-        }
-
-        printf("\nPress 'q' to quit, refreshes every 1s\n");
-
-        /* Wait ~1s, checking for 'q' every 100ms */
-        for (int i = 0; i < 10; i++) {
-            pit_sleep_ms(100);
-            if (keyboard_data_available()) {
-                char c = getchar();
-                if (c == 'q' || c == 'Q') {
-                    terminal_clear();
-                    if (gfx_is_active()) desktop_draw_chrome();
-                    return;
-                }
-            }
+    /* ═══ Disk + Net ════════════════════════════════════════ */
+    int used_inodes = 0, used_blocks = 0;
+    for (int i = 0; i < NUM_INODES; i++) {
+        inode_t tmp;
+        if (fs_read_inode(i, &tmp) == 0 && tmp.type != INODE_FREE) {
+            used_inodes++;
+            used_blocks += tmp.num_blocks;
+            if (tmp.indirect_block) used_blocks++;
         }
     }
+    uint32_t rd_ops = 0, rd_bytes = 0, wr_ops = 0, wr_bytes = 0;
+    fs_get_io_stats(&rd_ops, &rd_bytes, &wr_ops, &wr_bytes);
+    uint32_t tx_p = 0, tx_b = 0, rx_p = 0, rx_b = 0;
+    net_get_stats(&tx_p, &tx_b, &rx_p, &rx_b);
+
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("Disk ");
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("%d/%d inodes  %d/%d blocks (%dKB)  ",
+           used_inodes, NUM_INODES, used_blocks, NUM_BLOCKS,
+           (int)(used_blocks * BLOCK_SIZE / 1024));
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("R:");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d", (int)rd_ops);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" W:");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d\n", (int)wr_ops);
+
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("Net  ");
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("TX: ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d", (int)tx_p);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" pkts (%dKB)  RX: ", (int)(tx_b / 1024));
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d", (int)rx_p);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" pkts (%dKB)\n", (int)(rx_b / 1024));
+
+    /* ═══ Task counts ═══════════════════════════════════════ */
+    int n_total = 0, n_running = 0, n_sleeping = 0, n_idle = 0;
+    for (int i = 0; i < TASK_MAX; i++) {
+        task_info_t *t = task_get(i);
+        if (!t) continue;
+        n_total++;
+        if (i == TASK_IDLE) { n_idle++; continue; }
+        int pct = t->sample_total > 0
+            ? (int)(t->prev_ticks * 100 / t->sample_total) : 0;
+        if (pct > 0) n_running++;
+        else n_sleeping++;
+    }
+
+    printf("\n");
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("Tasks: ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d", n_total);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" total, ");
+    terminal_setcolor(TOP_C_RUN, TOP_C_BG);
+    printf("%d running", n_running);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(", ");
+    terminal_setcolor(TOP_C_SLEEP, TOP_C_BG);
+    printf("%d sleeping", n_sleeping);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(", ");
+    terminal_setcolor(TOP_C_IDLE_C, TOP_C_BG);
+    printf("%d idle", n_idle);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("\n\n");
+
+    /* ═══ Process table header ══════════════════════════════ */
+    const char *cur_user = user_get_current();
+    if (!cur_user) cur_user = "root";
+
+    terminal_setcolor(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_GREY);
+    printf("  %5s %-10s S  %%CPU    RES     TIME+ COMMAND          \n",
+           "PID", "USER");
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+
+    /* ═══ Process rows (sorted by CPU desc) ═════════════════ */
+    int indices[TASK_MAX];
+    int count = 0;
+    for (int i = 0; i < TASK_MAX; i++) {
+        if (task_get(i)) indices[count++] = i;
+    }
+    for (int i = 1; i < count; i++) {
+        int key = indices[i];
+        task_info_t *kt = task_get(key);
+        int kpct = kt->sample_total > 0
+            ? (int)(kt->prev_ticks * 1000 / kt->sample_total) : 0;
+        int j = i - 1;
+        while (j >= 0) {
+            task_info_t *jt = task_get(indices[j]);
+            int jpct = jt->sample_total > 0
+                ? (int)(jt->prev_ticks * 1000 / jt->sample_total) : 0;
+            if (jpct >= kpct) break;
+            indices[j + 1] = indices[j];
+            j--;
+        }
+        indices[j + 1] = key;
+    }
+
+    for (int n = 0; n < count; n++) {
+        int i = indices[n];
+        task_info_t *t = task_get(i);
+        if (!t) continue;
+
+        int task_cpu_x10 = t->sample_total > 0
+            ? (int)(t->prev_ticks * 1000 / t->sample_total) : 0;
+
+        char state;
+        enum vga_color row_color;
+        if (i == TASK_IDLE) { state = 'I'; row_color = TOP_C_IDLE_C; }
+        else if (task_cpu_x10 > 0) { state = 'R'; row_color = TOP_C_RUN; }
+        else { state = 'S'; row_color = TOP_C_SLEEP; }
+
+        uint32_t tticks = t->total_ticks;
+        uint32_t tsecs = tticks / 120;
+        uint32_t tcs = (tticks % 120) * 100 / 120;
+        uint32_t tmins = tsecs / 60;
+        uint32_t ts = tsecs % 60;
+        const char *uname = t->killable ? cur_user : "root";
+
+        char res_str[12];
+        if (t->mem_kb > 0)
+            snprintf(res_str, sizeof(res_str), "%dK", t->mem_kb);
+        else
+            strcpy(res_str, "0K");
+
+        terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+        printf("  %5d ", task_get_pid(i));
+        terminal_setcolor(t->killable ? TOP_C_VALUE : VGA_COLOR_LIGHT_RED, TOP_C_BG);
+        printf("%-10s ", uname);
+        terminal_setcolor(row_color, TOP_C_BG);
+        printf("%c ", state);
+        terminal_setcolor(task_cpu_x10 > 0 ? TOP_C_VALUE : TOP_C_LABEL, TOP_C_BG);
+        printf("%2d.%d ", task_cpu_x10 / 10, task_cpu_x10 % 10);
+        terminal_setcolor(t->mem_kb > 0 ? TOP_C_HEADER : TOP_C_LABEL, TOP_C_BG);
+        printf("%6s ", res_str);
+        terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+        printf(" %4d:%02d.%02d ", (int)tmins, (int)ts, (int)tcs);
+        terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+        printf("%-s\n", t->name);
+    }
+
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("\nPress 'q' to quit, refreshes every 1s\n");
+    terminal_resetcolor();
+
+    wm_composite();
+}
+
+static void top_on_key(char c) {
+    if (c == 'q' || c == 'Q') {
+        if (top_tid >= 0) task_unregister(top_tid);
+        top_tid = -1;
+        shell_unregister_fg_app();
+        terminal_resetcolor();
+        terminal_clear();
+        if (gfx_is_active()) desktop_draw_chrome();
+        shell_draw_prompt();
+        wm_composite();
+    }
+}
+
+static void top_on_tick(void) {
+    if (top_tid >= 0 && task_check_killed(top_tid)) {
+        top_on_key('q');
+        return;
+    }
+    top_render();
+}
+
+static void top_on_close(void) {
+    if (top_tid >= 0) task_unregister(top_tid);
+    top_tid = -1;
+    shell_unregister_fg_app();
+    terminal_resetcolor();
+}
+
+static shell_fg_app_t top_fg_app = {
+    .on_key = top_on_key,
+    .on_tick = top_on_tick,
+    .on_close = top_on_close,
+    .tick_interval = 100,
+    .task_id = -1,
+};
+
+static void cmd_top(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    top_tid = task_register("top", 1, -1);
+    top_fg_app.task_id = top_tid;
+    top_first_render = 1;
+    top_render();
+    shell_register_fg_app(&top_fg_app);
 }

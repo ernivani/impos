@@ -413,101 +413,415 @@ void login_show_splash(void) {
     pit_sleep_ms(100);
 }
 
-/* ═══ Setup Wizard ══════════════════════════════════════════ */
+/* ═══ Setup Wizard (Modern UI) ══════════════════════════════ */
 
-#define CARD_BG GFX_RGB(24, 24, 37)
-#define FIELD_H 28
+#define SETUP_CARD_W   380
+#define SETUP_CARD_R   16
+#define SETUP_FIELD_W  300
+#define SETUP_FIELD_H  36
+#define SETUP_DOT_R    4
+#define SETUP_DOT_GAP  14
+#define SETUP_CARD_BG  GFX_RGB(24, 24, 37)
 
-static int input_field(int fx, int fy, int fw,
-                       char *buf, int max_len, int is_pw,
-                       const char *ph) {
-    int len = 0;
-    buf[0] = '\0';
-    while (1) {
-        gfx_fill_rect(fx, fy, fw, FIELD_H, DT_FIELD_BG);
-        gfx_draw_rect(fx, fy, fw, FIELD_H, len > 0 ? DT_FIELD_FOCUS : DT_FIELD_BORDER);
-        int tx = fx + 10, ty = fy + (FIELD_H - FONT_H) / 2;
-        if (len == 0 && ph)
-            gfx_draw_string(tx, ty, ph, DT_FIELD_PH, DT_FIELD_BG);
-        else if (is_pw) {
-            for (int i = 0; i < len && i < (fw - 30) / 12; i++)
-                gfx_fill_circle(tx + i * 12 + 4, fy + FIELD_H / 2, 3, DT_TEXT);
-        } else {
-            for (int i = 0; i < len; i++)
-                gfx_draw_char(tx + i * FONT_W, ty, buf[i], DT_TEXT, DT_FIELD_BG);
+/* Shared state for setup idle callback */
+static volatile int setup_blink_on = 1;
+static volatile uint32_t setup_last_blink = 0;
+static int setup_fld_x, setup_fld_y, setup_fld_w;
+static volatile int setup_fld_len = 0;
+static volatile int setup_fld_pw = 0;
+static int setup_sw, setup_sh;
+static int setup_active = 0;  /* idle callback checks this */
+
+/* Keyboard layout picker — shared mouse state */
+static volatile int setup_kb_clicked = -1;   /* -1=none, 0/1=option, 2=continue */
+static volatile uint8_t setup_kb_prev_btns = 0;
+static int setup_kb_opt_x, setup_kb_opt_w, setup_kb_opt_h;
+static int setup_kb_opt_y[2];
+static int setup_kb_btn_x, setup_kb_btn_y, setup_kb_btn_w, setup_kb_btn_h;
+
+/* Redraw just the field area (called from idle for cursor blink) */
+static void setup_redraw_field(void) {
+    int fx = setup_fld_x, fy = setup_fld_y, fw = setup_fld_w;
+    int len = setup_fld_len, is_pw = setup_fld_pw;
+    int r = SETUP_FIELD_H / 2;
+
+    /* Fill with card BG (not raw gradient) so colors stay consistent */
+    gfx_fill_rect(fx - 2, fy - 2, fw + 4, SETUP_FIELD_H + 4, SETUP_CARD_BG);
+    gfx_rounded_rect_alpha(fx, fy, fw, SETUP_FIELD_H, r,
+                           GFX_RGB(0, 0, 0), len > 0 ? 120 : 80);
+
+    int tx = fx + 14, ty = fy + (SETUP_FIELD_H - FONT_H) / 2;
+    if (is_pw && len > 0) {
+        for (int i = 0; i < len && i < (fw - 30) / SETUP_DOT_GAP; i++)
+            gfx_fill_circle_aa(tx + i * SETUP_DOT_GAP,
+                               fy + SETUP_FIELD_H / 2,
+                               SETUP_DOT_R, GFX_RGB(230, 225, 240));
+    }
+    if (setup_blink_on) {
+        int cx2;
+        if (is_pw)
+            cx2 = (len > 0) ? tx + (len - 1) * SETUP_DOT_GAP + SETUP_DOT_R + 6 : tx;
+        else
+            cx2 = tx + len * FONT_W;
+        gfx_fill_rect(cx2, ty, 2, FONT_H, GFX_RGB(200, 195, 220));
+    }
+    gfx_flip_rect(fx - 2, fy - 2, fw + 4, SETUP_FIELD_H + 4);
+    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+}
+
+static void setup_idle(void) {
+    if (!mouse_poll()) {
+        if (!setup_active) return;
+        uint32_t now = pit_get_ticks();
+        if (now - setup_last_blink >= 60) { /* 500ms at 120Hz */
+            setup_last_blink = now;
+            setup_blink_on = !setup_blink_on;
+            setup_redraw_field();
         }
-        int cx = is_pw ? tx + len * 12 : tx + len * FONT_W;
-        gfx_fill_rect(cx, ty, 1, FONT_H, DT_DOT);
-        gfx_flip();
-        char c = getchar();
-        if (c == '\n') { buf[len] = '\0'; return len; }
-        if (c == '\b') { if (len > 0) len--; continue; }
-        if (c == KEY_ESCAPE) { buf[len] = '\0'; return -1; }
-        if ((unsigned char)c >= 0xB0 && (unsigned char)c <= 0xBB) continue;
-        if (c >= 32 && c < 127 && len < max_len - 1)
-            buf[len++] = c;
+        return;
+    }
+    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+}
+
+/* Idle callback for keyboard layout picker — handles mouse hover + click */
+static void setup_kb_idle(void) {
+    if (!mouse_poll()) return;
+
+    int mx = mouse_get_x(), my = mouse_get_y();
+    uint8_t btns = mouse_get_buttons();
+
+    /* Cursor shape */
+    int hovering = 0;
+    for (int i = 0; i < 2; i++) {
+        if (mx >= setup_kb_opt_x && mx < setup_kb_opt_x + setup_kb_opt_w &&
+            my >= setup_kb_opt_y[i] && my < setup_kb_opt_y[i] + setup_kb_opt_h)
+            hovering = 1;
+    }
+    if (mx >= setup_kb_btn_x && mx < setup_kb_btn_x + setup_kb_btn_w &&
+        my >= setup_kb_btn_y && my < setup_kb_btn_y + setup_kb_btn_h)
+        hovering = 1;
+
+    if (hovering) {
+        if (gfx_get_cursor_type() != GFX_CURSOR_HAND)
+            gfx_set_cursor_type(GFX_CURSOR_HAND);
+    } else {
+        if (gfx_get_cursor_type() != GFX_CURSOR_ARROW)
+            gfx_set_cursor_type(GFX_CURSOR_ARROW);
+    }
+
+    /* Click detection (button-down edge) */
+    uint8_t click = (btns & MOUSE_BTN_LEFT) & ~setup_kb_prev_btns;
+    setup_kb_prev_btns = btns;
+
+    if (click) {
+        for (int i = 0; i < 2; i++) {
+            if (mx >= setup_kb_opt_x && mx < setup_kb_opt_x + setup_kb_opt_w &&
+                my >= setup_kb_opt_y[i] && my < setup_kb_opt_y[i] + setup_kb_opt_h) {
+                setup_kb_clicked = i;
+                keyboard_request_force_exit();
+                break;
+            }
+        }
+        if (mx >= setup_kb_btn_x && mx < setup_kb_btn_x + setup_kb_btn_w &&
+            my >= setup_kb_btn_y && my < setup_kb_btn_y + setup_kb_btn_h) {
+            setup_kb_clicked = 2;  /* Continue button */
+            keyboard_request_force_exit();
+        }
+    }
+
+    gfx_draw_mouse_cursor(mx, my);
+}
+
+/* Draw gradient + centered card */
+static void setup_draw_step(int w, int h, int card_h, const char *title) {
+    draw_gradient(w, h);
+    int cx = w / 2, cy = h / 2;
+    int x = cx - SETUP_CARD_W / 2, y = cy - card_h / 2;
+    gfx_rounded_rect_alpha(x, y, SETUP_CARD_W, card_h, SETUP_CARD_R,
+                           SETUP_CARD_BG, 220);
+    gfx_rounded_rect_outline(x, y, SETUP_CARD_W, card_h, SETUP_CARD_R,
+                             GFX_RGB(60, 58, 72));
+    if (title) {
+        int nscale = 2;
+        int tw = gfx_string_scaled_w(title, nscale);
+        gfx_draw_string_smooth(cx - tw / 2, y + 28, title,
+                               GFX_RGB(240, 240, 248), nscale);
     }
 }
 
-static void setup_card(int cx, int cy, int cw, int ch) {
-    int x = cx - cw / 2, y = cy - ch / 2;
-    gfx_fill_rect(x, y, cw, ch, CARD_BG);
-    gfx_draw_rect(x, y, cw, ch, DT_BORDER);
+/* Modern input field — blocks until Enter */
+static int setup_input(int fx, int fy, int fw,
+                       char *buf, int max_len, int is_pw,
+                       const char *ph, const char *label) {
+    int len = 0;
+    buf[0] = '\0';
+    setup_fld_x = fx;
+    setup_fld_y = fy;
+    setup_fld_w = fw;
+    setup_fld_len = 0;
+    setup_fld_pw = is_pw;
+    setup_active = 1;
+    setup_blink_on = 1;
+    setup_last_blink = pit_get_ticks();
+
+    while (1) {
+        /* Label above field */
+        if (label)
+            gfx_draw_string_nobg(fx + 4, fy - 18, label,
+                                 GFX_RGB(160, 155, 175));
+
+        /* Field pill — fill with card BG, not raw gradient */
+        int r = SETUP_FIELD_H / 2;
+        gfx_fill_rect(fx - 2, fy - 20, fw + 4, SETUP_FIELD_H + 24, SETUP_CARD_BG);
+        gfx_rounded_rect_alpha(fx, fy, fw, SETUP_FIELD_H, r,
+                               GFX_RGB(0, 0, 0), len > 0 ? 120 : 80);
+
+        int tx = fx + 14, ty = fy + (SETUP_FIELD_H - FONT_H) / 2;
+
+        if (len == 0 && ph) {
+            gfx_draw_string_nobg(tx, ty, ph, GFX_RGB(120, 115, 135));
+        } else if (is_pw) {
+            for (int i = 0; i < len && i < (fw - 30) / SETUP_DOT_GAP; i++)
+                gfx_fill_circle_aa(tx + i * SETUP_DOT_GAP,
+                                   fy + SETUP_FIELD_H / 2,
+                                   SETUP_DOT_R, GFX_RGB(230, 225, 240));
+        } else {
+            for (int i = 0; i < len; i++)
+                gfx_draw_char_nobg(tx + i * FONT_W, ty, buf[i],
+                                   GFX_RGB(230, 225, 240));
+        }
+
+        /* Cursor */
+        if (setup_blink_on) {
+            int cx2;
+            if (is_pw)
+                cx2 = (len > 0) ? tx + (len - 1) * SETUP_DOT_GAP + SETUP_DOT_R + 6 : tx;
+            else
+                cx2 = tx + len * FONT_W;
+            gfx_fill_rect(cx2, ty, 2, FONT_H, GFX_RGB(200, 195, 220));
+        }
+
+        gfx_flip_rect(fx - 2, fy - 20, fw + 4, SETUP_FIELD_H + 24);
+        gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+
+        setup_blink_on = 1;
+        setup_last_blink = pit_get_ticks();
+
+        char c = getchar();
+        if (c == '\n') { buf[len] = '\0'; setup_active = 0; return len; }
+        if (c == '\b') {
+            if (len > 0) len--;
+            setup_fld_len = len;
+            continue;
+        }
+        if ((unsigned char)c >= 0xB0) continue;
+        if (c == KEY_ESCAPE) continue;  /* Don't allow escape in setup */
+        if (c >= 32 && c < 127 && len < max_len - 1) {
+            buf[len++] = c;
+            setup_fld_len = len;
+        }
+    }
 }
 
 void login_run_setup(void) {
     int w = (int)gfx_width(), h = (int)gfx_height();
-    int cx = w / 2, cy = h / 2;
-    int cw = 300, ch = 200;
-    int card_x = cx - cw / 2, card_y = cy - ch / 2;
-    int fw = cw - 60, fx = card_x + 30;
-    char hname[64] = {0}, rpw[64] = {0}, uname[32] = {0}, upw[64] = {0};
+    int cx = w / 2;
+    setup_sw = w;
+    setup_sh = h;
 
-    gfx_clear(0);
-    setup_card(cx, cy, cw, ch);
-    const char *t1 = "Welcome";
-    gfx_draw_string(cx - (int)strlen(t1) * FONT_W / 2, card_y + 28, t1, DT_TEXT, CARD_BG);
-    gfx_draw_string(fx, card_y + 68, "Hostname", DT_TEXT_SUB, CARD_BG);
-    gfx_flip();
-    input_field(fx, card_y + 88, fw, hname, 64, 0, "imposos");
-    if (!hname[0]) strcpy(hname, "imposos");
-    hostname_set(hname);
-    hostname_save();
+    keyboard_set_idle_callback(setup_idle);
 
-    gfx_clear(0);
-    setup_card(cx, cy, cw, ch);
-    gfx_draw_string(cx - 52, card_y + 28, "Root Account", DT_TEXT, CARD_BG);
-    gfx_draw_string(fx, card_y + 68, "Password", DT_TEXT_SUB, CARD_BG);
-    gfx_flip();
-    input_field(fx, card_y + 88, fw, rpw, 64, 1, "Password");
-    fs_create_file("/home", 1);
-    fs_create_file("/home/root", 1);
-    user_create("root", rpw, "/home/root", 0, 0);
+    /* ── Step 1: Keyboard Layout ───────────────────────────── */
+    {
+        int card_h = 290;
+        int card_y = h / 2 - card_h / 2;
+        int sel = (config_get_keyboard_layout() == KB_LAYOUT_FR) ? 1 : 0;
 
-    gfx_clear(0);
-    setup_card(cx, cy, cw, ch + 80);
-    gfx_draw_string(cx - 52, card_y + 18, "Your Account", DT_TEXT, CARD_BG);
-    gfx_draw_string(fx, card_y + 52, "Username", DT_TEXT_SUB, CARD_BG);
-    gfx_flip();
-    input_field(fx, card_y + 72, fw, uname, 32, 0, "username");
-    if (!uname[0]) strcpy(uname, "user");
+        const char *names[] = { "US  (QWERTY)", "FR  (AZERTY)" };
+        int opt_w = 280, opt_h = 42, opt_r = 12;
+        int opt_x = cx - opt_w / 2;
+        int opt_y0 = card_y + 80;
+        int opt_gap = 52;
 
-    gfx_clear(0);
-    setup_card(cx, cy, cw, ch + 80);
-    gfx_draw_string(cx - 52, card_y + 18, "Your Account", DT_TEXT, CARD_BG);
-    gfx_draw_string(fx, card_y + 52, "Username", DT_TEXT_SUB, CARD_BG);
-    gfx_fill_rect(fx, card_y + 72, fw, FIELD_H, DT_FIELD_BG);
-    gfx_draw_rect(fx, card_y + 72, fw, FIELD_H, DT_FIELD_BORDER);
-    gfx_draw_string(fx + 10, card_y + 72 + (FIELD_H - FONT_H) / 2, uname, DT_TEXT, DT_FIELD_BG);
-    gfx_draw_string(fx, card_y + 118, "Password", DT_TEXT_SUB, CARD_BG);
-    gfx_flip();
-    input_field(fx, card_y + 138, fw, upw, 64, 1, "Password");
+        /* Continue button geometry */
+        const char *btn_label = "Continue";
+        int btn_w = (int)strlen(btn_label) * FONT_W + 40;
+        int btn_h = 34;
+        int btn_r = btn_h / 2;
+        int btn_x = cx - btn_w / 2;
+        int btn_y = opt_y0 + 2 * opt_gap + 16;
 
+        /* Store geometry for idle callback */
+        setup_kb_opt_x = opt_x;
+        setup_kb_opt_w = opt_w;
+        setup_kb_opt_h = opt_h;
+        setup_kb_opt_y[0] = opt_y0;
+        setup_kb_opt_y[1] = opt_y0 + opt_gap;
+        setup_kb_btn_x = btn_x;
+        setup_kb_btn_y = btn_y;
+        setup_kb_btn_w = btn_w;
+        setup_kb_btn_h = btn_h;
+        setup_kb_clicked = -1;
+        setup_kb_prev_btns = 0;
+
+        keyboard_set_idle_callback(setup_kb_idle);
+
+        while (1) {
+            setup_draw_step(w, h, card_h, "Keyboard");
+
+            /* Subtitle */
+            const char *sub = "Choose your keyboard layout";
+            int subw = (int)strlen(sub) * FONT_W;
+            gfx_draw_string_nobg(cx - subw / 2, card_y + 62,
+                                 sub, GFX_RGB(160, 155, 175));
+
+            /* Option buttons */
+            for (int i = 0; i < 2; i++) {
+                int oy = opt_y0 + i * opt_gap;
+                uint32_t bg = (i == sel) ? GFX_RGB(80, 75, 120) : GFX_RGB(40, 38, 55);
+                uint8_t alpha = (i == sel) ? 220 : 160;
+                gfx_rounded_rect_alpha(opt_x, oy, opt_w, opt_h, opt_r,
+                                       bg, alpha);
+                if (i == sel)
+                    gfx_rounded_rect_outline(opt_x, oy, opt_w, opt_h, opt_r,
+                                             GFX_RGB(140, 130, 200));
+
+                int ty = oy + (opt_h - FONT_H) / 2;
+                uint32_t tc = (i == sel) ? GFX_RGB(255, 255, 255)
+                                         : GFX_RGB(180, 175, 195);
+                gfx_draw_string_nobg(opt_x + 20, ty, names[i], tc);
+
+                /* Radio dot */
+                int rx = opt_x + opt_w - 30, ry = oy + opt_h / 2;
+                if (i == sel)
+                    gfx_fill_circle_aa(rx, ry, 6, GFX_RGB(160, 140, 240));
+                else
+                    gfx_circle_ring(rx, ry, 6, 1, GFX_RGB(100, 96, 115));
+            }
+
+            /* Continue button */
+            gfx_rounded_rect_alpha(btn_x, btn_y, btn_w, btn_h, btn_r,
+                                   GFX_RGB(100, 90, 180), 200);
+            gfx_rounded_rect_outline(btn_x, btn_y, btn_w, btn_h, btn_r,
+                                     GFX_RGB(140, 130, 220));
+            int btx = cx - (int)strlen(btn_label) * FONT_W / 2;
+            int bty = btn_y + (btn_h - FONT_H) / 2;
+            gfx_draw_string_nobg(btx, bty, btn_label, GFX_RGB(255, 255, 255));
+
+            gfx_flip();
+            gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+
+            char c = getchar();
+
+            /* Check mouse click from idle callback */
+            int clicked = setup_kb_clicked;
+            setup_kb_clicked = -1;
+            if (clicked == 0 || clicked == 1) {
+                sel = clicked;
+                continue;  /* Redraw with new selection */
+            }
+            if (clicked == 2) break;  /* Continue button clicked */
+
+            /* Keyboard navigation */
+            if (c == '\n') break;
+            if (c == KEY_UP || c == KEY_LEFT) { sel = 0; continue; }
+            if (c == KEY_DOWN || c == KEY_RIGHT) { sel = 1; continue; }
+        }
+
+        gfx_set_cursor_type(GFX_CURSOR_ARROW);
+        int layout = (sel == 0) ? KB_LAYOUT_US : KB_LAYOUT_FR;
+        keyboard_set_layout(layout);
+        config_set_keyboard_layout(layout);
+
+        keyboard_set_idle_callback(setup_idle);
+    }
+
+    /* ── Step 2: Hostname ──────────────────────────────────── */
+    {
+        int card_h = 200;
+        int card_y = h / 2 - card_h / 2;
+        int fx = cx - SETUP_FIELD_W / 2;
+        char hname[64] = {0};
+
+        setup_draw_step(w, h, card_h, "Welcome");
+        gfx_flip();
+        gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+
+        setup_input(fx, card_y + 110, SETUP_FIELD_W,
+                    hname, 64, 0, "imposos", "Hostname");
+        if (!hname[0]) strcpy(hname, "imposos");
+        hostname_set(hname);
+        hostname_save();
+    }
+
+    /* ── Step 3: Root Password ─────────────────────────────── */
+    {
+        int card_h = 200;
+        int card_y = h / 2 - card_h / 2;
+        int fx = cx - SETUP_FIELD_W / 2;
+        char rpw[64] = {0};
+
+        setup_draw_step(w, h, card_h, "Root Account");
+        gfx_flip();
+        gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+
+        setup_input(fx, card_y + 110, SETUP_FIELD_W,
+                    rpw, 64, 1, "Password", "Root Password");
+
+        fs_create_file("/home", 1);
+        fs_create_file("/home/root", 1);
+        user_create("root", rpw, "/home/root", 0, 0);
+        user_create_home_dirs("/home/root");
+    }
+
+    /* ── Step 4: User Account ──────────────────────────────── */
+    char uname[32] = {0}, upw[64] = {0};
+    {
+        int card_h = 200;
+        int card_y = h / 2 - card_h / 2;
+        int fx = cx - SETUP_FIELD_W / 2;
+
+        setup_draw_step(w, h, card_h, "Your Account");
+        gfx_flip();
+        gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+
+        setup_input(fx, card_y + 110, SETUP_FIELD_W,
+                    uname, 32, 0, "username", "Username");
+        if (!uname[0]) strcpy(uname, "user");
+    }
+
+    /* ── Step 5: User Password ─────────────────────────────── */
+    {
+        int card_h = 240;
+        int card_y = h / 2 - card_h / 2;
+        int fx = cx - SETUP_FIELD_W / 2;
+
+        setup_draw_step(w, h, card_h, "Your Account");
+
+        /* Show locked username field */
+        int ufy = card_y + 90;
+        int ur = SETUP_FIELD_H / 2;
+        gfx_rounded_rect_alpha(fx, ufy, SETUP_FIELD_W, SETUP_FIELD_H, ur,
+                               GFX_RGB(0, 0, 0), 60);
+        int utx = fx + 14, uty = ufy + (SETUP_FIELD_H - FONT_H) / 2;
+        gfx_draw_string_nobg(fx + 4, ufy - 18, "Username",
+                             GFX_RGB(120, 115, 135));
+        gfx_draw_string_nobg(utx, uty, uname, GFX_RGB(180, 175, 195));
+
+        gfx_flip();
+        gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+
+        setup_input(fx, card_y + 160, SETUP_FIELD_W,
+                    upw, 64, 1, "Password", "Password");
+    }
+
+    /* ── Create user and finalize ──────────────────────────── */
     char uhome[128];
     snprintf(uhome, sizeof(uhome), "/home/%s", uname);
     fs_create_file(uhome, 1);
     uint16_t uid = 1000, gid = 1000;
     user_create(uname, upw, uhome, uid, gid);
+    user_create_home_dirs(uhome);
     group_create(uname, gid);
     group_add_member(gid, uname);
     fs_chown(uhome, uid, gid);
@@ -516,6 +830,8 @@ void login_run_setup(void) {
     fs_sync();
     user_set_current(uname);
     fs_change_directory(uhome);
+
+    keyboard_set_idle_callback(0);
 }
 
 /* ═══ Hover / Click Detection ═══════════════════════════════ */
@@ -638,9 +954,9 @@ static void redraw_action_bar_area(int hover_idx) {
 
 static void login_idle(void) {
     if (!mouse_poll()) {
-        /* Handle cursor blink (every 500ms = 50 ticks at 100Hz) */
+        /* Handle cursor blink (every 500ms = 60 ticks at 120Hz) */
         uint32_t now = pit_get_ticks();
-        if (now - login_last_blink >= 50) {
+        if (now - login_last_blink >= 60) {
             login_last_blink = now;
             login_blink_on = !login_blink_on;
 
