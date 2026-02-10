@@ -309,50 +309,7 @@ static void draw_pw_field(int fx, int fy, int pw_len, int focused,
     }
 }
 
-/* ═══ Fade Out ══════════════════════════════════════════════ */
-
-static void login_fade_out(int x, int y, int w, int h, int steps, int delay_ms) {
-    for (int i = 0; i <= steps; i++) {
-        gfx_flip_rect(x, y, w, h);
-        if (i < steps) {
-            uint32_t *fb = gfx_framebuffer();
-            uint32_t pitch4 = gfx_pitch() / 4;
-            int x0 = x < 0 ? 0 : x;
-            int y0 = y < 0 ? 0 : y;
-            int x1 = x + w;
-            if (x1 > (int)gfx_width()) x1 = (int)gfx_width();
-            int y1 = y + h;
-            if (y1 > (int)gfx_height()) y1 = (int)gfx_height();
-            uint32_t inv_a = 255 - (uint32_t)(i * 255 / steps);
-            for (int row = y0; row < y1; row++) {
-                uint32_t *dst = fb + row * pitch4 + x0;
-                for (int col = 0; col < x1 - x0; col++) {
-                    uint32_t px = dst[col];
-                    uint32_t r2 = ((px >> 16) & 0xFF) * inv_a / 255;
-                    uint32_t g = ((px >> 8) & 0xFF) * inv_a / 255;
-                    uint32_t b = (px & 0xFF) * inv_a / 255;
-                    dst[col] = (r2 << 16) | (g << 8) | b;
-                }
-            }
-        }
-        pit_sleep_ms(delay_ms);
-    }
-}
-
 /* ═══ Splash Screen ═════════════════════════════════════════ */
-
-static void draw_spaced(int x, int y, const char *s, uint32_t fg, int sp) {
-    while (*s) {
-        gfx_draw_char_nobg(x, y, *s, fg);
-        x += FONT_W + sp;
-        s++;
-    }
-}
-
-static int spaced_width(const char *s, int sp) {
-    int n = (int)strlen(s);
-    return n > 0 ? n * FONT_W + (n - 1) * sp : 0;
-}
 
 static void draw_spin_ring(int cx, int cy, int r, int thick, int frame) {
     int ro2 = r * r, ri2 = (r - thick) * (r - thick);
@@ -381,36 +338,33 @@ static void draw_spin_ring(int cx, int cy, int r, int thick, int frame) {
 void login_show_splash(void) {
     int w = (int)gfx_width(), h = (int)gfx_height();
     const char *logo = "IMPOS";
-    int sp = 8;
-    int lw = spaced_width(logo, sp);
+    int logo_scale = 4;
+    int lw = gfx_string_scaled_w(logo, logo_scale);
     int lx = w / 2 - lw / 2;
-    int ly = h / 2 - FONT_H / 2 - 16;
-    int spin_cx = w / 2, spin_cy = ly + FONT_H + 32, spin_r = 14;
+    int ly = h / 2 - (FONT_H * logo_scale) / 2 - 20;
+    int spin_cx = w / 2, spin_cy = ly + FONT_H * logo_scale + 28, spin_r = 14;
 
+    /* Start: black screen */
     gfx_clear(0);
     gfx_flip();
 
-    for (int i = 0; i < 6; i++) {
-        gfx_clear(0);
-        int b = 38 * (i + 1);
-        if (b > 230) b = 230;
-        draw_spaced(lx, ly, logo, GFX_RGB(b, b, b), sp);
-        gfx_flip();
-        busy_wait(2200000);
-    }
+    /* Phase 1: Crossfade black → gradient + logo */
+    draw_gradient(w, h);
+    gfx_draw_string_smooth(lx, ly, logo, GFX_RGB(240, 240, 248), logo_scale);
+    gfx_crossfade(8, 40);
+
+    /* Phase 2: Spinner over gradient */
     for (int i = 0; i < 14; i++) {
-        gfx_clear(0);
-        draw_spaced(lx, ly, logo, GFX_RGB(230, 230, 230), sp);
+        draw_gradient(w, h);
+        gfx_draw_string_smooth(lx, ly, logo, GFX_RGB(240, 240, 248), logo_scale);
         draw_spin_ring(spin_cx, spin_cy, spin_r, 2, i);
         gfx_flip();
         busy_wait(2200000);
     }
-    gfx_clear(0);
-    draw_spaced(lx, ly, logo, GFX_RGB(230, 230, 230), sp);
-    login_fade_out(0, 0, w, h, 8, 40);
-    gfx_clear(0);
-    gfx_flip();
-    pit_sleep_ms(100);
+
+    /* Phase 3: Crossfade splash → clean gradient (logo disappears) */
+    draw_gradient(w, h);
+    gfx_crossfade(6, 30);
 }
 
 /* ═══ Setup Wizard (Modern UI) ══════════════════════════════ */
@@ -1142,7 +1096,8 @@ int login_run(void) {
                     keyboard_set_idle_callback(0);
                     gfx_set_cursor_type(GFX_CURSOR_ARROW);
                     gfx_restore_mouse_cursor();
-                    login_fade_out(0, 0, w, h, 6, 30);
+                    /* Leave framebuffer with login screen visible;
+                       desktop_run will crossfade from it. */
                     return 0;
                 }
             }
