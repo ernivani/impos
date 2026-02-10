@@ -148,6 +148,9 @@ static void pic_remap(void) {
 #define PIT_DIVISOR   (PIT_FREQ / TARGET_HZ)  /* ~11932 */
 
 volatile uint32_t pit_ticks = 0;
+static volatile uint32_t pit_idle_ticks = 0;
+static volatile uint32_t pit_busy_ticks = 0;
+volatile int cpu_halting = 0;
 
 static void pit_init(void) {
     uint16_t divisor = PIT_DIVISOR;
@@ -164,8 +167,14 @@ void pit_sleep_ms(uint32_t ms) {
     uint32_t target = pit_ticks + (ms / 10);
     if (ms % 10) target++; /* Round up */
     while (pit_ticks < target) {
+        cpu_halting = 1;
         __asm__ volatile ("hlt");
     }
+}
+
+void pit_get_cpu_stats(uint32_t *idle, uint32_t *busy) {
+    *idle = pit_idle_ticks;
+    *busy = pit_busy_ticks;
 }
 
 /* ========== IRQ Handler Table ========== */
@@ -182,6 +191,8 @@ void irq_register_handler(int irq, irq_handler_t handler) {
 static void pit_handler(registers_t* regs) {
     (void)regs;
     pit_ticks++;
+    if (cpu_halting) { pit_idle_ticks++; cpu_halting = 0; }
+    else { pit_busy_ticks++; }
 }
 
 /* Keyboard IRQ1 handler — read scancode from port 0x60 and push to ring buffer.

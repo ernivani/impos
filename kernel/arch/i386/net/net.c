@@ -15,6 +15,8 @@
 static net_config_t net_config;
 static int net_initialized = 0;
 static int active_driver = 0;  /* 0=none, 1=rtl8139, 2=pcnet */
+static uint32_t net_tx_packets = 0, net_tx_bytes = 0;
+static uint32_t net_rx_packets = 0, net_rx_bytes = 0;
 
 void net_initialize(void) {
     if (net_initialized) {
@@ -92,9 +94,11 @@ void net_set_ip(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 }
 
 int net_send_packet(const uint8_t* data, size_t len) {
-    if (active_driver == 1) return rtl8139_send_packet(data, len);
-    if (active_driver == 2) return pcnet_send_packet(data, len);
-    return -1;
+    int ret = -1;
+    if (active_driver == 1) ret = rtl8139_send_packet(data, len);
+    else if (active_driver == 2) ret = pcnet_send_packet(data, len);
+    if (ret == 0) { net_tx_packets++; net_tx_bytes += (uint32_t)len; }
+    return ret;
 }
 
 int net_receive_packet(uint8_t* buffer, size_t* len) {
@@ -126,6 +130,9 @@ void net_process_packets(void) {
     size_t len = sizeof(buffer);
     
     while (net_receive_packet(buffer, &len) == 0) {
+        net_rx_packets++;
+        net_rx_bytes += (uint32_t)len;
+
         /* Check Ethernet frame type */
         if (len < 14) {
             len = sizeof(buffer);
@@ -142,4 +149,11 @@ void net_process_packets(void) {
         
         len = sizeof(buffer);
     }
+}
+
+void net_get_stats(uint32_t *tx_pkts, uint32_t *tx_bytes, uint32_t *rx_pkts, uint32_t *rx_bytes) {
+    if (tx_pkts) *tx_pkts = net_tx_packets;
+    if (tx_bytes) *tx_bytes = net_tx_bytes;
+    if (rx_pkts) *rx_pkts = net_rx_packets;
+    if (rx_bytes) *rx_bytes = net_rx_bytes;
 }

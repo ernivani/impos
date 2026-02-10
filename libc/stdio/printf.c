@@ -31,6 +31,31 @@ static bool print(const char* data, size_t length) {
 	return true;
 }
 
+/* Print 'count' copies of character 'c' */
+static bool print_pad(char c, int count) {
+	for (int i = 0; i < count; i++)
+		if (putchar(c) == EOF)
+			return false;
+	return true;
+}
+
+/* Print a string with width/alignment padding */
+static int print_padded(const char* str, int len, int width, int left_align, char pad_char) {
+	int w = 0;
+	int padding = width > len ? width - len : 0;
+	if (!left_align && padding > 0) {
+		if (!print_pad(pad_char, padding)) return -1;
+		w += padding;
+	}
+	if (!print(str, len)) return -1;
+	w += len;
+	if (left_align && padding > 0) {
+		if (!print_pad(' ', padding)) return -1;
+		w += padding;
+	}
+	return w;
+}
+
 int printf(const char* restrict format, ...) {
 	va_list parameters;
 	va_start(parameters, format);
@@ -38,16 +63,12 @@ int printf(const char* restrict format, ...) {
 	int written = 0;
 
 	while (*format != '\0') {
-		size_t maxrem = INT_MAX - written;
-
 		if (format[0] != '%' || format[1] == '%') {
 			if (format[0] == '%')
 				format++;
 			size_t amount = 1;
 			while (format[amount] && format[amount] != '%')
 				amount++;
-			if (maxrem < amount)
-				return -1;
 			if (!print(format, amount))
 				return -1;
 			format += amount;
@@ -55,31 +76,45 @@ int printf(const char* restrict format, ...) {
 			continue;
 		}
 
-		const char* format_begun_at = format++;
+		format++; /* skip '%' */
+
+		/* Parse flags */
+		int left_align = 0;
+		int zero_pad = 0;
+		while (*format == '-' || *format == '0') {
+			if (*format == '-') left_align = 1;
+			if (*format == '0') zero_pad = 1;
+			format++;
+		}
+		if (left_align) zero_pad = 0; /* '-' overrides '0' */
+
+		/* Parse width */
+		int width = 0;
+		while (*format >= '0' && *format <= '9') {
+			width = width * 10 + (*format - '0');
+			format++;
+		}
+
+		char pad_char = zero_pad ? '0' : ' ';
 
 		if (*format == 'c') {
 			format++;
-			char c = (char) va_arg(parameters, int /* char promotes to int */);
-			if (!maxrem) {
-				// TODO: Set errno to EOVERFLOW.
-				return -1;
-			}
-			if (!print(&c, sizeof(c)))
-				return -1;
-			written++;
+			char c = (char) va_arg(parameters, int);
+			int w = print_padded(&c, 1, width, left_align, ' ');
+			if (w < 0) return -1;
+			written += w;
 		} else if (*format == 's') {
 			format++;
 			const char* str = va_arg(parameters, const char*);
 			size_t len = strlen(str);
-			if (maxrem < len)
-				return -1;
-			if (!print(str, len))
-				return -1;
-			written += len;
+			int w = print_padded(str, (int)len, width, left_align, ' ');
+			if (w < 0) return -1;
+			written += w;
 		} else if (*format == 'd') {
 			format++;
 			int value = va_arg(parameters, int);
 			char buf[32];
+			char numbuf[34]; /* sign + digits */
 			int neg = 0;
 			if (value < 0) {
 				neg = 1;
@@ -87,47 +122,42 @@ int printf(const char* restrict format, ...) {
 			} else {
 				uint_to_str((unsigned int)value, buf, 10);
 			}
-			size_t len = strlen(buf) + neg;
-			if (maxrem < len)
-				return -1;
-			if (neg && !print("-", 1))
-				return -1;
-			if (!print(buf, strlen(buf)))
-				return -1;
-			written += len;
+			int pos = 0;
+			if (neg) numbuf[pos++] = '-';
+			int blen = (int)strlen(buf);
+			for (int i = 0; i < blen; i++)
+				numbuf[pos++] = buf[i];
+			numbuf[pos] = '\0';
+			int w = print_padded(numbuf, pos, width, left_align, pad_char);
+			if (w < 0) return -1;
+			written += w;
 		} else if (*format == 'x') {
 			format++;
 			unsigned int value = va_arg(parameters, unsigned int);
 			char buf[32];
 			uint_to_str(value, buf, 16);
-			size_t len = strlen(buf);
-			if (maxrem < len) {
-				return -1;
-			}
-			if (!print(buf, len))
-				return -1;
-			written += len;
+			int len = (int)strlen(buf);
+			int w = print_padded(buf, len, width, left_align, pad_char);
+			if (w < 0) return -1;
+			written += w;
 		} else if (*format == 'u') {
 			format++;
 			unsigned int value = va_arg(parameters, unsigned int);
 			char buf[32];
 			uint_to_str(value, buf, 10);
-			size_t len = strlen(buf);
-			if (maxrem < len) {
-				return -1;
-			}
-			if (!print(buf, len))
-				return -1;
-			written += len;
+			int len = (int)strlen(buf);
+			int w = print_padded(buf, len, width, left_align, pad_char);
+			if (w < 0) return -1;
+			written += w;
 		} else {
-			format = format_begun_at;
-			size_t len = strlen(format);
-			if (maxrem < len)
-				return -1;
-			if (!print(format, len))
-				return -1;
-			written += len;
-			format += len;
+			/* Unknown specifier: output the '%' and the char */
+			if (putchar('%') == EOF) return -1;
+			written++;
+			if (*format) {
+				if (putchar(*format) == EOF) return -1;
+				written++;
+				format++;
+			}
 		}
 	}
 

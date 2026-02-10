@@ -51,6 +51,7 @@ void keyboard_push_scancode(uint8_t scancode);
 void keyboard_set_idle_callback(void (*cb)(void));
 int  keyboard_force_exit(void);
 void keyboard_request_force_exit(void);
+int  keyboard_data_available(void);
 
 /* FILE I/O */
 FILE* fopen(const char* path, const char* mode);

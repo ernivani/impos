@@ -25,6 +25,7 @@ void terminal_set_window_bg(uint32_t color);
 /* Canvas mode: terminal draws into a WM canvas buffer */
 void terminal_set_canvas(int win_id, uint32_t *canvas, int pw, int ph);
 void terminal_clear_canvas(void);
+void terminal_notify_canvas_resize(int win_id, uint32_t *canvas, int pw, int ph);
 
 /* Color functions */
 void terminal_setcolor(enum vga_color fg, enum vga_color bg);

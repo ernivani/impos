@@ -9,6 +9,8 @@ static superblock_t sb;
 static inode_t inodes[NUM_INODES];
 static uint8_t data_blocks[NUM_BLOCKS][BLOCK_SIZE];
 static int fs_dirty = 0;
+static uint32_t fs_rd_ops = 0, fs_rd_bytes = 0;
+static uint32_t fs_wr_ops = 0, fs_wr_bytes = 0;
 
 
 static void local_strncpy(char* dst, const char* src, size_t n) {
@@ -559,6 +561,8 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
         fs_sync();
     }
 
+    fs_wr_ops++;
+    fs_wr_bytes += (uint32_t)size;
     return 0;
 }
 
@@ -606,6 +610,8 @@ int fs_read_file(const char* filename, uint8_t* buffer, size_t* size) {
     }
 
     *size = inode->size;
+    fs_rd_ops++;
+    fs_rd_bytes += (uint32_t)(*size);
     return 0;
 }
 
@@ -940,4 +946,11 @@ int fs_readlink(const char* path, char* buf, size_t bufsize) {
     memcpy(buf, data_blocks[node->blocks[0]], tlen);
     buf[tlen] = '\0';
     return 0;
+}
+
+void fs_get_io_stats(uint32_t *rd_ops, uint32_t *rd_bytes, uint32_t *wr_ops, uint32_t *wr_bytes) {
+    if (rd_ops) *rd_ops = fs_rd_ops;
+    if (rd_bytes) *rd_bytes = fs_rd_bytes;
+    if (wr_ops) *wr_ops = fs_wr_ops;
+    if (wr_bytes) *wr_bytes = fs_wr_bytes;
 }

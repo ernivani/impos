@@ -4,6 +4,7 @@
 #include <kernel/mouse.h>
 #include <kernel/idt.h>
 #include <kernel/ui_theme.h>
+#include <kernel/tty.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -313,6 +314,9 @@ void wm_resize_window(int id, int new_w, int new_h) {
     w->canvas_h = new_ch;
     w->w = new_w;
     w->h = new_h;
+
+    /* Update terminal if it's bound to this window's canvas */
+    terminal_notify_canvas_resize(id, new_canvas, new_cw, new_ch);
 }
 
 /* ═══ Drawing ═════════════════════════════════════════════════ */

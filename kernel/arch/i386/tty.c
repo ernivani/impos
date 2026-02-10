@@ -356,3 +356,16 @@ void terminal_clear_canvas(void) {
 	canvas_cur_px = -1;
 	canvas_cur_py = -1;
 }
+
+void terminal_notify_canvas_resize(int win_id, uint32_t *canvas, int pw, int ph) {
+	if (canvas_win_id != win_id) return;
+	canvas_buf = canvas;
+	canvas_pw = pw;
+	canvas_ph = ph;
+	win_w = (size_t)(pw / FONT_W);
+	win_h = (size_t)(ph / FONT_H);
+	if (terminal_column >= win_w) terminal_column = win_w > 0 ? win_w - 1 : 0;
+	if (terminal_row >= win_h) terminal_row = win_h > 0 ? win_h - 1 : 0;
+	canvas_cur_px = -1;
+	canvas_cur_py = -1;
+}
