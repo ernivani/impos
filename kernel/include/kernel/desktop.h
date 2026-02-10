@@ -50,11 +50,9 @@
 void desktop_init(void);
 void desktop_draw_dock(void);
 void desktop_draw_chrome(void);
-void desktop_splash(void);
-void desktop_setup(void);
-int  desktop_login(void);
 int  desktop_run(void);
 void desktop_open_terminal(void);
 void desktop_close_terminal(void);
+void desktop_notify_login(void);
 
 #endif

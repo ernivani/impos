@@ -63,8 +63,6 @@ int wm_create_window(int x, int y, int w, int h, const char *title) {
     strncpy(win->title, title, 63);
     win->title[63] = '\0';
     win->flags = WM_WIN_VISIBLE | WM_WIN_RESIZABLE;
-    win->visible = 1;
-    win->focused = 0;
     win->min_w = 200;
     win->min_h = 100;
 
@@ -135,11 +133,8 @@ void wm_destroy_window(int id) {
 
     /* Focus topmost */
     if (win_count > 0) {
-        for (int i = 0; i < win_count; i++) {
-            windows[i].focused = 0;
+        for (int i = 0; i < win_count; i++)
             windows[i].flags &= ~WM_WIN_FOCUSED;
-        }
-        windows[win_order[0]].focused = 1;
         windows[win_order[0]].flags |= WM_WIN_FOCUSED;
     }
 }
@@ -148,11 +143,9 @@ void wm_focus_window(int id) {
     int idx = -1;
     for (int i = 0; i < win_count; i++) {
         if (windows[i].id == id) idx = i;
-        windows[i].focused = 0;
         windows[i].flags &= ~WM_WIN_FOCUSED;
     }
     if (idx < 0) return;
-    windows[idx].focused = 1;
     windows[idx].flags |= WM_WIN_FOCUSED;
 
     /* Move to front of z-order */
@@ -179,7 +172,7 @@ wm_window_t* wm_get_window(int id) { return find_window(id); }
 
 int wm_get_focused_id(void) {
     for (int i = 0; i < win_count; i++)
-        if (windows[i].focused) return windows[i].id;
+        if (windows[i].flags & WM_WIN_FOCUSED) return windows[i].id;
     return -1;
 }
 
@@ -204,13 +197,10 @@ void wm_cycle_focus(void) {
         win_order[i] = win_order[i + 1];
     win_order[win_count - 1] = front;
     /* Update focus */
-    for (int i = 0; i < win_count; i++) {
-        windows[i].focused = 0;
+    for (int i = 0; i < win_count; i++)
         windows[i].flags &= ~WM_WIN_FOCUSED;
-    }
     /* Skip minimized windows at front */
     int new_front = win_order[0];
-    windows[new_front].focused = 1;
     windows[new_front].flags |= WM_WIN_FOCUSED;
     wm_composite();
 }
@@ -221,7 +211,7 @@ void wm_minimize_window(int id) {
     wm_window_t *w = find_window(id);
     if (!w) return;
     w->flags |= WM_WIN_MINIMIZED;
-    w->visible = 0;
+    w->flags &= ~WM_WIN_VISIBLE;
     /* Focus next visible window */
     for (int i = 0; i < win_count; i++) {
         int idx = win_order[i];
@@ -255,7 +245,7 @@ void wm_restore_window(int id) {
 
     if (w->flags & WM_WIN_MINIMIZED) {
         w->flags &= ~WM_WIN_MINIMIZED;
-        w->visible = 1;
+        w->flags |= WM_WIN_VISIBLE;
         wm_focus_window(id);
         return;
     }
@@ -329,8 +319,8 @@ static void draw_titlebar_button_circle(int cx, int cy, int r, uint32_t color) {
 }
 
 static void draw_window(wm_window_t *w) {
-    if (!w->visible || (w->flags & WM_WIN_MINIMIZED)) return;
-    int focused = w->focused;
+    if (!(w->flags & WM_WIN_VISIBLE) || (w->flags & WM_WIN_MINIMIZED)) return;
+    int focused = (w->flags & WM_WIN_FOCUSED) != 0;
 
     /* Window body */
     gfx_fill_rect(w->x, w->y, w->w, w->h, ui_theme.win_body_bg);
@@ -351,41 +341,33 @@ static void draw_window(wm_window_t *w) {
     gfx_draw_rect(w->x, w->y, w->w, w->h,
                   focused ? GFX_RGB(80, 80, 80) : ui_theme.win_border);
 
-    /* Title text (centered) */
-    int tw = (int)strlen(w->title) * FONT_W;
-    int tx = w->x + w->w / 2 - tw / 2;
-    int ty = w->y + (WM_TITLEBAR_H - FONT_H) / 2;
-    gfx_draw_string(tx, ty, w->title, ui_theme.win_header_text, hdr);
-
-    /* Titlebar buttons (right-aligned): close, maximize, minimize */
+    /* macOS traffic light buttons (left-aligned): close, minimize, maximize */
     int btn_y = w->y + WM_TITLEBAR_H / 2;
     int r = WM_BTN_R;
 
-    /* Close button (rightmost) */
-    int close_cx = w->x + w->w - 16;
-    uint32_t cc = focused ? ui_theme.win_close_normal : GFX_RGB(100, 50, 50);
+    /* Close button (leftmost) */
+    int close_cx = w->x + 8 + r;
+    uint32_t cc = focused ? 0xFC615D : GFX_RGB(100, 50, 50);
     draw_titlebar_button_circle(close_cx, btn_y, r, cc);
-    /* X mark */
-    for (int d = -2; d <= 2; d++) {
-        gfx_put_pixel(close_cx + d, btn_y + d, GFX_WHITE);
-        gfx_put_pixel(close_cx + d, btn_y - d, GFX_WHITE);
-    }
-
-    /* Maximize button */
-    int max_cx = close_cx - 20;
-    uint32_t max_c = focused ? GFX_RGB(80, 180, 80) : GFX_RGB(50, 100, 50);
-    draw_titlebar_button_circle(max_cx, btn_y, r, max_c);
-    /* Square icon */
-    gfx_draw_rect(max_cx - 3, btn_y - 3, 7, 7,
-                  focused ? GFX_WHITE : GFX_RGB(180, 180, 180));
 
     /* Minimize button */
-    int min_cx = max_cx - 20;
-    uint32_t min_c = focused ? GFX_RGB(200, 180, 50) : GFX_RGB(100, 90, 30);
+    int min_cx = close_cx + 20;
+    uint32_t min_c = focused ? 0xFDBB2D : GFX_RGB(100, 90, 30);
     draw_titlebar_button_circle(min_cx, btn_y, r, min_c);
-    /* Dash icon */
-    gfx_fill_rect(min_cx - 3, btn_y, 7, 1,
-                  focused ? GFX_WHITE : GFX_RGB(180, 180, 180));
+
+    /* Maximize button */
+    int max_cx = min_cx + 20;
+    uint32_t max_c = focused ? 0x27CA40 : GFX_RGB(50, 100, 50);
+    draw_titlebar_button_circle(max_cx, btn_y, r, max_c);
+
+    /* Title text (centered in remaining space after buttons) */
+    int tw = (int)strlen(w->title) * FONT_W;
+    int title_area_left = max_cx + r + 8;
+    int title_area_right = w->x + w->w - 8;
+    int tx = title_area_left + (title_area_right - title_area_left) / 2 - tw / 2;
+    if (tx < title_area_left) tx = title_area_left;
+    int ty = w->y + (WM_TITLEBAR_H - FONT_H) / 2;
+    gfx_draw_string(tx, ty, w->title, ui_theme.win_header_text, hdr);
 }
 
 void wm_composite(void) {
@@ -415,7 +397,7 @@ void wm_composite(void) {
 static int hit_test_window(int mx, int my) {
     for (int i = 0; i < win_count; i++) {
         wm_window_t *w = &windows[win_order[i]];
-        if (!w->visible || (w->flags & WM_WIN_MINIMIZED)) continue;
+        if (!(w->flags & WM_WIN_VISIBLE) || (w->flags & WM_WIN_MINIMIZED)) continue;
         if (mx >= w->x && mx < w->x + w->w &&
             my >= w->y && my < w->y + w->h)
             return win_order[i];
@@ -424,21 +406,21 @@ static int hit_test_window(int mx, int my) {
 }
 
 static int hit_close_button(wm_window_t *w, int mx, int my) {
-    int cx = w->x + w->w - 16;
-    int cy = w->y + WM_TITLEBAR_H / 2;
-    int dx = mx - cx, dy = my - cy;
-    return (dx * dx + dy * dy <= (WM_BTN_R + 2) * (WM_BTN_R + 2));
-}
-
-static int hit_maximize_button(wm_window_t *w, int mx, int my) {
-    int cx = w->x + w->w - 36;
+    int cx = w->x + 8 + WM_BTN_R;
     int cy = w->y + WM_TITLEBAR_H / 2;
     int dx = mx - cx, dy = my - cy;
     return (dx * dx + dy * dy <= (WM_BTN_R + 2) * (WM_BTN_R + 2));
 }
 
 static int hit_minimize_button(wm_window_t *w, int mx, int my) {
-    int cx = w->x + w->w - 56;
+    int cx = w->x + 8 + WM_BTN_R + 20;
+    int cy = w->y + WM_TITLEBAR_H / 2;
+    int dx = mx - cx, dy = my - cy;
+    return (dx * dx + dy * dy <= (WM_BTN_R + 2) * (WM_BTN_R + 2));
+}
+
+static int hit_maximize_button(wm_window_t *w, int mx, int my) {
+    int cx = w->x + 8 + WM_BTN_R + 40;
     int cy = w->y + WM_TITLEBAR_H / 2;
     int dx = mx - cx, dy = my - cy;
     return (dx * dx + dy * dy <= (WM_BTN_R + 2) * (WM_BTN_R + 2));
