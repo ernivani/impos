@@ -48,6 +48,7 @@ void gfx_set_cursor(int col, int row);
 
 void gfx_flip(void);
 void gfx_flip_rect(int x, int y, int w, int h);
+void gfx_overlay_darken(int x, int y, int w, int h, uint8_t alpha);
 
 uint32_t* gfx_backbuffer(void);
 uint32_t* gfx_framebuffer(void);
