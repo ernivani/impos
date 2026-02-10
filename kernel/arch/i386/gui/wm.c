@@ -443,42 +443,31 @@ static int hit_resize_edge(wm_window_t *w, int mx, int my) {
     return edge;
 }
 
-/* Dock hit test */
+/* Dock hit test — uses desktop.h geometry accessors */
 static int dock_hit(int mx, int my) {
-    int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
-    int ty = fb_h - TASKBAR_H;
-    if (my < ty) return -1;
+    int dy = desktop_dock_y();
+    int dh = desktop_dock_h();
+    int dx = desktop_dock_x();
+    int dw = desktop_dock_w();
 
-    /* Power icon */
-    int pr_x = fb_w - 28, pr_y = ty + 14;
-    if (mx >= pr_x && mx < pr_x + 20 && my >= pr_y && my < pr_y + 20)
-        return -2;
+    if (my < dy || my > dy + dh) return -1;
+    if (mx < dx || mx > dx + dw) return -1;
 
-    /* Dock pill */
-    int item_w = 34, gap = 2, sep_w = 12;
-    int dock_items = 6;
-    int dock_sep = 4;
-    int dock_w = dock_items * item_w + (dock_items - 1) * gap + sep_w + 16;
-    int dock_x = fb_w / 2 - dock_w / 2;
-    int dock_y = ty + 7;
-    int dock_h = 34;
-
-    if (my < dock_y || my > dock_y + dock_h) return -1;
-    if (mx < dock_x || mx > dock_x + dock_w) return -1;
-
-    int ix = dock_x + 8;
-    for (int i = 0; i < dock_items; i++) {
-        if (i == dock_sep) ix += sep_w;
-        if (mx >= ix && mx < ix + item_w)
-            return i;
-        ix += item_w + gap;
+    int nitems = desktop_dock_items();
+    for (int i = 0; i < nitems; i++) {
+        int ix, iy, iw, ih;
+        if (desktop_dock_item_rect(i, &ix, &iy, &iw, &ih)) {
+            if (mx >= ix && mx < ix + iw && my >= iy && my < iy + ih)
+                return i;
+        }
     }
     return -1;
 }
 
 static const int dock_action_map[] = {
     DESKTOP_ACTION_FILES, DESKTOP_ACTION_TERMINAL, DESKTOP_ACTION_BROWSER,
-    DESKTOP_ACTION_EDITOR, DESKTOP_ACTION_SETTINGS, DESKTOP_ACTION_MONITOR
+    DESKTOP_ACTION_EDITOR, DESKTOP_ACTION_POWER,
+    DESKTOP_ACTION_SETTINGS, DESKTOP_ACTION_MONITOR
 };
 
 void wm_mouse_idle(void) {
@@ -535,11 +524,7 @@ void wm_mouse_idle(void) {
     if (left_click) {
         /* Check dock first */
         int di = dock_hit(mx, my);
-        if (di == -2) {
-            dock_action = DESKTOP_ACTION_POWER;
-            return;
-        }
-        if (di >= 0 && di < 6) {
+        if (di >= 0 && di < 7) {
             dock_action = dock_action_map[di];
             return;
         }
