@@ -6,6 +6,7 @@
 #include <kernel/idt.h>
 #include <kernel/io.h>
 #include <kernel/mouse.h>
+#include <kernel/acpi.h>
 #include <kernel/wm.h>
 #include <kernel/ui_theme.h>
 #include <kernel/ui_widget.h>
@@ -1031,9 +1032,8 @@ int desktop_run(void) {
             int da = ev.dock.action;
 
             if (da == DESKTOP_ACTION_POWER) {
-                keyboard_set_idle_callback(0);
-                gfx_restore_mouse_cursor();
-                return DESKTOP_ACTION_POWER;
+                acpi_shutdown();
+                continue;
             }
 
             /* Launch app (or focus existing) */
