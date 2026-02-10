@@ -55,6 +55,7 @@ int  desktop_run(void);
 void desktop_open_terminal(void);
 void desktop_close_terminal(void);
 void desktop_notify_login(void);
+void (*desktop_get_idle_terminal_cb(void))(void);
 
 /* Dock geometry API — used by wm.c dock_hit() */
 int  desktop_dock_y(void);

@@ -2390,13 +2390,17 @@ static void cmd_gfxdemo(int argc, char* argv[]) {
 
     gfx_flip();
 
+    /* Suspend WM compositing so the demo stays visible */
+    keyboard_set_idle_callback(0);
+
     /* Wait for keypress */
     getchar();
 
-    /* Restore terminal */
+    /* Restore idle callback, then full WM composite to redraw desktop */
+    keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
     terminal_clear();
     if (gfx_is_active())
-        desktop_draw_chrome();
+        wm_composite();
 }
 
 static void cmd_nslookup(int argc, char* argv[]) {
