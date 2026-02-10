@@ -71,6 +71,18 @@ void keyboard_request_force_exit(void) {
     force_exit_flag = 1;
 }
 
+/* Double-Ctrl detection for Finder */
+static volatile uint32_t ctrl_release_tick = 0;
+static volatile int ctrl_double_tap = 0;
+
+int keyboard_check_double_ctrl(void) {
+    if (ctrl_double_tap) {
+        ctrl_double_tap = 0;
+        return 1;
+    }
+    return 0;
+}
+
 /* -------------------------------------------------------------------
  * Scancode-to-character tables  (PS/2 Scancode Set 1, indices 0x00-0x58)
  * 89 entries each.  Numpad keys (0x47-0x53) are handled separately.
@@ -287,14 +299,25 @@ char getchar(void) {
                 extended_scancode = 0;
                 if (released == 0x38)
                     altgr_pressed = 0;
-                else if (released == LEFT_CTRL_SCANCODE)
+                else if (released == LEFT_CTRL_SCANCODE) {
                     ctrl_pressed = 0;
+                    uint32_t now = pit_get_ticks();
+                    if (ctrl_release_tick > 0 && (now - ctrl_release_tick) < 30)
+                        ctrl_double_tap = 1;
+                    ctrl_release_tick = now;
+                }
                 continue;
             }
             if (released == LEFT_SHIFT_SCANCODE || released == RIGHT_SHIFT_SCANCODE)
                 shift_pressed = 0;
-            else if (released == LEFT_CTRL_SCANCODE)
+            else if (released == LEFT_CTRL_SCANCODE) {
                 ctrl_pressed = 0;
+                /* Double-ctrl detection: check if within 30 ticks (300ms) */
+                uint32_t now = pit_get_ticks();
+                if (ctrl_release_tick > 0 && (now - ctrl_release_tick) < 30)
+                    ctrl_double_tap = 1;
+                ctrl_release_tick = now;
+            }
             else if (released == LEFT_ALT_SCANCODE)
                 alt_pressed = 0;
             continue;
@@ -435,4 +458,5 @@ void keyboard_set_idle_callback(void (*cb)(void)) { (void)cb; }
 int  keyboard_force_exit(void) { return 0; }
 void keyboard_request_force_exit(void) { }
 int  keyboard_data_available(void) { return 0; }
+int  keyboard_check_double_ctrl(void) { return 0; }
 #endif

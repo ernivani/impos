@@ -49,6 +49,7 @@
 
 void desktop_init(void);
 void desktop_draw_dock(void);
+void desktop_draw_menubar(void);
 void desktop_draw_chrome(void);
 int  desktop_run(void);
 void desktop_open_terminal(void);

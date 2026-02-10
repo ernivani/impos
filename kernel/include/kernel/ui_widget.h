@@ -117,6 +117,7 @@ typedef struct ui_window {
     int focused_widget;     /* index, -1 = none */
     int dirty;
     void *app_data;
+    int prev_cw, prev_ch;   /* for resize detection */
 } ui_window_t;
 
 /* Window lifecycle */
@@ -155,6 +156,9 @@ void ui_focus_prev(ui_window_t *win);
 
 /* Rendering */
 void ui_window_redraw(ui_window_t *win);
+
+/* Check for canvas resize and adapt widget layout */
+void ui_window_check_resize(ui_window_t *win);
 
 /* Standard app loop: returns dock action or 0 on close */
 int ui_app_run(ui_window_t *win, void (*on_event)(ui_window_t *win, ui_event_t *ev));

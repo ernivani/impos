@@ -483,6 +483,7 @@ void login_run_setup(void) {
     fs_create_file("/home", 1);
     fs_create_file("/home/root", 1);
     user_create("root", rpw, "/home/root", 0, 0);
+    user_create_home_dirs("/home/root");
 
     gfx_clear(0);
     setup_card(cx, cy, cw, ch + 80);
@@ -508,6 +509,7 @@ void login_run_setup(void) {
     fs_create_file(uhome, 1);
     uint16_t uid = 1000, gid = 1000;
     user_create(uname, upw, uhome, uid, gid);
+    user_create_home_dirs(uhome);
     group_create(uname, gid);
     group_add_member(gid, uname);
     fs_chown(uhome, uid, gid);

@@ -2201,6 +2201,9 @@ static void cmd_useradd(int argc, char* argv[]) {
         return;
     }
 
+    /* Create standard home subdirectories */
+    user_create_home_dirs(home);
+
     /* Set home directory ownership */
     fs_chown(home, uid, gid);
 

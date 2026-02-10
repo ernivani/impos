@@ -22,6 +22,7 @@
 #define KEY_INS     ((char)0xB9)
 #define KEY_ALT_TAB ((char)0xBA)
 #define KEY_SUPER   ((char)0xBB)
+#define KEY_FINDER  ((char)0xBC)
 
 /* Keyboard layouts */
 #define KB_LAYOUT_FR  0
@@ -52,6 +53,7 @@ void keyboard_set_idle_callback(void (*cb)(void));
 int  keyboard_force_exit(void);
 void keyboard_request_force_exit(void);
 int  keyboard_data_available(void);
+int  keyboard_check_double_ctrl(void);
 
 /* FILE I/O */
 FILE* fopen(const char* path, const char* mode);

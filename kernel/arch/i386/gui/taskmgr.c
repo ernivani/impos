@@ -76,19 +76,19 @@ static void refresh_data(ui_window_t *win) {
     win->dirty = 1;
 }
 
-static void tm_on_event(ui_window_t *win, ui_event_t *ev) {
+void app_taskmgr_on_event(ui_window_t *win, ui_event_t *ev) {
     (void)ev;
     refresh_data(win);
 }
 
-void app_taskmgr(void) {
+ui_window_t *app_taskmgr_create(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
     int win_w = 400;
     int win_h = fb_h - TASKBAR_H - 80;
 
     ui_window_t *win = ui_window_create(fb_w / 2 - win_w / 2, 30,
                                          win_w, win_h, "Task Manager");
-    if (!win) return;
+    if (!win) return 0;
 
     int cw, ch;
     wm_get_canvas(win->wm_id, &cw, &ch);
@@ -116,6 +116,17 @@ void app_taskmgr(void) {
     w_win_list = ui_add_list(win, 0, y, cw, ch - y, NULL, 0);
 
     refresh_data(win);
-    ui_app_run(win, tm_on_event);
+
+    /* Auto-focus first focusable widget */
+    if (win->focused_widget < 0)
+        ui_focus_next(win);
+
+    return win;
+}
+
+void app_taskmgr(void) {
+    ui_window_t *win = app_taskmgr_create();
+    if (!win) return;
+    ui_app_run(win, app_taskmgr_on_event);
     ui_window_destroy(win);
 }

@@ -23,6 +23,7 @@ ui_window_t *ui_window_create(int x, int y, int w, int h, const char *title) {
     if (win->wm_id < 0) { ui_win_count--; return 0; }
     win->focused_widget = -1;
     win->dirty = 1;
+    wm_get_canvas(win->wm_id, &win->prev_cw, &win->prev_ch);
     return win;
 }
 
@@ -709,6 +710,26 @@ void ui_dispatch_event(ui_window_t *win, ui_event_t *ev) {
     }
 }
 
+/* ═══ Resize detection ═══════════════════════════════════════════ */
+
+void ui_window_check_resize(ui_window_t *win) {
+    if (!win) return;
+    int cur_cw = 0, cur_ch = 0;
+    wm_get_canvas(win->wm_id, &cur_cw, &cur_ch);
+    if (cur_cw != win->prev_cw || cur_ch != win->prev_ch) {
+        for (int i = 0; i < win->widget_count; i++) {
+            ui_widget_t *wg = &win->widgets[i];
+            if (wg->w == win->prev_cw) wg->w = cur_cw;
+            if (wg->h + wg->y == win->prev_ch) wg->h += (cur_ch - win->prev_ch);
+            else if (wg->y > win->prev_ch / 2 && wg->h + wg->y <= win->prev_ch)
+                wg->y += (cur_ch - win->prev_ch);
+        }
+        win->prev_cw = cur_cw;
+        win->prev_ch = cur_ch;
+        win->dirty = 1;
+    }
+}
+
 /* ═══ App run loop ═══════════════════════════════════════════════ */
 
 int ui_app_run(ui_window_t *win, void (*on_event)(ui_window_t *, ui_event_t *)) {
@@ -721,28 +742,9 @@ int ui_app_run(ui_window_t *win, void (*on_event)(ui_window_t *, ui_event_t *)) 
     if (win->focused_widget < 0)
         ui_focus_next(win);
 
-    /* Track canvas dimensions to detect resize */
-    int prev_cw = 0, prev_ch = 0;
-    wm_get_canvas(win->wm_id, &prev_cw, &prev_ch);
-
     while (1) {
         /* Detect canvas resize and adapt widgets */
-        int cur_cw = 0, cur_ch = 0;
-        wm_get_canvas(win->wm_id, &cur_cw, &cur_ch);
-        if (cur_cw != prev_cw || cur_ch != prev_ch) {
-            for (int i = 0; i < win->widget_count; i++) {
-                ui_widget_t *wg = &win->widgets[i];
-                /* Stretch widgets that spanned full width/height */
-                if (wg->w == prev_cw) wg->w = cur_cw;
-                if (wg->h + wg->y == prev_ch) wg->h += (cur_ch - prev_ch);
-                /* Reanchor bottom-pinned widgets (y was relative to old bottom) */
-                else if (wg->y > prev_ch / 2 && wg->h + wg->y <= prev_ch)
-                    wg->y += (cur_ch - prev_ch);
-            }
-            prev_cw = cur_cw;
-            prev_ch = cur_ch;
-            win->dirty = 1;
-        }
+        ui_window_check_resize(win);
 
         if (win->dirty) {
             ui_window_redraw(win);
