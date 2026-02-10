@@ -364,16 +364,26 @@ void login_show_splash(void) {
         busy_wait(2200000);
     }
 
-    /* Phase 3: Fade out — dark overlay grows to hide content */
+    /* Phase 3: Fade out logo+spinner, keep gradient visible.
+       Only darken to ~60% so the gradient stays on screen for
+       a seamless transition into the login screen. */
     for (int i = 0; i <= fade_steps; i++) {
         draw_gradient(w, h);
-        gfx_draw_string_smooth(lx, ly, logo, GFX_RGB(240, 240, 248), logo_scale);
-        uint8_t dark = (uint8_t)(i * 255 / fade_steps);
-        gfx_overlay_darken(0, 0, w, h, dark);
+        /* Fade logo+spinner text alpha from full to 0 */
+        int text_alpha = 255 - i * 255 / fade_steps;
+        if (text_alpha > 0) {
+            gfx_draw_string_smooth(lx, ly, logo,
+                GFX_RGB(text_alpha * 240 / 255,
+                         text_alpha * 240 / 255,
+                         text_alpha * 248 / 255), logo_scale);
+        }
+        /* Slight overall dim toward login brightness (not black!) */
+        uint8_t dim = (uint8_t)(i * 100 / fade_steps);
+        gfx_overlay_darken(0, 0, w, h, dim);
         gfx_flip();
         pit_sleep_ms(30);
     }
-    pit_sleep_ms(80);
+    pit_sleep_ms(60);
 }
 
 /* ═══ Setup Wizard (Modern UI) ══════════════════════════════ */
@@ -1105,11 +1115,15 @@ int login_run(void) {
                     keyboard_set_idle_callback(0);
                     gfx_set_cursor_type(GFX_CURSOR_ARROW);
                     gfx_restore_mouse_cursor();
-                    /* Crossfade: dissolve to clean gradient */
+                    /* Crossfade: dissolve login UI to clean gradient.
+                       Each frame redraws just the gradient (no UI), then
+                       applies a light dim that lifts over the steps. */
                     for (int fi = 0; fi <= 8; fi++) {
                         draw_gradient(w, h);
-                        uint8_t dark = (uint8_t)(fi * 255 / 8);
-                        gfx_overlay_darken(0, 0, w, h, dark);
+                        /* Start dimmed (matching login look), end bright */
+                        uint8_t dim = (uint8_t)(80 - fi * 80 / 8);
+                        if (dim > 0)
+                            gfx_overlay_darken(0, 0, w, h, dim);
                         gfx_flip();
                         pit_sleep_ms(30);
                     }
