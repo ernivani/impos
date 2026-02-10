@@ -675,6 +675,10 @@ static void desktop_idle_terminal(void) {
     task_set_current(TASK_IDLE);
 }
 
+void (*desktop_get_idle_terminal_cb(void))(void) {
+    return desktop_idle_terminal;
+}
+
 /* ═══ Terminal Window (WM-managed) ═════════════════════════════ */
 
 void desktop_open_terminal(void) {
