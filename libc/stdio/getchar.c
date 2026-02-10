@@ -393,6 +393,10 @@ char getchar(void) {
         if (alt_pressed && scancode == 0x0F)
             return KEY_ALT_TAB;
 
+        /* Alt+Space — open Finder */
+        if (alt_pressed && scancode == 0x39)
+            return KEY_FINDER;
+
         /* --- Numpad keys (0x47-0x53, no E0 = physical numpad) --- */
         if (scancode >= 0x47 && scancode <= 0x53) {
             if (num_lock_active) {
