@@ -18,6 +18,7 @@
 #include <kernel/monitor_app.h>
 #include <kernel/finder.h>
 #include <kernel/task.h>
+#include <kernel/fs.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -492,12 +493,245 @@ void desktop_draw_chrome(void) {
     gfx_flip();
 }
 
+/* ═══ Desktop File Icons ═══════════════════════════════════════ */
+
+#define DESKTOP_MAX_ICONS 16
+#define DESKTOP_ICON_W    80
+#define DESKTOP_ICON_H    80
+#define DESKTOP_ICON_MARGIN_X  20
+#define DESKTOP_ICON_MARGIN_Y  (MENUBAR_H + 12)
+#define DESKTOP_ICON_COLS  ((int)((gfx_width() - 2 * DESKTOP_ICON_MARGIN_X) / DESKTOP_ICON_W))
+
+typedef struct {
+    char name[MAX_NAME_LEN];
+    uint8_t type;           /* INODE_FILE / INODE_DIR */
+    int grid_col, grid_row;
+    uint8_t selected;
+    uint8_t active;
+} desktop_icon_t;
+
+static desktop_icon_t desktop_icons[DESKTOP_MAX_ICONS];
+static int desktop_icon_count;
+
+static void desktop_load_icons(void) {
+    desktop_icon_count = 0;
+    memset(desktop_icons, 0, sizeof(desktop_icons));
+
+    /* Save cwd, navigate to ~/Desktop */
+    uint32_t saved_cwd = fs_get_cwd_inode();
+    const char *user = user_get_current();
+    if (!user) return;
+
+    char desktop_path[128];
+    snprintf(desktop_path, sizeof(desktop_path), "/home/%s/Desktop", user);
+    if (fs_change_directory(desktop_path) != 0) {
+        fs_change_directory_by_inode(saved_cwd);
+        return;
+    }
+
+    fs_dir_entry_info_t entries[DESKTOP_MAX_ICONS];
+    int count = fs_enumerate_directory(entries, DESKTOP_MAX_ICONS, 0);
+
+    int cols = DESKTOP_ICON_COLS;
+    if (cols < 1) cols = 1;
+
+    for (int i = 0; i < count && desktop_icon_count < DESKTOP_MAX_ICONS; i++) {
+        /* Skip . and .. */
+        if (entries[i].name[0] == '.') continue;
+
+        desktop_icon_t *icon = &desktop_icons[desktop_icon_count];
+        strncpy(icon->name, entries[i].name, MAX_NAME_LEN - 1);
+        icon->type = entries[i].type;
+        icon->grid_col = desktop_icon_count % cols;
+        icon->grid_row = desktop_icon_count / cols;
+        icon->selected = 0;
+        icon->active = 1;
+        desktop_icon_count++;
+    }
+
+    /* Restore cwd */
+    fs_change_directory_by_inode(saved_cwd);
+}
+
+static void desktop_draw_file_icon(int x, int y, uint8_t type, int selected) {
+    if (type == INODE_DIR) {
+        /* Folder icon (larger version) */
+        uint32_t body = selected ? GFX_RGB(255, 200, 80) : GFX_RGB(220, 170, 55);
+        uint32_t tab  = selected ? GFX_RGB(240, 180, 50) : GFX_RGB(190, 140, 40);
+        uint32_t dark = GFX_RGB(160, 110, 30);
+        gfx_fill_rect(x + 2, y + 2, 14, 4, tab);
+        gfx_fill_rect(x + 1, y + 6, 30, 20, body);
+        gfx_fill_rect(x + 2, y + 12, 28, 1, dark);
+    } else {
+        /* File icon */
+        uint32_t body = selected ? GFX_RGB(200, 200, 220) : GFX_RGB(170, 170, 190);
+        uint32_t dark = selected ? GFX_RGB(160, 160, 180) : GFX_RGB(130, 130, 150);
+        gfx_fill_rect(x + 4, y + 2, 24, 24, body);
+        gfx_draw_rect(x + 4, y + 2, 24, 24, dark);
+        /* Dog-ear */
+        gfx_fill_rect(x + 20, y + 2, 8, 8, dark);
+        /* Lines */
+        gfx_fill_rect(x + 8, y + 12, 16, 1, dark);
+        gfx_fill_rect(x + 8, y + 16, 12, 1, dark);
+        gfx_fill_rect(x + 8, y + 20, 14, 1, dark);
+    }
+}
+
+static void desktop_draw_icons(void) {
+    for (int i = 0; i < desktop_icon_count; i++) {
+        desktop_icon_t *icon = &desktop_icons[i];
+        if (!icon->active) continue;
+
+        int x = DESKTOP_ICON_MARGIN_X + icon->grid_col * DESKTOP_ICON_W;
+        int y = DESKTOP_ICON_MARGIN_Y + icon->grid_row * DESKTOP_ICON_H;
+
+        /* Selection highlight */
+        if (icon->selected) {
+            gfx_rounded_rect_alpha(x, y, DESKTOP_ICON_W, DESKTOP_ICON_H, 6,
+                                    ui_theme.accent, 50);
+        }
+
+        /* Icon centered in cell */
+        int icon_x = x + (DESKTOP_ICON_W - 32) / 2;
+        int icon_y = y + 8;
+        desktop_draw_file_icon(icon_x, icon_y, icon->type, icon->selected);
+
+        /* Label below icon */
+        int lw = (int)strlen(icon->name) * FONT_W;
+        int lx = x + (DESKTOP_ICON_W - lw) / 2;
+        if (lx < x + 2) lx = x + 2;
+        int ly = y + DESKTOP_ICON_H - FONT_H - 4;
+
+        /* Truncate label if too wide */
+        char label[16];
+        if (lw > DESKTOP_ICON_W - 4) {
+            strncpy(label, icon->name, 8);
+            label[8] = '.';
+            label[9] = '.';
+            label[10] = '\0';
+            lw = (int)strlen(label) * FONT_W;
+            lx = x + (DESKTOP_ICON_W - lw) / 2;
+        } else {
+            strncpy(label, icon->name, 15);
+            label[15] = '\0';
+        }
+
+        gfx_draw_string_nobg(lx, ly, label,
+                              icon->selected ? GFX_RGB(255, 255, 255) : GFX_RGB(220, 220, 230));
+    }
+}
+
+static int desktop_hit_icon(int mx, int my) {
+    for (int i = 0; i < desktop_icon_count; i++) {
+        desktop_icon_t *icon = &desktop_icons[i];
+        if (!icon->active) continue;
+        int x = DESKTOP_ICON_MARGIN_X + icon->grid_col * DESKTOP_ICON_W;
+        int y = DESKTOP_ICON_MARGIN_Y + icon->grid_row * DESKTOP_ICON_H;
+        if (mx >= x && mx < x + DESKTOP_ICON_W &&
+            my >= y && my < y + DESKTOP_ICON_H)
+            return i;
+    }
+    return -1;
+}
+
+static void desktop_deselect_all_icons(void) {
+    for (int i = 0; i < desktop_icon_count; i++)
+        desktop_icons[i].selected = 0;
+}
+
+/* ═══ Mobile / Desktop View Mode ═══════════════════════════════ */
+
+#define VIEW_DESKTOP 0
+#define VIEW_MOBILE  1
+
+static int desktop_view_mode = VIEW_DESKTOP;
+static int mobile_selected = 0;
+
+/* Mobile grid: 4 columns x 2 rows of large app cards */
+#define MOBILE_COLS  4
+#define MOBILE_ROWS  2
+#define MOBILE_CARD_W 160
+#define MOBILE_CARD_H 160
+#define MOBILE_GAP    24
+
+/* App entries for mobile grid — same as dock */
+#define MOBILE_APP_COUNT DOCK_ITEMS
+
+static void desktop_draw_mobile_view(void) {
+    int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
+
+    /* Draw gradient background */
+    draw_gradient(fb_w, fb_h);
+
+    /* Dark overlay */
+    gfx_rounded_rect_alpha(0, 0, fb_w, fb_h, 0, GFX_RGB(10, 10, 20), 160);
+
+    /* Title */
+    const char *title = "Applications";
+    int tw = (int)strlen(title) * FONT_W * 2;
+    gfx_draw_string_scaled(fb_w / 2 - tw / 2, 60, title,
+                            GFX_RGB(220, 220, 240), 2);
+
+    /* Grid of app cards */
+    int total_w = MOBILE_COLS * MOBILE_CARD_W + (MOBILE_COLS - 1) * MOBILE_GAP;
+    int total_h = MOBILE_ROWS * MOBILE_CARD_H + (MOBILE_ROWS - 1) * MOBILE_GAP;
+    int start_x = fb_w / 2 - total_w / 2;
+    int start_y = fb_h / 2 - total_h / 2;
+
+    for (int i = 0; i < MOBILE_APP_COUNT && i < MOBILE_COLS * MOBILE_ROWS; i++) {
+        int col = i % MOBILE_COLS;
+        int row = i / MOBILE_COLS;
+        int cx = start_x + col * (MOBILE_CARD_W + MOBILE_GAP);
+        int cy = start_y + row * (MOBILE_CARD_H + MOBILE_GAP);
+
+        int selected = (i == mobile_selected);
+
+        /* Card background */
+        uint32_t card_bg = selected ? GFX_RGB(60, 58, 78) : GFX_RGB(38, 36, 50);
+        gfx_rounded_rect_alpha(cx, cy, MOBILE_CARD_W, MOBILE_CARD_H,
+                                12, card_bg, 200);
+
+        /* Selection border */
+        if (selected) {
+            gfx_rounded_rect_outline(cx, cy, MOBILE_CARD_W, MOBILE_CARD_H,
+                                      12, ui_theme.accent);
+        }
+
+        /* Icon centered in card (scaled up) */
+        int icon_x = cx + (MOBILE_CARD_W - 40) / 2;
+        int icon_y = cy + 30;
+        dock_icons[i](icon_x, icon_y, selected);
+
+        /* Label below icon */
+        const char *label = dock_labels[i];
+        int lw = (int)strlen(label) * FONT_W;
+        int lx = cx + (MOBILE_CARD_W - lw) / 2;
+        int ly = cy + MOBILE_CARD_H - 36;
+        gfx_draw_string_nobg(lx, ly, label,
+                              selected ? GFX_RGB(255, 255, 255) : GFX_RGB(180, 178, 200));
+    }
+
+    /* Hint */
+    const char *hint = "Arrow keys: navigate  Enter: open  Super/Esc: back";
+    int hw = (int)strlen(hint) * FONT_W;
+    gfx_draw_string_nobg(fb_w / 2 - hw / 2, fb_h - 50, hint,
+                          GFX_RGB(100, 98, 120));
+
+    gfx_flip();
+    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+}
+
 /* ═══ Background draw callback for WM ══════════════════════════ */
 
 static void desktop_bg_draw(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
+    if (desktop_view_mode == VIEW_MOBILE) {
+        desktop_draw_mobile_view();
+        return;
+    }
     draw_gradient(fb_w, fb_h);
     desktop_draw_menubar();
+    desktop_draw_icons();
 }
 
 /* ═══ Desktop Event Loop (WM-based, multi-window) ══════════════ */
@@ -969,12 +1203,16 @@ int desktop_run(void) {
     /* Initialize clock cache */
     get_time_str(last_clock_str);
 
+    /* Load desktop file icons */
+    desktop_load_icons();
+
     /* Initialize event system */
     ui_event_init();
 
     /* Draw desktop background + menubar + dock */
     draw_gradient(fb_w, fb_h);
     desktop_draw_menubar();
+    desktop_draw_icons();
     desktop_draw_dock();
 
     if (desktop_first_show) {
@@ -1050,10 +1288,14 @@ int desktop_run(void) {
         /* Handle close events */
         if (ev.type == UI_EVENT_CLOSE) {
             desktop_close_focused_app();
+            /* Reload desktop icons (files may have changed) */
+            desktop_load_icons();
             /* Redraw dock to update indicator dots */
             draw_gradient(fb_w, fb_h);
             desktop_draw_menubar();
+            desktop_draw_icons();
             desktop_draw_dock();
+            wm_invalidate_bg();
             wm_composite();
             continue;
         }
@@ -1082,9 +1324,56 @@ int desktop_run(void) {
                 continue;
             }
 
-            /* Super key — no action on desktop */
-            if (c == KEY_SUPER)
+            /* Super key — toggle mobile view */
+            if (c == KEY_SUPER) {
+                if (desktop_view_mode == VIEW_DESKTOP) {
+                    desktop_view_mode = VIEW_MOBILE;
+                    mobile_selected = 0;
+                    desktop_draw_mobile_view();
+
+                    /* Mobile view event mini-loop */
+                    while (desktop_view_mode == VIEW_MOBILE) {
+                        char mc = getchar();
+                        if (mc == KEY_SUPER || mc == KEY_ESCAPE) {
+                            desktop_view_mode = VIEW_DESKTOP;
+                            break;
+                        }
+                        if (mc == KEY_LEFT && mobile_selected > 0) {
+                            mobile_selected--;
+                            desktop_draw_mobile_view();
+                        }
+                        if (mc == KEY_RIGHT && mobile_selected < MOBILE_APP_COUNT - 1) {
+                            mobile_selected++;
+                            desktop_draw_mobile_view();
+                        }
+                        if (mc == KEY_UP && mobile_selected >= MOBILE_COLS) {
+                            mobile_selected -= MOBILE_COLS;
+                            desktop_draw_mobile_view();
+                        }
+                        if (mc == KEY_DOWN && mobile_selected + MOBILE_COLS < MOBILE_APP_COUNT) {
+                            mobile_selected += MOBILE_COLS;
+                            desktop_draw_mobile_view();
+                        }
+                        if (mc == '\n') {
+                            desktop_view_mode = VIEW_DESKTOP;
+                            int action = dock_actions[mobile_selected];
+                            if (action == DESKTOP_ACTION_POWER) {
+                                acpi_shutdown();
+                            } else {
+                                /* Redraw desktop, then launch */
+                                wm_invalidate_bg();
+                                wm_composite();
+                                desktop_launch_app(action);
+                            }
+                            break;
+                        }
+                    }
+                    /* Restore desktop view */
+                    wm_invalidate_bg();
+                    wm_composite();
+                }
                 continue;
+            }
 
             /* Check if any app window is focused */
             int fid = wm_get_focused_id();
@@ -1183,7 +1472,7 @@ int desktop_run(void) {
             /* Dock is mouse-only — no keyboard navigation */
         }
 
-        /* Mouse events: dispatch to focused app */
+        /* Mouse events: dispatch to focused app or desktop icons */
         if (ev.type == UI_EVENT_MOUSE_DOWN || ev.type == UI_EVENT_MOUSE_UP) {
             int fid = wm_get_focused_id();
             int ri = (fid >= 0) ? find_running_app_by_wm(fid) : -1;
@@ -1195,6 +1484,28 @@ int desktop_run(void) {
                     ui_window_redraw(running_apps[ri].ui_win);
                     wm_composite();
                 }
+            } else if (ev.type == UI_EVENT_MOUSE_DOWN && desktop_icon_count > 0) {
+                /* Click on desktop — check icons */
+                int mx = ev.mouse.x, my = ev.mouse.y;
+                int hit = desktop_hit_icon(mx, my);
+                if (hit >= 0) {
+                    if (desktop_icons[hit].selected) {
+                        /* Already selected — double-click: open */
+                        if (desktop_icons[hit].type == INODE_DIR) {
+                            desktop_launch_app(DESKTOP_ACTION_FILES);
+                        } else {
+                            desktop_launch_app(DESKTOP_ACTION_FILES);
+                        }
+                        desktop_deselect_all_icons();
+                    } else {
+                        desktop_deselect_all_icons();
+                        desktop_icons[hit].selected = 1;
+                    }
+                } else {
+                    desktop_deselect_all_icons();
+                }
+                wm_invalidate_bg();
+                wm_composite();
             }
         }
     }
