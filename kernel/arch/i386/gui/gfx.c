@@ -1,5 +1,6 @@
 #include <kernel/gfx.h>
 #include <kernel/multiboot.h>
+#include <kernel/idt.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -888,4 +889,54 @@ void gfx_flip_rect(int x, int y, int w, int h) {
                &backbuf[row * pitch4 + x],
                (size_t)w * 4);
     }
+}
+
+void gfx_overlay_darken(int x, int y, int w, int h, uint8_t alpha) {
+    if (!have_backbuffer) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > (int)fb_width) w = (int)fb_width - x;
+    if (y + h > (int)fb_height) h = (int)fb_height - y;
+    if (w <= 0 || h <= 0 || alpha == 0) return;
+
+    uint32_t inv_a = 255 - (uint32_t)alpha;
+    uint32_t pitch4 = fb_pitch / 4;
+    for (int row = y; row < y + h; row++) {
+        uint32_t *dst = backbuf + row * pitch4 + x;
+        for (int col = 0; col < w; col++) {
+            uint32_t px = dst[col];
+            uint32_t r = ((px >> 16) & 0xFF) * inv_a / 255;
+            uint32_t g = ((px >> 8) & 0xFF) * inv_a / 255;
+            uint32_t b = (px & 0xFF) * inv_a / 255;
+            dst[col] = (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+void gfx_crossfade(int steps, int delay_ms) {
+    if (!have_backbuffer || steps <= 0) { gfx_flip(); return; }
+
+    uint32_t total = fb_height * (fb_pitch / 4);
+
+    /* Save the old scene (current framebuffer) */
+    uint32_t *saved = (uint32_t *)malloc(total * sizeof(uint32_t));
+    if (!saved) { gfx_flip(); return; }
+    memcpy(saved, framebuffer, total * sizeof(uint32_t));
+
+    /* Blend old (saved) → new (backbuf), write to framebuffer */
+    for (int i = 1; i <= steps; i++) {
+        uint32_t t = (uint32_t)(i * 255 / steps);
+        uint32_t inv_t = 255 - t;
+        for (uint32_t j = 0; j < total; j++) {
+            uint32_t src = saved[j];
+            uint32_t dst = backbuf[j];
+            uint32_t r = (((src >> 16) & 0xFF) * inv_t + ((dst >> 16) & 0xFF) * t) / 255;
+            uint32_t g = (((src >> 8) & 0xFF) * inv_t + ((dst >> 8) & 0xFF) * t) / 255;
+            uint32_t b = ((src & 0xFF) * inv_t + (dst & 0xFF) * t) / 255;
+            framebuffer[j] = (r << 16) | (g << 8) | b;
+        }
+        pit_sleep_ms(delay_ms);
+    }
+
+    free(saved);
 }

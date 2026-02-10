@@ -6,6 +6,7 @@
 #include <kernel/idt.h>
 #include <kernel/io.h>
 #include <kernel/mouse.h>
+#include <kernel/acpi.h>
 #include <kernel/wm.h>
 #include <kernel/ui_theme.h>
 #include <kernel/ui_widget.h>
@@ -27,33 +28,6 @@ void desktop_notify_login(void) {
 }
 
 /* ═══ Animation Helpers ═════════════════════════════════════════ */
-
-static void desktop_fade_in(int x, int y, int w, int h, int steps, int delay_ms) {
-    for (int i = steps; i >= 0; i--) {
-        uint32_t alpha = (uint32_t)(i * 255 / steps);
-        gfx_flip_rect(x, y, w, h);
-        if (i > 0) {
-            uint32_t *fb = gfx_framebuffer();
-            uint32_t pitch4 = gfx_pitch() / 4;
-            int x0 = x < 0 ? 0 : x;
-            int y0 = y < 0 ? 0 : y;
-            int x1 = x + w; if (x1 > (int)gfx_width()) x1 = (int)gfx_width();
-            int y1 = y + h; if (y1 > (int)gfx_height()) y1 = (int)gfx_height();
-            uint32_t inv_a = 255 - alpha;
-            for (int row = y0; row < y1; row++) {
-                uint32_t *dst = fb + row * pitch4 + x0;
-                for (int col = 0; col < x1 - x0; col++) {
-                    uint32_t px = dst[col];
-                    uint32_t r = ((px >> 16) & 0xFF) * inv_a / 255;
-                    uint32_t g = ((px >> 8) & 0xFF) * inv_a / 255;
-                    uint32_t b = (px & 0xFF) * inv_a / 255;
-                    dst[col] = (r << 16) | (g << 8) | b;
-                }
-            }
-        }
-        pit_sleep_ms(delay_ms);
-    }
-}
 
 /* Format a 2-digit value with leading zero */
 static void fmt2(char *dst, int val) {
@@ -79,10 +53,12 @@ static uint32_t lerp_color(uint32_t a, uint32_t b, int t) {
 static uint32_t grad_tl, grad_tr, grad_bl, grad_br;
 
 static void draw_gradient(int w, int h) {
-    grad_tl = GFX_RGB(100, 85, 90);
-    grad_tr = GFX_RGB(75, 65, 85);
-    grad_bl = GFX_RGB(170, 120, 100);
-    grad_br = GFX_RGB(120, 85, 105);
+    /* Slightly warmer/brighter than login gradient so
+       the crossfade transition is visible */
+    grad_tl = GFX_RGB(110, 90, 95);
+    grad_tr = GFX_RGB(85, 70, 90);
+    grad_bl = GFX_RGB(180, 130, 110);
+    grad_br = GFX_RGB(130, 95, 110);
 
     uint32_t *bb = gfx_backbuffer();
     uint32_t pitch4 = gfx_pitch() / 4;
@@ -504,7 +480,7 @@ void desktop_init(void) {
 
     if (desktop_first_show) {
         desktop_first_show = 0;
-        desktop_fade_in(0, 0, fb_w, fb_h, 8, 30);
+        gfx_crossfade(8, 30);
     } else {
         gfx_flip();
     }
@@ -1003,7 +979,7 @@ int desktop_run(void) {
 
     if (desktop_first_show) {
         desktop_first_show = 0;
-        desktop_fade_in(0, 0, fb_w, fb_h, 8, 30);
+        gfx_crossfade(8, 30);
     } else {
         gfx_flip();
     }
@@ -1056,9 +1032,8 @@ int desktop_run(void) {
             int da = ev.dock.action;
 
             if (da == DESKTOP_ACTION_POWER) {
-                keyboard_set_idle_callback(0);
-                gfx_restore_mouse_cursor();
-                return DESKTOP_ACTION_POWER;
+                acpi_shutdown();
+                continue;
             }
 
             /* Launch app (or focus existing) */
