@@ -734,6 +734,35 @@ void fs_list_directory(int flags) {
     if (!long_fmt && col > 0) printf("\n");
 }
 
+int fs_enumerate_directory(fs_dir_entry_info_t *out, int max, int show_dot) {
+    inode_t* dir = &inodes[sb.cwd_inode];
+    int count = 0;
+
+    for (uint8_t b = 0; b < dir->num_blocks && count < max; b++) {
+        dir_entry_t* entries = (dir_entry_t*)data_blocks[dir->blocks[b]];
+        int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
+        for (int e = 0; e < entries_per_block && count < max; e++) {
+            if (entries[e].name[0] == '\0') continue;
+            int is_dot = (local_strncmp(entries[e].name, ".", MAX_NAME_LEN) == 0 ||
+                          local_strncmp(entries[e].name, "..", MAX_NAME_LEN) == 0);
+            if (is_dot && !show_dot) continue;
+
+            local_strncpy(out[count].name, entries[e].name, MAX_NAME_LEN);
+            uint32_t ino = entries[e].inode;
+            out[count].inode = ino;
+            if (ino < NUM_INODES) {
+                out[count].type = inodes[ino].type;
+                out[count].size = inodes[ino].size;
+            } else {
+                out[count].type = 0;
+                out[count].size = 0;
+            }
+            count++;
+        }
+    }
+    return count;
+}
+
 int fs_change_directory(const char* dirname) {
     uint32_t parent;
     char name[MAX_NAME_LEN];

@@ -28,6 +28,15 @@ static size_t win_h = 25;
 static uint32_t win_bg_color = 0;
 static int win_bg_set = 0;
 
+/* Canvas mode state */
+static int canvas_win_id = -1;
+static uint32_t *canvas_buf = 0;
+static int canvas_pw = 0, canvas_ph = 0;
+
+/* Canvas cursor save/restore state */
+static int canvas_cur_px = -1, canvas_cur_py = -1;
+static uint32_t canvas_cur_save[8 * 2]; /* FONT_W * 2 rows */
+
 static const uint32_t vga_to_rgb[16] = {
 	0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
 	0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
@@ -37,6 +46,50 @@ static const uint32_t vga_to_rgb[16] = {
 
 static void terminal_update_cursor(void) {
 	if (gfx_mode) {
+		if (canvas_buf) {
+			/* Restore pixels under previous cursor */
+			if (canvas_cur_px >= 0 && canvas_cur_py >= 0) {
+				for (int r = 0; r < 2; r++) {
+					int yy = canvas_cur_py + 14 + r;
+					if (yy < 0 || yy >= canvas_ph) continue;
+					for (int c = 0; c < FONT_W; c++) {
+						int xx = canvas_cur_px + c;
+						if (xx < 0 || xx >= canvas_pw) continue;
+						canvas_buf[yy * canvas_pw + xx] = canvas_cur_save[r * FONT_W + c];
+					}
+				}
+			}
+
+			/* Calculate new cursor pixel position */
+			int px = (int)terminal_column * FONT_W;
+			int py = (int)terminal_row * FONT_H;
+
+			/* Save pixels under new cursor position */
+			for (int r = 0; r < 2; r++) {
+				int yy = py + 14 + r;
+				for (int c = 0; c < FONT_W; c++) {
+					int xx = px + c;
+					if (yy >= 0 && yy < canvas_ph && xx >= 0 && xx < canvas_pw)
+						canvas_cur_save[r * FONT_W + c] = canvas_buf[yy * canvas_pw + xx];
+					else
+						canvas_cur_save[r * FONT_W + c] = 0;
+				}
+			}
+			canvas_cur_px = px;
+			canvas_cur_py = py;
+
+			/* Draw underline cursor */
+			for (int r = 14; r < 16; r++) {
+				int yy = py + r;
+				if (yy < 0 || yy >= canvas_ph) continue;
+				for (int c = 0; c < FONT_W; c++) {
+					int xx = px + c;
+					if (xx < 0 || xx >= canvas_pw) continue;
+					canvas_buf[yy * canvas_pw + xx] = 0xFFFFFF;
+				}
+			}
+			return;
+		}
 		gfx_set_cursor((int)(win_x + terminal_column), (int)(win_y + terminal_row));
 		return;
 	}
@@ -93,10 +146,16 @@ void terminal_resetcolor(void) {
 
 void terminal_putentryat(unsigned char c, uint8_t color, size_t x, size_t y) {
 	if (gfx_mode) {
-		size_t abs_x = win_x + x;
-		size_t abs_y = win_y + y;
 		uint32_t fg = vga_to_rgb[color & 0x0F];
 		uint32_t bg = win_bg_set ? win_bg_color : vga_to_rgb[(color >> 4) & 0x0F];
+		if (canvas_buf) {
+			/* Draw into canvas at relative position */
+			gfx_buf_draw_char(canvas_buf, canvas_pw, canvas_ph,
+			                  (int)x * FONT_W, (int)y * FONT_H, (char)c, fg, bg);
+			return;
+		}
+		size_t abs_x = win_x + x;
+		size_t abs_y = win_y + y;
 		gfx_putchar_at((int)abs_x, (int)abs_y, c, fg, bg);
 		gfx_flip_rect((int)abs_x * FONT_W, (int)abs_y * FONT_H, FONT_W, FONT_H);
 		return;
@@ -107,9 +166,31 @@ void terminal_putentryat(unsigned char c, uint8_t color, size_t x, size_t y) {
 
 static void terminal_scroll_up(void) {
 	if (gfx_mode) {
+		uint32_t bg = win_bg_set ? win_bg_color : vga_to_rgb[(terminal_color >> 4) & 0x0F];
+
+		if (canvas_buf) {
+			/* Scroll within canvas buffer */
+			uint32_t pw = (uint32_t)win_w * FONT_W;
+			uint32_t ph = (uint32_t)win_h * FONT_H;
+			if (pw > (uint32_t)canvas_pw) pw = (uint32_t)canvas_pw;
+			if (ph > (uint32_t)canvas_ph) ph = (uint32_t)canvas_ph;
+
+			for (uint32_t row = 0; row < ph - FONT_H; row++) {
+				memcpy(canvas_buf + row * canvas_pw,
+				       canvas_buf + (row + FONT_H) * canvas_pw,
+				       pw * 4);
+			}
+			uint32_t start_y = ph - FONT_H;
+			for (uint32_t y = start_y; y < ph; y++) {
+				uint32_t *rowp = canvas_buf + y * canvas_pw;
+				for (uint32_t x = 0; x < pw; x++)
+					rowp[x] = bg;
+			}
+			return;
+		}
+
 		uint32_t* bb = gfx_backbuffer();
 		uint32_t pitch4 = gfx_pitch() / 4;
-		uint32_t bg = win_bg_set ? win_bg_color : vga_to_rgb[(terminal_color >> 4) & 0x0F];
 
 		/* Pixel coords of the window region */
 		uint32_t px = (uint32_t)win_x * FONT_W;
@@ -189,10 +270,17 @@ void terminal_writestring(const char* data) {
 void terminal_clear(void) {
 	if (gfx_mode) {
 		uint32_t bg = win_bg_set ? win_bg_color : vga_to_rgb[(terminal_color >> 4) & 0x0F];
-		/* Only clear the window region */
-		gfx_fill_rect((int)(win_x * FONT_W), (int)(win_y * FONT_H),
-		              (int)(win_w * FONT_W), (int)(win_h * FONT_H), bg);
-		gfx_flip();
+		if (canvas_buf) {
+			/* Clear canvas buffer */
+			int total = canvas_pw * canvas_ph;
+			for (int i = 0; i < total; i++)
+				canvas_buf[i] = bg;
+		} else {
+			/* Only clear the window region */
+			gfx_fill_rect((int)(win_x * FONT_W), (int)(win_y * FONT_H),
+			              (int)(win_w * FONT_W), (int)(win_h * FONT_H), bg);
+			gfx_flip();
+		}
 	} else {
 		for (size_t y = 0; y < VGA_HEIGHT; y++) {
 			for (size_t x = 0; x < VGA_WIDTH; x++) {
@@ -243,3 +331,28 @@ size_t terminal_get_win_x(void) { return win_x; }
 size_t terminal_get_win_y(void) { return win_y; }
 size_t terminal_get_win_w(void) { return win_w; }
 size_t terminal_get_win_h(void) { return win_h; }
+
+void terminal_set_canvas(int win_id, uint32_t *canvas, int pw, int ph) {
+	canvas_win_id = win_id;
+	canvas_buf = canvas;
+	canvas_pw = pw;
+	canvas_ph = ph;
+	/* Compute character grid from pixel dimensions */
+	win_w = (size_t)(pw / FONT_W);
+	win_h = (size_t)(ph / FONT_H);
+	win_x = 0;
+	win_y = 0;
+	terminal_row = 0;
+	terminal_column = 0;
+	canvas_cur_px = -1;
+	canvas_cur_py = -1;
+}
+
+void terminal_clear_canvas(void) {
+	canvas_win_id = -1;
+	canvas_buf = 0;
+	canvas_pw = 0;
+	canvas_ph = 0;
+	canvas_cur_px = -1;
+	canvas_cur_py = -1;
+}

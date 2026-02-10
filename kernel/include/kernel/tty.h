@@ -22,6 +22,10 @@ size_t terminal_get_win_w(void);
 size_t terminal_get_win_h(void);
 void terminal_set_window_bg(uint32_t color);
 
+/* Canvas mode: terminal draws into a WM canvas buffer */
+void terminal_set_canvas(int win_id, uint32_t *canvas, int pw, int ph);
+void terminal_clear_canvas(void);
+
 /* Color functions */
 void terminal_setcolor(enum vga_color fg, enum vga_color bg);
 void terminal_resetcolor(void);

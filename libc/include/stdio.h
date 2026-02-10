@@ -20,6 +20,8 @@
 #define KEY_PGDN    ((char)0xB7)
 #define KEY_DEL     ((char)0xB8)
 #define KEY_INS     ((char)0xB9)
+#define KEY_ALT_TAB ((char)0xBA)
+#define KEY_SUPER   ((char)0xBB)
 
 /* Keyboard layouts */
 #define KB_LAYOUT_FR  0

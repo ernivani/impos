@@ -85,6 +85,16 @@ int fs_chown(const char* path, uint16_t uid, uint16_t gid);
 int fs_create_symlink(const char* target, const char* linkname);
 int fs_readlink(const char* path, char* buf, size_t bufsize);
 
+/* Directory enumeration for GUI apps */
+typedef struct {
+    char     name[MAX_NAME_LEN];
+    uint8_t  type;       /* INODE_FILE, INODE_DIR, etc */
+    uint32_t size;
+    uint32_t inode;
+} fs_dir_entry_info_t;
+
+int fs_enumerate_directory(fs_dir_entry_info_t *out, int max, int show_dot);
+
 /* Helper functions for shell autocompletion */
 uint32_t fs_get_cwd_inode(void);
 int fs_read_inode(uint32_t inode_num, inode_t* out_inode);

@@ -3,31 +3,32 @@
 
 #include <stdint.h>
 #include <kernel/gfx.h>
+#include <kernel/ui_theme.h>
 
-/* impOS Mono — pure black, ultra-minimal */
-#define DT_BG            0x000000
-#define DT_SURFACE       GFX_RGB(20, 20, 20)
-#define DT_BORDER        GFX_RGB(30, 30, 30)
-#define DT_TEXT           GFX_RGB(230, 230, 230)
-#define DT_TEXT_DIM       GFX_RGB(51, 51, 51)
-#define DT_TEXT_MED       GFX_RGB(178, 178, 178)
-#define DT_TEXT_SUB       GFX_RGB(100, 100, 100)
-#define DT_WIN_BG         0x000000
-#define DT_TASKBAR_BG    GFX_RGB(15, 15, 15)
-#define DT_DOCK_PILL     GFX_RGB(8, 8, 8)
-#define DT_ICON          GFX_RGB(190, 190, 190)
-#define DT_ICON_HI       GFX_RGB(255, 255, 255)
-#define DT_ICON_DIM      GFX_RGB(90, 90, 90)
-#define DT_DOT           GFX_RGB(128, 128, 128)
-#define DT_SEL_BG        GFX_RGB(30, 30, 30)
-#define DT_FIELD_BG      GFX_RGB(20, 20, 20)
-#define DT_FIELD_BORDER  GFX_RGB(30, 30, 30)
-#define DT_FIELD_FOCUS   GFX_RGB(76, 76, 76)
-#define DT_FIELD_PH      GFX_RGB(50, 50, 50)
-#define DT_ERROR         GFX_RGB(180, 60, 60)
+/* Theme color aliases (legacy — prefer ui_theme.* directly) */
+#define DT_BG            (ui_theme.desktop_bg)
+#define DT_SURFACE       (ui_theme.surface)
+#define DT_BORDER        (ui_theme.border)
+#define DT_TEXT           (ui_theme.text_primary)
+#define DT_TEXT_DIM       (ui_theme.text_dim)
+#define DT_TEXT_MED       (ui_theme.text_secondary)
+#define DT_TEXT_SUB       (ui_theme.text_sub)
+#define DT_WIN_BG         (ui_theme.win_bg)
+#define DT_TASKBAR_BG    (ui_theme.taskbar_bg)
+#define DT_DOCK_PILL     (ui_theme.dock_pill_bg)
+#define DT_ICON          (ui_theme.icon)
+#define DT_ICON_HI       (ui_theme.icon_hi)
+#define DT_ICON_DIM      (ui_theme.icon_dim)
+#define DT_DOT           (ui_theme.dot)
+#define DT_SEL_BG        (ui_theme.list_sel_bg)
+#define DT_FIELD_BG      (ui_theme.input_bg)
+#define DT_FIELD_BORDER  (ui_theme.input_border)
+#define DT_FIELD_FOCUS   (ui_theme.input_border_focus)
+#define DT_FIELD_PH      (ui_theme.input_placeholder)
+#define DT_ERROR         (ui_theme.text_error)
 
 /* Layout */
-#define TASKBAR_H 48
+#define TASKBAR_H        (ui_theme.taskbar_height)
 
 /* Compat aliases */
 #define DOCK_H    TASKBAR_H

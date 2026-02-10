@@ -132,6 +132,24 @@ void pci_scan_bus(void) {
     }
 }
 
+int pci_enumerate_devices(pci_device_info_t *out, int max) {
+    int count = 0;
+    for (uint16_t bus = 0; bus < 256 && count < max; bus++) {
+        for (uint8_t device = 0; device < 32 && count < max; device++) {
+            uint16_t vendor = pci_config_read_word(bus, device, 0, PCI_VENDOR_ID);
+            if (vendor == 0xFFFF) continue;
+            out[count].bus = (uint8_t)bus;
+            out[count].device = device;
+            out[count].vendor_id = vendor;
+            out[count].device_id = pci_config_read_word(bus, device, 0, PCI_DEVICE_ID);
+            out[count].class_code = pci_config_read_byte(bus, device, 0, PCI_CLASS);
+            out[count].subclass = pci_config_read_byte(bus, device, 0, PCI_SUBCLASS);
+            count++;
+        }
+    }
+    return count;
+}
+
 void pci_initialize(void) {
     /* PCI is initialized on-demand */
 }

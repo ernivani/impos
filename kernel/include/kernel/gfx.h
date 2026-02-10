@@ -42,9 +42,21 @@ void gfx_blend_pixel(int x, int y, uint32_t color);
 void gfx_fill_rect_alpha(int x, int y, int w, int h, uint32_t color);
 void gfx_draw_char_alpha(int x, int y, char c, uint32_t fg_with_alpha);
 
+/* Buffer-targeted drawing (arbitrary uint32_t buffer, not backbuffer) */
+void gfx_buf_put_pixel(uint32_t *buf, int bw, int bh, int x, int y, uint32_t color);
+void gfx_buf_fill_rect(uint32_t *buf, int bw, int bh, int x, int y, int w, int h, uint32_t color);
+void gfx_buf_draw_rect(uint32_t *buf, int bw, int bh, int x, int y, int w, int h, uint32_t color);
+void gfx_buf_draw_line(uint32_t *buf, int bw, int bh, int x0, int y0, int x1, int y1, uint32_t color);
+void gfx_buf_draw_char(uint32_t *buf, int bw, int bh, int px, int py, char c, uint32_t fg, uint32_t bg);
+void gfx_buf_draw_string(uint32_t *buf, int bw, int bh, int px, int py, const char *s, uint32_t fg, uint32_t bg);
+void gfx_blit_buffer(int dst_x, int dst_y, uint32_t *src, int sw, int sh);
+
 /* Mouse cursor rendering (draws directly to framebuffer) */
 void gfx_draw_mouse_cursor(int x, int y);
 void gfx_restore_mouse_cursor(void);
+
+/* RAM detection */
+uint32_t gfx_get_system_ram_mb(void);
 
 #define GFX_RGB(r,g,b) (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))
 #define GFX_RGBA(r,g,b,a) (((uint32_t)(a)<<24)|((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))

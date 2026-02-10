@@ -3,7 +3,7 @@
 #include <string.h>
 
 #define HEAP_MAGIC 0xBEEF
-#define HEAP_MAX   (32 * 1024 * 1024)  /* 32 MB */
+#define HEAP_MAX   (512 * 1024 * 1024)  /* 512 MB */
 #define ALIGN(x)   (((x) + 7) & ~7)
 
 typedef struct block_header {
@@ -76,6 +76,15 @@ void* malloc(size_t size) {
     if (!block) return NULL;
 
     return (void*)(block + 1);
+}
+
+size_t heap_used(void) {
+    if (!heap_end) return 0;
+    return (size_t)(heap_end - (char*)_heap_start);
+}
+
+size_t heap_total(void) {
+    return HEAP_MAX;
 }
 
 void free(void* ptr) {
