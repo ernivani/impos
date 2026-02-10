@@ -119,7 +119,7 @@ int udp_recv(uint16_t port, uint8_t* buf, size_t* len,
     if (!b) return -1;
 
     uint32_t start = pit_get_ticks();
-    uint32_t timeout_ticks = timeout_ms / 10;
+    uint32_t timeout_ticks = timeout_ms * 120 / 1000;
 
     while (1) {
         /* Process incoming packets */

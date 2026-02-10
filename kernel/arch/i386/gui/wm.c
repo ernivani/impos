@@ -5,6 +5,7 @@
 #include <kernel/idt.h>
 #include <kernel/ui_theme.h>
 #include <kernel/tty.h>
+#include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +25,7 @@ static uint8_t prev_buttons;
 /* Resize state */
 static int resizing = -1;
 static int resize_edge;  /* bitmask: 1=left, 2=right, 4=top, 8=bottom */
-static int resize_ox, resize_oy, resize_ow, resize_oh;
+static int resize_ox, resize_oy, resize_ow, resize_oh, resize_orig_x, resize_orig_y;
 
 /* Close / dock action flags */
 static volatile int close_requested;
@@ -36,8 +37,20 @@ static int dock_hover_idx = -1;
 /* Background draw callback */
 static void (*bg_draw_fn)(void) = 0;
 
+/* Cached background (gradient + menubar + dock) */
+static uint32_t *bg_cache = 0;
+static int bg_cache_valid = 0;
+
+/* Dirty flag: set when something visual changed, cleared after composite */
+static volatile int composite_needed = 0;
+
+/* Throttle compositing during drag/resize to ~30fps */
+static uint32_t last_drag_composite_tick = 0;
+
 void wm_initialize(void) {
     memset(windows, 0, sizeof(windows));
+    for (int i = 0; i < WM_MAX_WINDOWS; i++)
+        windows[i].task_id = -1;
     win_count = 0;
     next_id = 1;
     dragging = -1;
@@ -45,6 +58,25 @@ void wm_initialize(void) {
     prev_buttons = 0;
     close_requested = 0;
     dock_action = 0;
+    bg_cache_valid = 0;
+    if (!bg_cache) {
+        bg_cache = malloc(gfx_height() * gfx_pitch());
+    }
+    /* Track WM's own memory usage (bg_cache + backbuffer) */
+    task_set_mem(TASK_WM, (int)(gfx_height() * gfx_pitch() * 2 / 1024));
+}
+
+void wm_invalidate_bg(void) {
+    bg_cache_valid = 0;
+    composite_needed = 1;
+}
+
+void wm_mark_dirty(void) {
+    composite_needed = 1;
+}
+
+int wm_is_dirty(void) {
+    return composite_needed;
 }
 
 static wm_window_t* find_window(int id) {
@@ -83,6 +115,13 @@ int wm_create_window(int x, int y, int w, int h, const char *title) {
         win->canvas_h = 0;
     }
 
+    /* Auto-register as a tracked process */
+    win->task_id = task_register(title, 1, win->id);
+
+    /* Track canvas memory on the task */
+    if (win->task_id >= 0 && win->canvas_w > 0 && win->canvas_h > 0)
+        task_set_mem(win->task_id, (win->canvas_w * win->canvas_h * 4) / 1024);
+
     /* Push to front of z-order */
     for (int i = win_count; i > 0; i--)
         win_order[i] = win_order[i - 1];
@@ -98,6 +137,12 @@ void wm_destroy_window(int id) {
     for (int i = 0; i < win_count; i++)
         if (windows[i].id == id) { idx = i; break; }
     if (idx < 0) return;
+
+    /* Auto-unregister tracked process */
+    if (windows[idx].task_id >= 0) {
+        task_unregister(windows[idx].task_id);
+        windows[idx].task_id = -1;
+    }
 
     /* Free canvas */
     if (windows[idx].canvas) {
@@ -187,6 +232,11 @@ int wm_get_window_count(void) { return win_count; }
 wm_window_t* wm_get_window_by_index(int idx) {
     if (idx < 0 || idx >= win_count) return 0;
     return &windows[idx];
+}
+
+int wm_get_task_id(int win_id) {
+    wm_window_t *w = find_window(win_id);
+    return w ? w->task_id : -1;
 }
 
 void wm_cycle_focus(void) {
@@ -305,83 +355,92 @@ void wm_resize_window(int id, int new_w, int new_h) {
     w->w = new_w;
     w->h = new_h;
 
+    /* Update memory tracking for this window's task */
+    if (w->task_id >= 0)
+        task_set_mem(w->task_id, (new_cw * new_ch * 4) / 1024);
+
     /* Update terminal if it's bound to this window's canvas */
     terminal_notify_canvas_resize(id, new_canvas, new_cw, new_ch);
 }
 
 /* ═══ Drawing ═════════════════════════════════════════════════ */
 
-static void draw_titlebar_button_circle(int cx, int cy, int r, uint32_t color) {
-    for (int dy = -r; dy <= r; dy++)
-        for (int dx = -r; dx <= r; dx++)
-            if (dx * dx + dy * dy <= r * r)
-                gfx_put_pixel(cx + dx, cy + dy, color);
-}
-
 static void draw_window(wm_window_t *w) {
     if (!(w->flags & WM_WIN_VISIBLE) || (w->flags & WM_WIN_MINIMIZED)) return;
     int focused = (w->flags & WM_WIN_FOCUSED) != 0;
 
+    /* Cheap shadow: 2px dark border offset (no alpha blending) */
+    gfx_fill_rect(w->x + 2, w->y + 2, w->w, w->h, GFX_RGB(8, 8, 12));
+
     /* Window body */
     gfx_fill_rect(w->x, w->y, w->w, w->h, ui_theme.win_body_bg);
+
+    /* Title bar */
+    uint32_t hdr = focused ? ui_theme.win_header_focused : ui_theme.win_header_bg;
+    gfx_fill_rect(w->x, w->y, w->w, WM_TITLEBAR_H, hdr);
+
+    /* Separator line below titlebar */
+    gfx_fill_rect(w->x, w->y + WM_TITLEBAR_H - 1, w->w, 1,
+                  focused ? GFX_RGB(60, 60, 80) : ui_theme.win_border);
 
     /* Blit canvas content into body area */
     if (w->canvas)
         gfx_blit_buffer(w->x + WM_BORDER, w->y + WM_TITLEBAR_H,
                          w->canvas, w->canvas_w, w->canvas_h);
 
-    /* Title bar */
-    uint32_t hdr = focused ? ui_theme.win_header_focused : ui_theme.win_header_bg;
-    gfx_fill_rect(w->x, w->y, w->w, WM_TITLEBAR_H, hdr);
-
-    /* Bottom border of title bar */
-    gfx_fill_rect(w->x, w->y + WM_TITLEBAR_H - 1, w->w, 1, ui_theme.win_border);
-
-    /* Window outer border */
+    /* Window border */
     gfx_draw_rect(w->x, w->y, w->w, w->h,
-                  focused ? GFX_RGB(80, 80, 80) : ui_theme.win_border);
+                  focused ? GFX_RGB(90, 90, 110) : ui_theme.win_border);
 
-    /* macOS traffic light buttons (left-aligned): close, minimize, maximize */
+    /* macOS traffic light buttons */
     int btn_y = w->y + WM_TITLEBAR_H / 2;
     int r = WM_BTN_R;
 
-    /* Close button (leftmost) */
     int close_cx = w->x + 8 + r;
-    uint32_t cc = focused ? 0xFC615D : GFX_RGB(100, 50, 50);
-    draw_titlebar_button_circle(close_cx, btn_y, r, cc);
+    gfx_fill_circle(close_cx, btn_y, r, focused ? 0xFC615D : GFX_RGB(70, 65, 75));
 
-    /* Minimize button */
     int min_cx = close_cx + 20;
-    uint32_t min_c = focused ? 0xFDBB2D : GFX_RGB(100, 90, 30);
-    draw_titlebar_button_circle(min_cx, btn_y, r, min_c);
+    gfx_fill_circle(min_cx, btn_y, r, focused ? 0xFDBB2D : GFX_RGB(70, 65, 75));
 
-    /* Maximize button */
     int max_cx = min_cx + 20;
-    uint32_t max_c = focused ? 0x27CA40 : GFX_RGB(50, 100, 50);
-    draw_titlebar_button_circle(max_cx, btn_y, r, max_c);
+    gfx_fill_circle(max_cx, btn_y, r, focused ? 0x27CA40 : GFX_RGB(70, 65, 75));
 
-    /* Title text (centered in remaining space after buttons) */
+    /* Title text (centered) */
     int tw = (int)strlen(w->title) * FONT_W;
+    int tx = w->x + (w->w - tw) / 2;
     int title_area_left = max_cx + r + 8;
-    int title_area_right = w->x + w->w - 8;
-    int tx = title_area_left + (title_area_right - title_area_left) / 2 - tw / 2;
     if (tx < title_area_left) tx = title_area_left;
     int ty = w->y + (WM_TITLEBAR_H - FONT_H) / 2;
-    gfx_draw_string(tx, ty, w->title, ui_theme.win_header_text, hdr);
+    uint32_t tc = focused ? ui_theme.win_header_text : ui_theme.text_sub;
+    gfx_draw_string(tx, ty, w->title, tc, hdr);
 }
 
 void wm_composite(void) {
-    /* Background */
-    gfx_clear(0);
-    if (bg_draw_fn)
-        bg_draw_fn();
+    composite_needed = 0;
+    uint32_t *bb = gfx_backbuffer();
+    uint32_t total = gfx_height() * gfx_pitch();
+
+    /* Build or restore cached background (gradient + menubar) */
+    if (!bg_cache_valid && bg_cache) {
+        gfx_clear(0);
+        if (bg_draw_fn)
+            bg_draw_fn();
+        memcpy(bg_cache, bb, total);
+        bg_cache_valid = 1;
+    } else if (bg_cache) {
+        memcpy(bb, bg_cache, total);
+    } else {
+        gfx_clear(0);
+        if (bg_draw_fn)
+            bg_draw_fn();
+    }
 
     /* Draw windows back-to-front */
     for (int i = win_count - 1; i >= 0; i--) {
         draw_window(&windows[win_order[i]]);
     }
 
-    /* Dock */
+    /* Dock always on top of windows */
     desktop_draw_dock();
 
     /* Flip to framebuffer */
@@ -487,14 +546,18 @@ void wm_mouse_idle(void) {
             int new_x = w->x, new_y = w->y;
 
             if (resize_edge & 2) new_w = resize_ow + (mx - resize_ox); /* right */
-            if (resize_edge & 1) { new_w = resize_ow - (mx - resize_ox); new_x = w->x + (mx - resize_ox); } /* left */
+            if (resize_edge & 1) { new_w = resize_ow - (mx - resize_ox); new_x = resize_orig_x + (mx - resize_ox); } /* left */
             if (resize_edge & 8) new_h = resize_oh + (my - resize_oy); /* bottom */
-            if (resize_edge & 4) { new_h = resize_oh - (my - resize_oy); new_y = w->y + (my - resize_oy); } /* top */
+            if (resize_edge & 4) { new_h = resize_oh - (my - resize_oy); new_y = resize_orig_y + (my - resize_oy); } /* top */
 
             if (new_w >= w->min_w && new_h >= w->min_h) {
-                w->x = new_x; w->y = new_y;
-                wm_resize_window(w->id, new_w, new_h);
-                wm_composite();
+                uint32_t now = pit_get_ticks();
+                if (now - last_drag_composite_tick >= 3) {
+                    w->x = new_x; w->y = new_y;
+                    wm_resize_window(w->id, new_w, new_h);
+                    wm_composite();
+                    last_drag_composite_tick = now;
+                }
             }
         } else {
             resizing = -1;
@@ -512,7 +575,11 @@ void wm_mouse_idle(void) {
             if (w->y < 0) w->y = 0;
             if (w->y > (int)gfx_height() - WM_TITLEBAR_H)
                 w->y = (int)gfx_height() - WM_TITLEBAR_H;
-            wm_composite();
+            uint32_t now = pit_get_ticks();
+            if (now - last_drag_composite_tick >= 3) {
+                wm_composite();
+                last_drag_composite_tick = now;
+            }
         } else {
             dragging = -1;
             wm_composite();
@@ -560,6 +627,7 @@ void wm_mouse_idle(void) {
                 resize_edge = edge;
                 resize_ox = mx; resize_oy = my;
                 resize_ow = w->w; resize_oh = w->h;
+                resize_orig_x = w->x; resize_orig_y = w->y;
                 return;
             }
 

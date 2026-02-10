@@ -30,17 +30,6 @@ static int ring_read(tcp_ring_t* r, uint8_t* buf, size_t len) {
     return nread;
 }
 
-static int ring_peek(tcp_ring_t* r, uint8_t* buf, size_t len, size_t offset) {
-    size_t nread = 0;
-    size_t pos = (r->tail + offset) % TCP_BUFFER_SIZE;
-    size_t avail = r->count > offset ? r->count - offset : 0;
-    while (nread < len && nread < avail) {
-        buf[nread++] = r->buf[pos];
-        pos = (pos + 1) % TCP_BUFFER_SIZE;
-    }
-    return nread;
-}
-
 /* TCP checksum with pseudo-header */
 static uint16_t tcp_checksum(const uint8_t src_ip[4], const uint8_t dst_ip[4],
                               const uint8_t* tcp_pkt, size_t tcp_len) {
@@ -182,7 +171,7 @@ int tcp_recv(int idx, uint8_t* buf, size_t len, uint32_t timeout_ms) {
     tcb_t* tcb = &tcbs[idx];
 
     uint32_t start = pit_get_ticks();
-    uint32_t timeout_ticks = timeout_ms / 10;
+    uint32_t timeout_ticks = timeout_ms * 120 / 1000;
 
     while (1) {
         net_process_packets();

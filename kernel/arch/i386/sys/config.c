@@ -15,7 +15,7 @@ void config_initialize(void) {
 
     /* Set default values */
     memset(&sys_config, 0, sizeof(system_config_t));
-    sys_config.keyboard_layout = KB_LAYOUT_FR;  /* Default to French AZERTY */
+    sys_config.keyboard_layout = KB_LAYOUT_FR;
     sys_config.datetime.year = 2026;
     sys_config.datetime.month = 2;
     sys_config.datetime.day = 7;

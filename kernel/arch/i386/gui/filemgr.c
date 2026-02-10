@@ -23,6 +23,9 @@ static int file_count;
 
 static int w_path_label, w_list;
 
+/* Saved cwd for restore on close */
+static char fm_orig_cwd[512];
+
 static void fm_load_dir(ui_window_t *win) {
     entry_count = fs_enumerate_directory(entries, FM_MAX_ENTRIES, 0);
     file_count = 0;
@@ -77,7 +80,7 @@ static void on_activate(ui_window_t *win, int idx) {
     }
 }
 
-static void fm_on_event(ui_window_t *win, ui_event_t *ev) {
+void app_filemgr_on_event(ui_window_t *win, ui_event_t *ev) {
     if (ev->type == UI_EVENT_KEY_PRESS) {
         if (ev->key.key == '\b') {
             fs_change_directory("..");
@@ -86,18 +89,23 @@ static void fm_on_event(ui_window_t *win, ui_event_t *ev) {
     }
 }
 
-void app_filemgr(void) {
+void app_filemgr_on_close(ui_window_t *win) {
+    (void)win;
+    /* Restore original directory */
+    fs_change_directory(fm_orig_cwd);
+}
+
+ui_window_t *app_filemgr_create(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
     int win_w = fb_w - 200;
     int win_h = fb_h - TASKBAR_H - 60;
 
     /* Save original directory */
-    char orig_cwd[512];
-    strncpy(orig_cwd, fs_get_cwd(), 511);
-    orig_cwd[511] = '\0';
+    strncpy(fm_orig_cwd, fs_get_cwd(), 511);
+    fm_orig_cwd[511] = '\0';
 
     ui_window_t *win = ui_window_create(100, 20, win_w, win_h, "Files");
-    if (!win) { fs_change_directory(orig_cwd); return; }
+    if (!win) return 0;
 
     int cw, ch;
     wm_get_canvas(win->wm_id, &cw, &ch);
@@ -117,9 +125,18 @@ void app_filemgr(void) {
     if (list) list->list.on_activate = on_activate;
 
     fm_load_dir(win);
-    ui_app_run(win, fm_on_event);
-    ui_window_destroy(win);
 
-    /* Restore original directory */
-    fs_change_directory(orig_cwd);
+    /* Auto-focus first focusable widget */
+    if (win->focused_widget < 0)
+        ui_focus_next(win);
+
+    return win;
+}
+
+void app_filemgr(void) {
+    ui_window_t *win = app_filemgr_create();
+    if (!win) return;
+    ui_app_run(win, app_filemgr_on_event);
+    app_filemgr_on_close(win);
+    ui_window_destroy(win);
 }
