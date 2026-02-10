@@ -6,6 +6,7 @@
 #include <kernel/tty.h>
 #include <kernel/gfx.h>
 #include <kernel/io.h>
+#include <kernel/wm.h>
 
 #include "vga.h"
 
@@ -224,6 +225,8 @@ static void terminal_scroll_up(void) {
 
 void terminal_putchar(char c) {
 	unsigned char uc = c;
+
+	if (canvas_buf) wm_mark_dirty();
 
 	if (c == '\b') {
 		if (terminal_column > 0) {

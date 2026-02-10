@@ -6,6 +6,7 @@
 #include <kernel/fs.h>
 #include <kernel/idt.h>
 #include <kernel/ui_theme.h>
+#include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -165,6 +166,9 @@ int finder_show(void) {
     /* Initial search shows all apps */
     finder_search();
 
+    /* Register Finder as a tracked process */
+    int finder_tid = task_register("Finder", 1, -1);
+
     keyboard_set_idle_callback(finder_idle);
 
     while (1) {
@@ -174,16 +178,19 @@ int finder_show(void) {
 
         /* Check double-ctrl to dismiss */
         if (keyboard_check_double_ctrl()) {
+            if (finder_tid >= 0) task_unregister(finder_tid);
             keyboard_set_idle_callback(0);
             return 0;
         }
 
         if (c == KEY_ESCAPE) {
+            if (finder_tid >= 0) task_unregister(finder_tid);
             keyboard_set_idle_callback(0);
             return 0;
         }
 
         if (c == '\n') {
+            if (finder_tid >= 0) task_unregister(finder_tid);
             keyboard_set_idle_callback(0);
             if (result_count > 0 && result_sel < result_count)
                 return result_actions[result_sel];

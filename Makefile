@@ -5,6 +5,9 @@ export PATH := $(HOME)/opt/cross/bin:$(PATH)
 DISK_IMAGE := impos_disk.img
 DISK_SIZE := 10M
 
+# Use KVM if available and accessible, otherwise fall back to TCG
+KVM_FLAG := $(shell if [ -w /dev/kvm ] 2>/dev/null; then echo "$(KVM_FLAG)"; fi)
+
 .PHONY: all build iso run run-disk run-us clean rebuild clean-disk help
 
 all: iso
@@ -36,7 +39,8 @@ run: iso $(DISK_IMAGE)
 		-boot d \
 		-m 4G \
 		-vga std \
-		-display gtk
+		-display gtk \
+		$(KVM_FLAG)
 
 run-vnc: iso $(DISK_IMAGE)
 	@echo "=== Running ImposOS with VNC display ==="
@@ -49,7 +53,8 @@ run-vnc: iso $(DISK_IMAGE)
 		-m 4G \
 		-vga std \
 		-display vnc=:0 \
-		-k fr
+		-k fr \
+		$(KVM_FLAG)
 
 run-disk: run
 	@# Alias for 'make run'
@@ -64,10 +69,11 @@ run-us: iso $(DISK_IMAGE)
 		-m 4G \
 		-vga std \
 		-display gtk \
-		-k en-us
+		-k en-us \
+		$(KVM_FLAG)
 
 run-gtk: iso
-	qemu-system-i386 -cdrom myos.iso -vga std -m 4G -display gtk
+	qemu-system-i386 -cdrom myos.iso -vga std -m 4G -display gtk $(KVM_FLAG)
 
 clean:
 	./clean.sh

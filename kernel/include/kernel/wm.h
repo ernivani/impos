@@ -36,6 +36,8 @@ typedef struct {
     int restore_x, restore_y, restore_w, restore_h;
     /* Minimum window size */
     int min_w, min_h;
+    /* Associated task tracker id (-1 if none) */
+    int task_id;
 } wm_window_t;
 
 void wm_initialize(void);
@@ -61,6 +63,10 @@ void wm_composite(void);
 /* Invalidate cached background (call after menubar/dock/wallpaper changes) */
 void wm_invalidate_bg(void);
 
+/* Dirty tracking: mark WM as needing a composite, check if composite needed */
+void wm_mark_dirty(void);
+int  wm_is_dirty(void);
+
 /* Process mouse events: drag, click close, focus, dock.
    Called from getchar() idle callback. Returns action if dock was clicked. */
 void wm_mouse_idle(void);
@@ -82,6 +88,7 @@ int  wm_get_dock_hover(void);
 /* Window list accessors */
 int  wm_get_window_count(void);
 wm_window_t* wm_get_window_by_index(int idx);
+int  wm_get_task_id(int win_id);
 
 /* Canvas drawing API (coordinates relative to content area) */
 void wm_fill_rect(int win_id, int x, int y, int w, int h, uint32_t color);

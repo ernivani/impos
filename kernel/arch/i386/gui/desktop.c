@@ -410,7 +410,9 @@ static int register_app(int wm_id, int dock_idx, ui_window_t *ui_win,
             running_apps[i].on_event = on_event;
             running_apps[i].on_close = on_close;
             running_apps[i].is_terminal = 0;
-            running_apps[i].task_id = task_register(app_name, 1, wm_id);
+            running_apps[i].task_id = wm_get_task_id(wm_id);
+            if (running_apps[i].task_id >= 0)
+                task_set_name(running_apps[i].task_id, app_name);
             return i;
         }
     }
@@ -419,8 +421,7 @@ static int register_app(int wm_id, int dock_idx, ui_window_t *ui_win,
 
 static void unregister_app(int idx) {
     if (idx >= 0 && idx < MAX_RUNNING_APPS) {
-        if (running_apps[idx].task_id >= 0)
-            task_unregister(running_apps[idx].task_id);
+        /* Task lifecycle owned by WM — just clear the slot */
         running_apps[idx].active = 0;
     }
 }
@@ -526,28 +527,39 @@ static void desktop_bg_draw(void) {
 /* ═══ Desktop Event Loop (WM-based, multi-window) ══════════════ */
 
 static int active_terminal_win = -1;
-
-/* shell_loop is defined in kernel.c */
-extern void shell_loop(void);
+static int terminal_close_pending = 0;
 
 /* ═══ Unified Idle Callback (Phase 3) ═════════════════════════ */
 
 static void desktop_unified_idle(void) {
+    /* Only attribute ticks to WM when doing actual WM work */
     task_set_current(TASK_WM);
     wm_mouse_idle();
     desktop_update_clock();
+    task_set_current(TASK_IDLE);
 
-    /* Watchdog: check for killed apps */
+    /* Watchdog: check for killed apps (cheap checks stay as IDLE) */
     for (int i = 0; i < MAX_RUNNING_APPS; i++) {
         if (running_apps[i].active && running_apps[i].task_id >= 0 &&
             task_check_killed(running_apps[i].task_id)) {
-            if (running_apps[i].on_close && running_apps[i].ui_win)
-                running_apps[i].on_close(running_apps[i].ui_win);
-            if (running_apps[i].ui_win)
-                ui_window_destroy(running_apps[i].ui_win);
-            unregister_app(i);
-            wm_invalidate_bg();
-            wm_composite();
+            task_set_current(TASK_WM);
+            if (running_apps[i].is_terminal) {
+                shell_fg_app_t *fg = shell_get_fg_app();
+                if (fg && fg->on_close) fg->on_close();
+                desktop_close_terminal();
+                unregister_app(i);
+                wm_invalidate_bg();
+                wm_composite();
+            } else {
+                if (running_apps[i].on_close && running_apps[i].ui_win)
+                    running_apps[i].on_close(running_apps[i].ui_win);
+                if (running_apps[i].ui_win)
+                    ui_window_destroy(running_apps[i].ui_win);
+                unregister_app(i);
+                wm_invalidate_bg();
+                wm_composite();
+            }
+            task_set_current(TASK_IDLE);
         }
     }
 
@@ -638,30 +650,70 @@ static void desktop_unified_idle(void) {
         wm_composite();
     }
 
+    /* Foreground app periodic tick */
+    shell_fg_app_t *fg = shell_get_fg_app();
+    if (fg && fg->on_tick && fg->tick_interval > 0) {
+        static uint32_t last_fg_tick = 0;
+        uint32_t now = pit_get_ticks();
+        if (now - last_fg_tick >= (uint32_t)fg->tick_interval) {
+            last_fg_tick = now;
+            if (fg->task_id >= 0)
+                task_set_current(fg->task_id);
+            fg->on_tick();
+            task_set_current(TASK_IDLE);
+        }
+    }
+
     task_set_current(TASK_IDLE);
 }
 
-/* Idle callback for terminal: process mouse via WM, update clock */
+/* Idle callback for terminal during blocking command execution.
+   Mirrors desktop_unified_idle() so widget apps stay responsive. */
 static void desktop_idle_terminal(void) {
     task_set_current(TASK_WM);
     wm_mouse_idle();
     desktop_update_clock();
+    task_set_current(TASK_IDLE);
 
-    /* Throttled composite — ~30fps to show terminal output without burning CPU */
-    static uint32_t last_composite_tick = 0;
-    uint32_t now = pit_get_ticks();
-    if (now - last_composite_tick >= 4) { /* 120Hz / 4 = 30fps */
-        last_composite_tick = now;
-        wm_composite();
-    }
-
-    if (wm_close_was_requested()) {
-        wm_clear_close_request();
-        if (active_terminal_win >= 0) {
-            keyboard_request_force_exit();
+    /* Watchdog: check for killed apps */
+    for (int i = 0; i < MAX_RUNNING_APPS; i++) {
+        if (running_apps[i].active && running_apps[i].task_id >= 0 &&
+            task_check_killed(running_apps[i].task_id)) {
+            if (running_apps[i].is_terminal) {
+                shell_fg_app_t *fg = shell_get_fg_app();
+                if (fg && fg->on_close) fg->on_close();
+                terminal_close_pending = 1;
+                keyboard_request_force_exit();
+            } else {
+                if (running_apps[i].on_close && running_apps[i].ui_win)
+                    running_apps[i].on_close(running_apps[i].ui_win);
+                if (running_apps[i].ui_win)
+                    ui_window_destroy(running_apps[i].ui_win);
+                unregister_app(i);
+                wm_invalidate_bg();
+            }
         }
     }
 
+    /* Check close request from WM */
+    if (wm_close_was_requested()) {
+        wm_clear_close_request();
+        int fid = wm_get_focused_id();
+        int ri = (fid >= 0) ? find_running_app_by_wm(fid) : -1;
+        if (ri >= 0 && running_apps[ri].is_terminal) {
+            terminal_close_pending = 1;
+            keyboard_request_force_exit();
+        } else if (ri >= 0) {
+            if (running_apps[ri].on_close && running_apps[ri].ui_win)
+                running_apps[ri].on_close(running_apps[ri].ui_win);
+            if (running_apps[ri].ui_win)
+                ui_window_destroy(running_apps[ri].ui_win);
+            unregister_app(ri);
+            wm_invalidate_bg();
+        }
+    }
+
+    /* Check dock action */
     int da = wm_get_dock_action();
     if (da) {
         ui_event_t ev;
@@ -670,6 +722,73 @@ static void desktop_idle_terminal(void) {
         ui_push_event(&ev);
         keyboard_request_force_exit();
         return;
+    }
+
+    /* Detect mouse button transitions for widget dispatch */
+    uint8_t btns = mouse_get_buttons();
+    int mx = mouse_get_x(), my = mouse_get_y();
+    static uint8_t prev_btns_term = 0;
+
+    if ((btns & MOUSE_BTN_LEFT) && !(prev_btns_term & MOUSE_BTN_LEFT)) {
+        ui_event_t ev;
+        ev.type = UI_EVENT_MOUSE_DOWN;
+        ev.mouse.x = mx;
+        ev.mouse.y = my;
+        ev.mouse.wx = 0;
+        ev.mouse.wy = 0;
+        ev.mouse.buttons = btns;
+        ui_push_event(&ev);
+    }
+    if (!(btns & MOUSE_BTN_LEFT) && (prev_btns_term & MOUSE_BTN_LEFT)) {
+        ui_event_t ev;
+        ev.type = UI_EVENT_MOUSE_UP;
+        ev.mouse.x = mx;
+        ev.mouse.y = my;
+        ev.mouse.wx = 0;
+        ev.mouse.wy = 0;
+        ev.mouse.buttons = btns;
+        ui_push_event(&ev);
+    }
+    prev_btns_term = btns;
+
+    /* Check double-ctrl for finder */
+    if (keyboard_check_double_ctrl()) {
+        ui_event_t ev;
+        ev.type = UI_EVENT_KEY_PRESS;
+        ev.key.key = KEY_FINDER;
+        ev.key.ctrl = 0;
+        ev.key.alt = 0;
+        ev.key.shift = 0;
+        ui_push_event(&ev);
+        keyboard_request_force_exit();
+        return;
+    }
+
+    /* Check resize for all running widget app windows */
+    for (int i = 0; i < MAX_RUNNING_APPS; i++) {
+        if (running_apps[i].active && running_apps[i].ui_win)
+            ui_window_check_resize(running_apps[i].ui_win);
+    }
+
+    /* Redraw dirty widget windows */
+    int needs_composite = 0;
+    for (int i = 0; i < MAX_RUNNING_APPS; i++) {
+        if (running_apps[i].active && running_apps[i].ui_win &&
+            running_apps[i].ui_win->dirty) {
+            if (running_apps[i].task_id >= 0)
+                task_set_current(running_apps[i].task_id);
+            ui_window_redraw(running_apps[i].ui_win);
+            needs_composite = 1;
+        }
+    }
+
+    /* Throttled composite — only when something actually changed */
+    static uint32_t last_composite_tick = 0;
+    uint32_t now = pit_get_ticks();
+    if (needs_composite || (wm_is_dirty() && now - last_composite_tick >= 4)) {
+        task_set_current(TASK_WM);
+        last_composite_tick = now;
+        wm_composite();
     }
 
     task_set_current(TASK_IDLE);
@@ -697,8 +816,6 @@ void desktop_open_terminal(void) {
     terminal_set_window_bg(DT_WIN_BG);
     wm_clear_canvas(active_terminal_win, DT_WIN_BG);
     wm_composite();
-
-    keyboard_set_idle_callback(desktop_idle_terminal);
 }
 
 void desktop_close_terminal(void) {
@@ -732,7 +849,7 @@ static void desktop_launch_app(int action) {
     /* If app already running, focus its window */
     if (dock_idx >= 0) {
         int existing = find_running_app_by_dock(dock_idx);
-        if (existing >= 0 && running_apps[existing].ui_win) {
+        if (existing >= 0 && (running_apps[existing].ui_win || running_apps[existing].is_terminal)) {
             wm_focus_window(running_apps[existing].wm_id);
             wm_composite();
             return;
@@ -740,8 +857,14 @@ static void desktop_launch_app(int action) {
     }
 
     switch (action) {
-    case DESKTOP_ACTION_TERMINAL: {
-        /* Terminal is a special blocking case */
+    case DESKTOP_ACTION_TERMINAL:
+    case DESKTOP_ACTION_EDITOR: {
+        /* Non-blocking terminal launch */
+        if (active_terminal_win >= 0) {
+            wm_focus_window(active_terminal_win);
+            wm_composite();
+            break;
+        }
         desktop_open_terminal();
 
         /* Register it so indicator dot shows */
@@ -757,55 +880,19 @@ static void desktop_launch_app(int action) {
             running_apps[ti].on_event = 0;
             running_apps[ti].on_close = 0;
             running_apps[ti].is_terminal = 1;
-            running_apps[ti].task_id = task_register("Terminal", 1, active_terminal_win);
-        }
-
-        /* Blocking shell loop */
-        task_set_current(TASK_SHELL);
-        shell_loop();
-
-        /* Clean up terminal */
-        desktop_close_terminal();
-        if (ti >= 0) {
+            running_apps[ti].task_id = wm_get_task_id(active_terminal_win);
             if (running_apps[ti].task_id >= 0)
-                task_unregister(running_apps[ti].task_id);
-            running_apps[ti].active = 0;
+                task_set_name(running_apps[ti].task_id,
+                              action == DESKTOP_ACTION_EDITOR ? "Editor" : "Terminal");
         }
 
-        /* Restore unified idle and redraw */
-        keyboard_set_idle_callback(desktop_unified_idle);
+        terminal_close_pending = 0;
+        shell_init_interactive();
+        if (action == DESKTOP_ACTION_EDITOR)
+            printf("vi: open a file with 'vi <filename>'\n");
+        shell_draw_prompt();
         wm_composite();
-        break;
-    }
-
-    case DESKTOP_ACTION_EDITOR: {
-        desktop_open_terminal();
-        int ti = -1;
-        for (int i = 0; i < MAX_RUNNING_APPS; i++) {
-            if (!running_apps[i].active) { ti = i; break; }
-        }
-        if (ti >= 0) {
-            running_apps[ti].active = 1;
-            running_apps[ti].wm_id = active_terminal_win;
-            running_apps[ti].dock_index = dock_idx;
-            running_apps[ti].ui_win = 0;
-            running_apps[ti].on_event = 0;
-            running_apps[ti].on_close = 0;
-            running_apps[ti].is_terminal = 1;
-            running_apps[ti].task_id = task_register("Editor", 1, active_terminal_win);
-        }
-        printf("vi: open a file with 'vi <filename>'\n");
-        task_set_current(TASK_SHELL);
-        shell_loop();
-        desktop_close_terminal();
-        if (ti >= 0) {
-            if (running_apps[ti].task_id >= 0)
-                task_unregister(running_apps[ti].task_id);
-            running_apps[ti].active = 0;
-        }
-        keyboard_set_idle_callback(desktop_unified_idle);
-        wm_composite();
-        break;
+        break;  /* Return to event loop — no blocking! */
     }
 
     case DESKTOP_ACTION_FILES: {
@@ -869,6 +956,15 @@ static void desktop_close_focused_app(void) {
     if (ri < 0) return;
 
     running_app_t *app = &running_apps[ri];
+
+    if (app->is_terminal) {
+        shell_fg_app_t *fg = shell_get_fg_app();
+        if (fg && fg->on_close) fg->on_close();
+        desktop_close_terminal();
+        unregister_app(ri);
+        wm_composite();
+        return;
+    }
 
     if (app->on_close && app->ui_win)
         app->on_close(app->ui_win);
@@ -1018,6 +1114,67 @@ int desktop_run(void) {
             /* Check if any app window is focused */
             int fid = wm_get_focused_id();
             int ri = (fid >= 0) ? find_running_app_by_wm(fid) : -1;
+
+            /* Terminal key dispatch (non-blocking at prompt) */
+            if (ri >= 0 && running_apps[ri].is_terminal) {
+                task_set_current(TASK_SHELL);
+
+                /* Check for foreground app first */
+                shell_fg_app_t *fg = shell_get_fg_app();
+                if (fg) {
+                    if (fg->task_id >= 0) task_set_current(fg->task_id);
+                    fg->on_key(c);
+                    wm_composite();
+                    task_set_current(TASK_WM);
+                    continue;
+                }
+
+                if (c == KEY_ESCAPE) {
+                    /* Close terminal */
+                    desktop_close_terminal();
+                    unregister_app(ri);
+                    draw_gradient(fb_w, fb_h);
+                    desktop_draw_menubar();
+                    desktop_draw_dock();
+                    wm_composite();
+                    task_set_current(TASK_WM);
+                    continue;
+                }
+
+                int result = shell_handle_key(c);
+                wm_composite();  /* Show character echo immediately */
+
+                if (result == 1) {
+                    /* Execute command — temporarily blocking */
+                    keyboard_set_idle_callback(desktop_idle_terminal);
+                    shell_history_add(shell_get_command());
+                    config_tick_second();
+                    shell_process_command((char *)shell_get_command());
+                    keyboard_set_idle_callback(desktop_unified_idle);
+
+                    if (shell_exit_requested || terminal_close_pending) {
+                        shell_exit_requested = 0;
+                        terminal_close_pending = 0;
+                        desktop_close_terminal();
+                        unregister_app(ri);
+                        draw_gradient(fb_w, fb_h);
+                        desktop_draw_menubar();
+                        desktop_draw_dock();
+                        wm_composite();
+                    } else if (shell_get_fg_app()) {
+                        /* Non-blocking command running — don't show prompt */
+                        wm_composite();
+                    } else {
+                        shell_draw_prompt();
+                        wm_composite();
+                    }
+                } else if (result == 2) {
+                    shell_draw_prompt();
+                    wm_composite();
+                }
+                task_set_current(TASK_WM);
+                continue;
+            }
 
             if (ri >= 0 && running_apps[ri].ui_win) {
                 /* Set current task for CPU tracking */
