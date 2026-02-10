@@ -15,10 +15,7 @@
 #include <kernel/firewall.h>
 #include <kernel/wm.h>
 #include <kernel/ui_theme.h>
-#include <kernel/filemgr.h>
-#include <kernel/taskmgr.h>
-#include <kernel/settings_app.h>
-#include <kernel/monitor_app.h>
+#include <kernel/state.h>
 
 #define PROMPT      "$ "
 
@@ -113,8 +110,9 @@ static void print_prompt(void) {
     terminal_resetcolor();
 }
 
-/* Shell input loop — runs until exit or Ctrl+D */
-static void shell_loop(void) {
+/* Shell input loop — runs until exit or Ctrl+D.
+   Also called by desktop.c for terminal windows. */
+void shell_loop(void) {
     const char* home = env_get("HOME");
     if (home) fs_change_directory(home);
     else fs_change_directory("/home/root");
@@ -312,75 +310,13 @@ void kernel_main(multiboot_info_t* mbi) {
     mouse_initialize();
     firewall_initialize();
 
-    if (gfx_is_active())
-        login_show_splash();
-
     ata_initialize();
     acpi_initialize();
 
     if (gfx_is_active()) {
-        /* Graphical boot: init subsystems, setup/login, then desktop */
+        /* Graphical boot: init subsystems, then run state machine */
         shell_initialize_subsystems();
-
-        if (shell_needs_setup())
-            login_run_setup();
-        else
-            login_run();
-        desktop_notify_login();
-
-        /* Set up restart point for logout */
-        jmp_buf restart_point;
-        exit_set_restart_point(&restart_point);
-
-        if (setjmp(restart_point) != 0) {
-            /* Returned from logout — re-authenticate */
-            login_run();
-            desktop_notify_login();
-        }
-
-        /* Desktop event loop */
-        while (1) {
-            int action = desktop_run();
-
-            switch (action) {
-            case DESKTOP_ACTION_TERMINAL:
-                desktop_open_terminal();
-                shell_loop();
-                desktop_close_terminal();
-                break;
-
-            case DESKTOP_ACTION_EDITOR:
-                desktop_open_terminal();
-                printf("vi: open a file with 'vi <filename>'\n");
-                shell_loop();
-                desktop_close_terminal();
-                break;
-
-            case DESKTOP_ACTION_FILES:
-                app_filemgr();
-                break;
-
-            case DESKTOP_ACTION_BROWSER:
-                app_taskmgr();
-                break;
-
-            case DESKTOP_ACTION_SETTINGS:
-                app_settings();
-                break;
-
-            case DESKTOP_ACTION_MONITOR:
-                app_monitor();
-                break;
-
-            case DESKTOP_ACTION_POWER:
-                /* Trigger logout via longjmp */
-                exit(0);
-                break;
-
-            default:
-                break;
-            }
-        }
+        state_run();  /* Never returns */
     } else {
         /* Text-mode fallback — original flow */
         shell_initialize();

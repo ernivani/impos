@@ -55,4 +55,13 @@ void desktop_open_terminal(void);
 void desktop_close_terminal(void);
 void desktop_notify_login(void);
 
+/* Dock geometry API — used by wm.c dock_hit() */
+int  desktop_dock_y(void);
+int  desktop_dock_h(void);
+int  desktop_dock_x(void);
+int  desktop_dock_w(void);
+int  desktop_dock_items(void);
+int  desktop_dock_sep_pos(void);
+int  desktop_dock_item_rect(int idx, int *out_x, int *out_y, int *out_w, int *out_h);
+
 #endif
