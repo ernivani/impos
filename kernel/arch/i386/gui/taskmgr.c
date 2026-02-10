@@ -46,7 +46,7 @@ static void refresh_data(ui_window_t *win) {
 
     /* Uptime */
     uint32_t ticks = pit_get_ticks();
-    uint32_t secs = ticks / 100;
+    uint32_t secs = ticks / 120;
     snprintf(up_str, sizeof(up_str), "%dh %dm %ds",
              (int)(secs / 3600), (int)((secs % 3600) / 60), (int)(secs % 60));
     ui_widget_t *ul = ui_get_widget(win, w_up_label);

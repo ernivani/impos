@@ -58,6 +58,9 @@ int  wm_is_maximized(int id);
    Mouse cursor is drawn on top to framebuffer. */
 void wm_composite(void);
 
+/* Invalidate cached background (call after menubar/dock/wallpaper changes) */
+void wm_invalidate_bg(void);
+
 /* Process mouse events: drag, click close, focus, dock.
    Called from getchar() idle callback. Returns action if dock was clicked. */
 void wm_mouse_idle(void);

@@ -16,6 +16,10 @@
 #include <kernel/wm.h>
 #include <kernel/ui_theme.h>
 #include <kernel/state.h>
+#include <kernel/env.h>
+#include <kernel/fs.h>
+#include <kernel/config.h>
+#include <kernel/task.h>
 
 #define PROMPT      "$ "
 
@@ -302,6 +306,9 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Set up GDT, IDT, PIC, PIT before anything else */
     idt_initialize();
+
+    /* Initialize task tracking (before any tasks are created) */
+    task_init();
 
     /* Initialize UI theme */
     ui_theme_init();

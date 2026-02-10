@@ -6,8 +6,12 @@
 #define CONFIG_FILE "/etc/config"
 #define HISTORY_FILE "/etc/history"
 
-#define KB_LAYOUT_US 0
-#define KB_LAYOUT_FR 1
+#ifndef KB_LAYOUT_FR
+#define KB_LAYOUT_FR  0
+#endif
+#ifndef KB_LAYOUT_US
+#define KB_LAYOUT_US  1
+#endif
 
 /* System time and date structure */
 typedef struct {
