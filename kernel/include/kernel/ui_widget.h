@@ -15,6 +15,9 @@
 #define UI_PANEL      7
 #define UI_SEPARATOR  8
 #define UI_CUSTOM     9
+#define UI_TOGGLE     10
+#define UI_ICON_GRID  11
+#define UI_CARD       12
 
 /* Widget flags */
 #define UI_FLAG_FOCUSABLE  0x01
@@ -23,7 +26,7 @@
 #define UI_FLAG_CAPTURING  0x08
 #define UI_FLAG_HOVER      0x10
 
-#define UI_MAX_WIDGETS     32
+#define UI_MAX_WIDGETS     48
 #define UI_TEXT_MAX        128
 #define UI_LIST_MAX_ITEMS   64
 
@@ -107,6 +110,32 @@ typedef struct {
             ui_custom_event_t event;
             void *userdata;
         } custom;
+
+        /* UI_TOGGLE */
+        struct {
+            char text[48];
+            uint8_t on;
+            ui_callback_t on_change;
+        } toggle;
+
+        /* UI_ICON_GRID */
+        struct {
+            int cols;
+            int cell_w, cell_h;
+            int count;
+            int selected;
+            int scroll;
+            const char **labels;
+            void (*draw_icon)(int idx, int x, int y, int sel);
+            ui_callback_t on_activate;
+        } icon_grid;
+
+        /* UI_CARD */
+        struct {
+            char title[48];
+            uint32_t bg_color;
+            int radius;
+        } card;
     };
 } ui_widget_t;
 
@@ -145,9 +174,21 @@ int ui_add_separator(ui_window_t *win, int x, int y, int w);
 int ui_add_custom(ui_window_t *win, int x, int y, int w, int h,
                   ui_custom_draw_t draw_fn, ui_custom_event_t event_fn,
                   void *userdata);
+int ui_add_toggle(ui_window_t *win, int x, int y, int w, int h,
+                  const char *text, int on);
+int ui_add_icon_grid(ui_window_t *win, int x, int y, int w, int h,
+                     int cols, int cell_w, int cell_h,
+                     const char **labels, int count,
+                     void (*draw_icon)(int idx, int x, int y, int sel));
+int ui_add_card(ui_window_t *win, int x, int y, int w, int h,
+                const char *title, uint32_t bg_color, int radius);
 
 /* Widget access */
 ui_widget_t *ui_get_widget(ui_window_t *win, int idx);
+
+/* Widget visibility helpers */
+void ui_widget_set_visible(ui_window_t *win, int idx, int visible);
+void ui_widget_set_visible_range(ui_window_t *win, int from, int to, int visible);
 
 /* Event dispatch */
 void ui_dispatch_event(ui_window_t *win, ui_event_t *ev);

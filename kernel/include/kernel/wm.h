@@ -99,6 +99,8 @@ void wm_draw_rect(int win_id, int x, int y, int w, int h, uint32_t color);
 void wm_draw_line(int win_id, int x0, int y0, int x1, int y1, uint32_t color);
 void wm_clear_canvas(int win_id, uint32_t color);
 uint32_t *wm_get_canvas(int win_id, int *out_w, int *out_h);
+void wm_fill_rounded_rect(int win_id, int x, int y, int w, int h, int r, uint32_t color);
+void wm_fill_rounded_rect_alpha(int win_id, int x, int y, int w, int h, int r, uint32_t color, uint8_t a);
 
 /* Background draw callback (called by wm_composite after clearing) */
 void wm_set_bg_draw(void (*fn)(void));

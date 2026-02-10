@@ -66,6 +66,20 @@ typedef struct {
     uint32_t progress_fill;
     uint32_t progress_warn;
 
+    /* Toggle */
+    uint32_t toggle_on_bg;
+    uint32_t toggle_off_bg;
+    uint32_t toggle_handle;
+
+    /* Card */
+    uint32_t card_bg;
+    uint32_t card_border;
+
+    /* Semantic */
+    uint32_t danger;
+    uint32_t success;
+    uint32_t icon_grid_sel;
+
     /* Accent */
     uint32_t accent;
     uint32_t dot;
