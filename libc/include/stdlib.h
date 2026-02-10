@@ -50,6 +50,9 @@ ldiv_t ldiv(long numer, long denom);
 void srand(unsigned int seed);
 int rand(void);
 
+size_t heap_used(void);
+size_t heap_total(void);
+
 void qsort(void* base, size_t nmemb, size_t size, int (*compar)(const void*, const void*));
 void* bsearch(const void* key, const void* base, size_t nmemb, size_t size,
               int (*compar)(const void*, const void*));

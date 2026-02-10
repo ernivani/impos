@@ -68,4 +68,16 @@ int pci_find_device(uint16_t vendor_id, uint16_t device_id, pci_device_t* dev);
 /* Scan all PCI devices */
 void pci_scan_bus(void);
 
+/* PCI enumeration for GUI apps */
+typedef struct {
+    uint8_t  bus;
+    uint8_t  device;
+    uint16_t vendor_id;
+    uint16_t device_id;
+    uint8_t  class_code;
+    uint8_t  subclass;
+} pci_device_info_t;
+
+int pci_enumerate_devices(pci_device_info_t *out, int max);
+
 #endif

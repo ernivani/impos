@@ -14,6 +14,7 @@ qemu-system-$(./target-triplet-to-arch.sh $HOST) \
     -drive file=impos_disk.img,format=raw,if=ide \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0 \
-    -display vnc=:0 \
-    -m 256M \
-    -vga std
+    -boot d \
+    -m 4G \
+    -vga std \
+    -display gtk

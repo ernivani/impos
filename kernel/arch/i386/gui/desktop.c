@@ -11,6 +11,7 @@
 #include <kernel/io.h>
 #include <kernel/mouse.h>
 #include <kernel/wm.h>
+#include <kernel/ui_theme.h>
 #include <string.h>
 #include <stdio.h>
 #include "font8x16.h"
@@ -268,7 +269,7 @@ static int input_field(int fx, int fy, int fw,
         if (c == '\n') { buf[len] = '\0'; return len; }
         if (c == '\b') { if (len > 0) len--; continue; }
         if (c == KEY_ESCAPE) { buf[len] = '\0'; return -1; }
-        if ((unsigned char)c >= 0xB0 && (unsigned char)c <= 0xB9) continue;
+        if ((unsigned char)c >= 0xB0 && (unsigned char)c <= 0xBB) continue;
         if (c >= 32 && c < 127 && len < max_len - 1)
             buf[len++] = c;
     }
@@ -447,6 +448,11 @@ static void draw_login(int w, int h, int sel, int n, const char *err) {
     }
 }
 
+static void desktop_idle_login(void) {
+    if (!mouse_poll()) return;
+    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+}
+
 int desktop_login(void) {
     int w = (int)gfx_width(), h = (int)gfx_height();
     int num = user_count();
@@ -457,6 +463,8 @@ int desktop_login(void) {
         if (u && u->uid != 0) { sel = i; break; }
     }
     char pw[64], err[64] = {0};
+
+    keyboard_set_idle_callback(desktop_idle_login);
 
     while (1) {
         draw_login(w, h, sel, num, err);
@@ -485,7 +493,7 @@ int desktop_login(void) {
             if (c == '\b') { if (pl > 0) pl--; continue; }
             if (c == KEY_LEFT)  { sel = (sel + num - 1) % num; goto redraw; }
             if (c == KEY_RIGHT) { sel = (sel + 1) % num;       goto redraw; }
-            if ((unsigned char)c >= 0xB0 && (unsigned char)c <= 0xB9) continue;
+            if ((unsigned char)c >= 0xB0 && (unsigned char)c <= 0xBB) continue;
             if (c == KEY_ESCAPE) continue;
             if (c >= 32 && c < 127 && pl < 63)
                 pw[pl++] = c;
@@ -497,6 +505,8 @@ int desktop_login(void) {
                 if (auth) {
                     user_set_current(auth->username);
                     fs_change_directory(auth->home);
+                    keyboard_set_idle_callback(0);
+                    gfx_restore_mouse_cursor();
                     /* Fade out login screen */
                     desktop_fade_out(0, 0, w, h, 6, 30);
                     desktop_first_show = 1;
@@ -551,32 +561,21 @@ static void icon_terminal(int x, int y, int sel) {
     gfx_fill_rect(x + 10, y + 14, 5, 1, green);
 }
 
-static void icon_globe(int x, int y, int sel) {
-    /* Blue globe */
-    uint32_t rim  = sel ? GFX_RGB(90, 160, 255) : GFX_RGB(66, 133, 244);
-    uint32_t line = sel ? GFX_RGB(70, 130, 220) : GFX_RGB(50, 100, 180);
-    int cx2 = x + 10, cy2 = y + 10, r = 7;
+static void icon_activity(int x, int y, int sel) {
+    /* Activity monitor — bar chart */
+    uint32_t c1 = sel ? GFX_RGB(100, 200, 255) : GFX_RGB(66, 150, 220);
+    uint32_t c2 = sel ? GFX_RGB(80, 220, 140)  : GFX_RGB(60, 180, 110);
+    uint32_t c3 = sel ? GFX_RGB(255, 160, 80)  : GFX_RGB(220, 130, 60);
+    uint32_t base_c = sel ? GFX_RGB(120, 120, 120) : GFX_RGB(80, 80, 80);
 
-    draw_circle_ring(cx2, cy2, r, 1, rim);
-    /* Equator */
-    gfx_fill_rect(cx2 - r + 2, cy2, (r - 2) * 2, 1, line);
-    /* Vertical meridian */
-    for (int dy = -r + 2; dy <= r - 2; dy++)
-        gfx_put_pixel(cx2, cy2 + dy, line);
-    /* Side meridians */
-    for (int dy = -r + 2; dy <= r - 2; dy++) {
-        int half = r - 2;
-        if (half <= 0) continue;
-        int adj = (half * half - dy * dy);
-        if (adj < 0) continue;
-        int ex = 1;
-        while (ex * ex < adj) ex++;
-        ex = ex * 2 / 3;
-        if (ex > 0) {
-            gfx_put_pixel(cx2 - ex, cy2 + dy, line);
-            gfx_put_pixel(cx2 + ex, cy2 + dy, line);
-        }
-    }
+    /* Base line */
+    gfx_fill_rect(x + 2, y + 17, 16, 1, base_c);
+
+    /* 4 bars of varying height */
+    gfx_fill_rect(x + 3,  y + 10, 3, 7, c1);
+    gfx_fill_rect(x + 7,  y + 5,  3, 12, c2);
+    gfx_fill_rect(x + 11, y + 8,  3, 9, c3);
+    gfx_fill_rect(x + 15, y + 3,  3, 14, c1);
 }
 
 static void icon_pencil(int x, int y, int sel) {
@@ -699,7 +698,7 @@ static void draw_clock(int fb_w, int fb_h) {
     gfx_draw_string_nobg(fb_w - dw - 40, dy, datebuf, DT_TEXT_DIM);
 
     char infobuf[64];
-    snprintf(infobuf, sizeof(infobuf), "%dx%d // 16MB RAM", fb_w, fb_h);
+    snprintf(infobuf, sizeof(infobuf), "%dx%d // %dMB RAM", fb_w, fb_h, (int)gfx_get_system_ram_mb());
     int iw = (int)strlen(infobuf) * FONT_W;
     gfx_draw_string_nobg(fb_w - iw - 40, dy + 18, infobuf, DT_TEXT_DIM);
 }
@@ -712,7 +711,7 @@ static void draw_clock(int fb_w, int fb_h) {
 static int dock_sel = 1;
 
 static const char *dock_labels[DOCK_ITEMS] = {
-    "Files", "Terminal", "Browser", "Editor",
+    "Files", "Terminal", "Activity", "Editor",
     "Settings", "Monitor"
 };
 
@@ -724,7 +723,7 @@ static const int dock_actions[DOCK_ITEMS] = {
 typedef void (*icon_fn)(int x, int y, int sel);
 
 static icon_fn dock_icons[DOCK_ITEMS] = {
-    icon_folder, icon_terminal, icon_globe, icon_pencil,
+    icon_folder, icon_terminal, icon_activity, icon_pencil,
     icon_gear, icon_monitor
 };
 
@@ -752,20 +751,24 @@ void desktop_draw_dock(void) {
             ix += sep_w;
         }
 
+        int hover = wm_get_dock_hover();
         int selected = (i == dock_sel);
+        int highlighted = selected || (i == hover);
 
         /* Selection highlight bg */
-        if (selected)
+        if (highlighted)
             draw_rounded_rect(ix, dock_y + 2, item_w - 2, 30, 6, DT_SEL_BG);
 
         /* Center icon (20x20) inside cell (34x34): offset = (34-20)/2 = 7 */
-        dock_icons[i](ix + 7, dock_y + 7, selected);
+        dock_icons[i](ix + 7, dock_y + 7, highlighted);
 
         ix += item_w + gap;
     }
 
-    /* Label tooltip above dock for selected */
-    const char *label = dock_labels[dock_sel];
+    /* Label tooltip above dock: prefer hover, fallback to keyboard selection */
+    int label_idx = wm_get_dock_hover();
+    if (label_idx < 0) label_idx = dock_sel;
+    const char *label = dock_labels[label_idx];
     int lw = (int)strlen(label) * FONT_W;
     gfx_draw_string_nobg(fb_w / 2 - lw / 2, ty - 18, label, DT_TEXT_SUB);
 
@@ -812,6 +815,13 @@ void desktop_draw_chrome(void) {
     gfx_flip();
 }
 
+/* ═══ Background draw callback for WM ══════════════════════════ */
+
+static void desktop_bg_draw(void) {
+    int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
+    draw_clock(fb_w, fb_h);
+}
+
 /* ═══ Desktop Event Loop (WM-based) ════════════════════════════ */
 
 static int active_terminal_win = -1;
@@ -828,6 +838,9 @@ static void desktop_idle_main(void) {
 static void desktop_idle_mouse(void) {
     wm_mouse_idle();
 
+    /* Always recomposite so terminal canvas output is displayed */
+    wm_composite();
+
     /* If close was requested on the terminal window, trigger shell exit */
     if (wm_close_was_requested()) {
         wm_clear_close_request();
@@ -842,6 +855,9 @@ int desktop_run(void) {
 
     /* Initialize WM */
     wm_initialize();
+
+    /* Set background draw callback so WM composite redraws clock */
+    wm_set_bg_draw(desktop_bg_draw);
 
     /* Draw desktop background + dock via WM composite */
     gfx_clear(0);
@@ -908,6 +924,13 @@ int desktop_run(void) {
             gfx_restore_mouse_cursor();
             return DESKTOP_ACTION_POWER;
         }
+        if (c == KEY_ALT_TAB) {
+            wm_cycle_focus();
+            continue;
+        }
+        if (c == KEY_SUPER) {
+            continue; /* Already on desktop — no-op */
+        }
     }
 }
 
@@ -917,25 +940,21 @@ void desktop_open_terminal(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
 
     /* Create a WM window for the terminal */
-    int win_w = fb_w - 80;
-    int win_h = fb_h - TASKBAR_H - 40;
-    int win_x = 40;
-    int win_y = 10;
+    int tw = fb_w - 80;
+    int th = fb_h - TASKBAR_H - 40;
+    int tx = 40;
+    int ty = 10;
 
-    active_terminal_win = wm_create_window(win_x, win_y, win_w, win_h, "Terminal");
+    active_terminal_win = wm_create_window(tx, ty, tw, th, "Terminal");
 
-    /* Get content area */
-    int cx, cy, cw, ch;
-    wm_get_content_rect(active_terminal_win, &cx, &cy, &cw, &ch);
-
-    /* Set terminal to render inside the window content area */
-    size_t tty_col = (size_t)(cx / FONT_W);
-    size_t tty_row = (size_t)(cy / FONT_H);
-    size_t tty_w = (size_t)(cw / FONT_W);
-    size_t tty_h = (size_t)(ch / FONT_H);
-
-    terminal_set_window(tty_col, tty_row, tty_w, tty_h);
+    /* Get canvas and set terminal to draw into it */
+    int pw, ph;
+    uint32_t *cvs = wm_get_canvas(active_terminal_win, &pw, &ph);
+    terminal_set_canvas(active_terminal_win, cvs, pw, ph);
     terminal_set_window_bg(DT_WIN_BG);
+
+    /* Clear canvas with window background */
+    wm_clear_canvas(active_terminal_win, DT_WIN_BG);
 
     /* Composite: draws window frame + dock + cursor */
     wm_composite();
@@ -946,6 +965,9 @@ void desktop_open_terminal(void) {
 
 void desktop_close_terminal(void) {
     keyboard_set_idle_callback(0);
+
+    /* Disconnect terminal from canvas before destroying window */
+    terminal_clear_canvas();
 
     if (active_terminal_win >= 0) {
         wm_destroy_window(active_terminal_win);

@@ -14,6 +14,7 @@ static uint32_t fb_pitch;   /* bytes per scanline */
 static uint32_t fb_bpp;
 static int gfx_active;
 static int have_backbuffer;
+static uint32_t system_ram_mb;
 
 /* Cursor state */
 static int cursor_col = -1;
@@ -25,6 +26,12 @@ int gfx_init(multiboot_info_t* mbi) {
     gfx_active = 0;
     if (!mbi)
         return 0;
+
+    /* Detect system RAM from multiboot info (flags bit 0) */
+    if (mbi->flags & 1)
+        system_ram_mb = (mbi->mem_upper + 1024) / 1024;
+    else
+        system_ram_mb = 16; /* fallback */
 
     uint32_t addr = 0;
 
@@ -92,6 +99,7 @@ uint32_t gfx_bpp(void)    { return fb_bpp; }
 
 uint32_t gfx_cols(void)   { return fb_width / FONT_W; }
 uint32_t gfx_rows(void)   { return fb_height / FONT_H; }
+uint32_t gfx_get_system_ram_mb(void) { return system_ram_mb; }
 
 uint32_t* gfx_backbuffer(void) { return backbuf; }
 uint32_t* gfx_framebuffer(void) { return framebuffer; }
@@ -153,6 +161,92 @@ void gfx_clear(uint32_t color) {
         uint32_t* row = backbuf + y * pitch4;
         for (uint32_t x = 0; x < fb_width; x++)
             row[x] = color;
+    }
+}
+
+/* --- Buffer-targeted primitives --- */
+
+void gfx_buf_put_pixel(uint32_t *buf, int bw, int bh, int x, int y, uint32_t color) {
+    if (x < 0 || y < 0 || x >= bw || y >= bh) return;
+    buf[y * bw + x] = color;
+}
+
+void gfx_buf_fill_rect(uint32_t *buf, int bw, int bh, int x, int y, int w, int h, uint32_t color) {
+    int x0 = x, y0 = y, x1 = x + w, y1 = y + h;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > bw) x1 = bw;
+    if (y1 > bh) y1 = bh;
+    if (x0 >= x1 || y0 >= y1) return;
+    for (int row = y0; row < y1; row++) {
+        uint32_t *dst = buf + row * bw + x0;
+        for (int col = 0; col < x1 - x0; col++)
+            dst[col] = color;
+    }
+}
+
+void gfx_buf_draw_rect(uint32_t *buf, int bw, int bh, int x, int y, int w, int h, uint32_t color) {
+    gfx_buf_fill_rect(buf, bw, bh, x, y, w, 1, color);
+    gfx_buf_fill_rect(buf, bw, bh, x, y + h - 1, w, 1, color);
+    gfx_buf_fill_rect(buf, bw, bh, x, y, 1, h, color);
+    gfx_buf_fill_rect(buf, bw, bh, x + w - 1, y, 1, h, color);
+}
+
+void gfx_buf_draw_line(uint32_t *buf, int bw, int bh, int x0, int y0, int x1, int y1, uint32_t color) {
+    int dx = x1 - x0, dy = y1 - y0;
+    int sx = dx > 0 ? 1 : -1;
+    int sy = dy > 0 ? 1 : -1;
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    int err = dx - dy;
+    while (1) {
+        gfx_buf_put_pixel(buf, bw, bh, x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx)  { err += dx; y0 += sy; }
+    }
+}
+
+void gfx_buf_draw_char(uint32_t *buf, int bw, int bh, int px, int py, char c, uint32_t fg, uint32_t bg) {
+    unsigned char uc = (unsigned char)c;
+    const uint8_t *glyph = font8x16[uc];
+    for (int row = 0; row < FONT_H; row++) {
+        int yy = py + row;
+        if (yy < 0 || yy >= bh) continue;
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < FONT_W; col++) {
+            int xx = px + col;
+            if (xx < 0 || xx >= bw) continue;
+            buf[yy * bw + xx] = (bits & (0x80 >> col)) ? fg : bg;
+        }
+    }
+}
+
+void gfx_buf_draw_string(uint32_t *buf, int bw, int bh, int px, int py, const char *s, uint32_t fg, uint32_t bg) {
+    while (*s) {
+        gfx_buf_draw_char(buf, bw, bh, px, py, *s, fg, bg);
+        px += FONT_W;
+        s++;
+    }
+}
+
+void gfx_blit_buffer(int dst_x, int dst_y, uint32_t *src, int sw, int sh) {
+    if (!src) return;
+    uint32_t pitch4 = fb_pitch / 4;
+    /* Clip source region to screen */
+    int sx0 = 0, sy0 = 0;
+    int dx = dst_x, dy = dst_y;
+    int w = sw, h = sh;
+    if (dx < 0) { sx0 = -dx; w += dx; dx = 0; }
+    if (dy < 0) { sy0 = -dy; h += dy; dy = 0; }
+    if (dx + w > (int)fb_width) w = (int)fb_width - dx;
+    if (dy + h > (int)fb_height) h = (int)fb_height - dy;
+    if (w <= 0 || h <= 0) return;
+    for (int row = 0; row < h; row++) {
+        memcpy(backbuf + (dy + row) * pitch4 + dx,
+               src + (sy0 + row) * sw + sx0,
+               (size_t)w * 4);
     }
 }
 

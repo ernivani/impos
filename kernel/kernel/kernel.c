@@ -12,6 +12,12 @@
 #include <kernel/desktop.h>
 #include <kernel/mouse.h>
 #include <kernel/firewall.h>
+#include <kernel/wm.h>
+#include <kernel/ui_theme.h>
+#include <kernel/filemgr.h>
+#include <kernel/taskmgr.h>
+#include <kernel/settings_app.h>
+#include <kernel/monitor_app.h>
 
 #define PROMPT      "$ "
 
@@ -261,7 +267,11 @@ static void shell_loop(void) {
                 }
                 continue;
             }
-            if (c == KEY_PGUP || c == KEY_PGDN || c == KEY_INS || c == KEY_ESCAPE)
+            if (c == KEY_ALT_TAB) {
+                wm_cycle_focus();
+                continue;
+            }
+            if (c == KEY_PGUP || c == KEY_PGDN || c == KEY_INS || c == KEY_ESCAPE || c == KEY_SUPER)
                 continue;
 
             if (buf_len < SHELL_CMD_SIZE - 1) {
@@ -293,6 +303,9 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Set up GDT, IDT, PIC, PIT before anything else */
     idt_initialize();
+
+    /* Initialize UI theme */
+    ui_theme_init();
 
     /* Initialize PS/2 mouse and firewall */
     mouse_initialize();
@@ -341,29 +354,19 @@ void kernel_main(multiboot_info_t* mbi) {
                 break;
 
             case DESKTOP_ACTION_FILES:
-                desktop_open_terminal();
-                shell_process_command("ls -la");
-                printf("\n");
-                shell_loop();
-                desktop_close_terminal();
+                app_filemgr();
+                break;
+
+            case DESKTOP_ACTION_BROWSER:
+                app_taskmgr();
                 break;
 
             case DESKTOP_ACTION_SETTINGS:
-                desktop_open_terminal();
-                printf("=== Settings ===\n");
-                shell_process_command("timedatectl");
-                printf("\n");
-                shell_loop();
-                desktop_close_terminal();
+                app_settings();
                 break;
 
             case DESKTOP_ACTION_MONITOR:
-                desktop_open_terminal();
-                printf("=== System Monitor ===\n");
-                shell_process_command("lspci");
-                printf("\n");
-                shell_loop();
-                desktop_close_terminal();
+                app_monitor();
                 break;
 
             case DESKTOP_ACTION_POWER:
@@ -510,7 +513,7 @@ void kernel_main(multiboot_info_t* mbi) {
                     }
                     continue;
                 }
-                if (c == KEY_PGUP || c == KEY_PGDN || c == KEY_INS || c == KEY_ESCAPE) continue;
+                if (c == KEY_PGUP || c == KEY_PGDN || c == KEY_INS || c == KEY_ESCAPE || c == KEY_ALT_TAB || c == KEY_SUPER) continue;
                 if (buf_len < SHELL_CMD_SIZE - 1) {
                     if (cursor < buf_len) memmove(&buf[cursor+1], &buf[cursor], buf_len-cursor);
                     buf[cursor] = c; buf_len++; putchar(c); cursor++;

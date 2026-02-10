@@ -16,6 +16,7 @@ static int caps_lock_active = 0;
 static int num_lock_active = 1;
 static int shift_pressed = 0;
 static int ctrl_pressed = 0;
+static int alt_pressed = 0;
 static int altgr_pressed = 0;
 static int extended_scancode = 0;
 
@@ -288,6 +289,8 @@ char getchar(void) {
                 shift_pressed = 0;
             else if (released == LEFT_CTRL_SCANCODE)
                 ctrl_pressed = 0;
+            else if (released == LEFT_ALT_SCANCODE)
+                alt_pressed = 0;
             continue;
         }
 
@@ -297,6 +300,7 @@ char getchar(void) {
 
             if (scancode == 0x38) { altgr_pressed = 1; continue; }  /* AltGr */
             if (scancode == LEFT_CTRL_SCANCODE) { ctrl_pressed = 1; continue; }
+            if (scancode == 0x5B || scancode == 0x5C) return KEY_SUPER; /* Win keys */
 
             switch (scancode) {
                 case 0x48: return KEY_UP;
@@ -335,8 +339,13 @@ char getchar(void) {
             continue;
         }
         if (scancode == LEFT_ALT_SCANCODE) {
+            alt_pressed = 1;
             continue;
         }
+
+        /* Alt+Tab */
+        if (alt_pressed && scancode == 0x0F)
+            return KEY_ALT_TAB;
 
         /* --- Numpad keys (0x47-0x53, no E0 = physical numpad) --- */
         if (scancode >= 0x47 && scancode <= 0x53) {
