@@ -18,6 +18,25 @@ void        shell_history_add(const char *cmd);
 int         shell_history_count(void);
 const char *shell_history_entry(int index);
 
+/* Per-key shell API (non-blocking terminal integration) */
+void        shell_init_interactive(void);
+void        shell_draw_prompt(void);
+int         shell_handle_key(char c);   /* 0=continue, 1=execute, 2=reprompt */
+const char *shell_get_command(void);
+
+/* Foreground app: non-blocking command running in the terminal */
+typedef struct {
+    void (*on_key)(char c);     /* key dispatch */
+    void (*on_tick)(void);      /* periodic callback */
+    void (*on_close)(void);     /* cleanup on terminal close or ESC */
+    int tick_interval;          /* PIT ticks between on_tick (0=disabled) */
+    int task_id;                /* for CPU tracking */
+} shell_fg_app_t;
+
+void             shell_register_fg_app(shell_fg_app_t *app);
+void             shell_unregister_fg_app(void);
+shell_fg_app_t  *shell_get_fg_app(void);
+
 /* Desktop terminal integration */
 extern int shell_exit_requested;
 

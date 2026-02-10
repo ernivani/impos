@@ -5,6 +5,7 @@
 #include <kernel/idt.h>
 #include <kernel/ui_theme.h>
 #include <kernel/tty.h>
+#include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,8 +41,16 @@ static void (*bg_draw_fn)(void) = 0;
 static uint32_t *bg_cache = 0;
 static int bg_cache_valid = 0;
 
+/* Dirty flag: set when something visual changed, cleared after composite */
+static volatile int composite_needed = 0;
+
+/* Throttle compositing during drag/resize to ~30fps */
+static uint32_t last_drag_composite_tick = 0;
+
 void wm_initialize(void) {
     memset(windows, 0, sizeof(windows));
+    for (int i = 0; i < WM_MAX_WINDOWS; i++)
+        windows[i].task_id = -1;
     win_count = 0;
     next_id = 1;
     dragging = -1;
@@ -53,10 +62,21 @@ void wm_initialize(void) {
     if (!bg_cache) {
         bg_cache = malloc(gfx_height() * gfx_pitch());
     }
+    /* Track WM's own memory usage (bg_cache + backbuffer) */
+    task_set_mem(TASK_WM, (int)(gfx_height() * gfx_pitch() * 2 / 1024));
 }
 
 void wm_invalidate_bg(void) {
     bg_cache_valid = 0;
+    composite_needed = 1;
+}
+
+void wm_mark_dirty(void) {
+    composite_needed = 1;
+}
+
+int wm_is_dirty(void) {
+    return composite_needed;
 }
 
 static wm_window_t* find_window(int id) {
@@ -95,6 +115,13 @@ int wm_create_window(int x, int y, int w, int h, const char *title) {
         win->canvas_h = 0;
     }
 
+    /* Auto-register as a tracked process */
+    win->task_id = task_register(title, 1, win->id);
+
+    /* Track canvas memory on the task */
+    if (win->task_id >= 0 && win->canvas_w > 0 && win->canvas_h > 0)
+        task_set_mem(win->task_id, (win->canvas_w * win->canvas_h * 4) / 1024);
+
     /* Push to front of z-order */
     for (int i = win_count; i > 0; i--)
         win_order[i] = win_order[i - 1];
@@ -110,6 +137,12 @@ void wm_destroy_window(int id) {
     for (int i = 0; i < win_count; i++)
         if (windows[i].id == id) { idx = i; break; }
     if (idx < 0) return;
+
+    /* Auto-unregister tracked process */
+    if (windows[idx].task_id >= 0) {
+        task_unregister(windows[idx].task_id);
+        windows[idx].task_id = -1;
+    }
 
     /* Free canvas */
     if (windows[idx].canvas) {
@@ -199,6 +232,11 @@ int wm_get_window_count(void) { return win_count; }
 wm_window_t* wm_get_window_by_index(int idx) {
     if (idx < 0 || idx >= win_count) return 0;
     return &windows[idx];
+}
+
+int wm_get_task_id(int win_id) {
+    wm_window_t *w = find_window(win_id);
+    return w ? w->task_id : -1;
 }
 
 void wm_cycle_focus(void) {
@@ -317,6 +355,10 @@ void wm_resize_window(int id, int new_w, int new_h) {
     w->w = new_w;
     w->h = new_h;
 
+    /* Update memory tracking for this window's task */
+    if (w->task_id >= 0)
+        task_set_mem(w->task_id, (new_cw * new_ch * 4) / 1024);
+
     /* Update terminal if it's bound to this window's canvas */
     terminal_notify_canvas_resize(id, new_canvas, new_cw, new_ch);
 }
@@ -374,6 +416,7 @@ static void draw_window(wm_window_t *w) {
 }
 
 void wm_composite(void) {
+    composite_needed = 0;
     uint32_t *bb = gfx_backbuffer();
     uint32_t total = gfx_height() * gfx_pitch();
 
@@ -508,9 +551,13 @@ void wm_mouse_idle(void) {
             if (resize_edge & 4) { new_h = resize_oh - (my - resize_oy); new_y = resize_orig_y + (my - resize_oy); } /* top */
 
             if (new_w >= w->min_w && new_h >= w->min_h) {
-                w->x = new_x; w->y = new_y;
-                wm_resize_window(w->id, new_w, new_h);
-                wm_composite();
+                uint32_t now = pit_get_ticks();
+                if (now - last_drag_composite_tick >= 3) {
+                    w->x = new_x; w->y = new_y;
+                    wm_resize_window(w->id, new_w, new_h);
+                    wm_composite();
+                    last_drag_composite_tick = now;
+                }
             }
         } else {
             resizing = -1;
@@ -528,7 +575,11 @@ void wm_mouse_idle(void) {
             if (w->y < 0) w->y = 0;
             if (w->y > (int)gfx_height() - WM_TITLEBAR_H)
                 w->y = (int)gfx_height() - WM_TITLEBAR_H;
-            wm_composite();
+            uint32_t now = pit_get_ticks();
+            if (now - last_drag_composite_tick >= 3) {
+                wm_composite();
+                last_drag_composite_tick = now;
+            }
         } else {
             dragging = -1;
             wm_composite();

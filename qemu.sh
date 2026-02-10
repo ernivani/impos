@@ -17,4 +17,5 @@ qemu-system-$(./target-triplet-to-arch.sh $HOST) \
     -boot d \
     -m 4G \
     -vga std \
-    -display gtk
+    -display gtk \
+    $([ -w /dev/kvm ] && echo "-enable-kvm -cpu host")

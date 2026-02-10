@@ -31,6 +31,13 @@
 
 int shell_exit_requested = 0;
 
+/* Foreground app (non-blocking command like top) */
+static shell_fg_app_t *active_fg_app = NULL;
+
+void shell_register_fg_app(shell_fg_app_t *app) { active_fg_app = app; }
+void shell_unregister_fg_app(void) { active_fg_app = NULL; }
+shell_fg_app_t *shell_get_fg_app(void) { return active_fg_app; }
+
 #define MAX_ARGS 64
 
 typedef void (*cmd_func_t)(int argc, char* argv[]);
@@ -86,6 +93,7 @@ static void cmd_quota(int argc, char* argv[]);
 static void cmd_connect(int argc, char* argv[]);
 static void cmd_firewall(int argc, char* argv[]);
 static void cmd_top(int argc, char* argv[]);
+static void cmd_kill(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -773,6 +781,20 @@ static command_t commands[] = {
         "    heap memory usage, physical RAM, filesystem inode/block\n"
         "    usage, and a list of open windows. Refreshes every second.\n\n"
         "    Press 'q' to exit and return to the shell.\n"
+    },
+    {
+        "kill", cmd_kill,
+        "Terminate a process by PID",
+        "kill: kill PID\n"
+        "    Send a termination signal to the process with the given PID.\n",
+        "NAME\n"
+        "    kill - terminate a process by PID\n\n"
+        "SYNOPSIS\n"
+        "    kill PID\n\n"
+        "DESCRIPTION\n"
+        "    Terminates the process identified by PID. System processes\n"
+        "    (idle, kernel, wm, shell) cannot be killed. Use 'top' to\n"
+        "    see running processes and their PIDs.\n"
     },
 };
 
@@ -1867,19 +1889,22 @@ static void cmd_ping(int argc, char* argv[]) {
     
     printf("PING %d.%d.%d.%d\n", a, b, c, d);
 
+    int ping_tid = task_register("ping", 1, -1);
     for (int i = 1; i <= 4; i++) {
+        if (ping_tid >= 0 && task_check_killed(ping_tid)) break;
         icmp_send_echo_request(dst_ip, 1, i);
-        
+
         /* Wait and process packets */
         for (int attempts = 0; attempts < 20; attempts++) {
             net_process_packets();
             for (volatile int j = 0; j < 500000; j++);
         }
-        
+
         /* Delay between pings */
         for (volatile int j = 0; j < 1000000; j++);
     }
-    
+    if (ping_tid >= 0) task_unregister(ping_tid);
+
     printf("\n");
 }
 
@@ -2273,6 +2298,10 @@ static void cmd_logout(int argc, char* argv[]) {
     config_save_history();
     config_save();
     fs_sync();
+    if (gfx_is_active()) {
+        shell_exit_requested = 1;
+        return;
+    }
     printf("Logging out...\n");
     exit(0);
 }
@@ -2618,6 +2647,7 @@ static void cmd_gfxdemo(int argc, char* argv[]) {
     int frame = 0;
     uint32_t start_tick = pit_get_ticks();
     int total_scenes = 4;
+    int demo_tid = task_register("gfxdemo", 1, -1);
 
     while (1) {
         uint32_t frame_start = pit_get_ticks();
@@ -2657,6 +2687,9 @@ static void cmd_gfxdemo(int argc, char* argv[]) {
             particle_init_done = 0;
         }
 
+        /* Check for killed flag */
+        if (demo_tid >= 0 && task_check_killed(demo_tid)) break;
+
         /* Check for input (non-blocking) */
         if (keyboard_data_available()) {
             char c = getchar();
@@ -2669,9 +2702,17 @@ static void cmd_gfxdemo(int argc, char* argv[]) {
         }
 
         /* Cap at ~30fps: wait for at least 4 ticks */
-        while (pit_get_ticks() - frame_start < 4)
+        while (pit_get_ticks() - frame_start < 4) {
+            task_set_current(TASK_IDLE);
+            cpu_halting = 1;
             __asm__ volatile ("hlt");
+            cpu_halting = 0;
+        }
+        task_set_current(TASK_SHELL);
     }
+
+    /* Unregister process */
+    if (demo_tid >= 0) task_unregister(demo_tid);
 
     /* Restore idle callback, then full WM composite to redraw desktop */
     keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
@@ -2922,131 +2963,336 @@ static void cmd_firewall(int argc, char* argv[]) {
     }
 }
 
+static void cmd_kill(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: kill PID\n");
+        return;
+    }
+    int pid = atoi(argv[1]);
+    int rc = task_kill_by_pid(pid);
+    if (rc == 0)
+        printf("Killed process %d\n", pid);
+    else if (rc == -2)
+        printf("kill: cannot kill system process (PID %d)\n", pid);
+    else
+        printf("kill: no such process (PID %d)\n", pid);
+}
+
+/* ── Helpers for colored output ── */
+#define TOP_C_HEADER  VGA_COLOR_LIGHT_CYAN
+#define TOP_C_VALUE   VGA_COLOR_WHITE
+#define TOP_C_LABEL   VGA_COLOR_LIGHT_GREY
+#define TOP_C_BAR_FG  VGA_COLOR_LIGHT_GREEN
+#define TOP_C_BAR_BG  VGA_COLOR_DARK_GREY
+#define TOP_C_RUN     VGA_COLOR_LIGHT_GREEN
+#define TOP_C_SLEEP   VGA_COLOR_LIGHT_GREY
+#define TOP_C_IDLE_C  VGA_COLOR_LIGHT_BLUE
+#define TOP_C_BG      VGA_COLOR_BLACK
+
+static void top_bar(int pct, int width) {
+    int fill = pct * width / 100;
+    if (fill > width) fill = width;
+    terminal_setcolor(TOP_C_BAR_FG, TOP_C_BG);
+    printf("[");
+    for (int i = 0; i < width; i++) {
+        if (i < fill) printf("|");
+        else { terminal_setcolor(TOP_C_BAR_BG, TOP_C_BG); printf("."); terminal_setcolor(TOP_C_BAR_FG, TOP_C_BG); }
+    }
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("]");
+}
+
+/* ── Non-blocking top: foreground app callbacks ── */
+static int top_tid = -1;
+static int top_first_render = 1;
+
+static void top_render(void) {
+    task_set_current(top_tid);
+
+    terminal_clear();
+    if (top_first_render && gfx_is_active()) {
+        desktop_draw_chrome();
+        top_first_render = 0;
+    }
+
+    /* ═══ Header ════════════════════════════════════════════ */
+    datetime_t dt;
+    config_get_datetime(&dt);
+    uint32_t up_secs = pit_get_ticks() / 120;
+    uint32_t up_h = up_secs / 3600;
+    uint32_t up_m = (up_secs % 3600) / 60;
+    uint32_t up_s = up_secs % 60;
+
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("top");
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" - %02d:%02d:%02d up ",
+           (int)dt.hour, (int)dt.minute, (int)dt.second);
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d:%02d:%02d", (int)up_h, (int)up_m, (int)up_s);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(",  1 user\n\n");
+
+    /* ═══ CPU bar ═══════════════════════════════════════════ */
+    task_info_t *idle_t = task_get(TASK_IDLE);
+    int user_x10 = 0, sys_x10 = 0, idle_x10 = 0;
+    if (idle_t && idle_t->sample_total > 0)
+        idle_x10 = (int)(idle_t->prev_ticks * 1000 / idle_t->sample_total);
+    for (int i = 1; i < TASK_MAX; i++) {
+        task_info_t *t = task_get(i);
+        if (!t) continue;
+        int pct_x10 = t->sample_total > 0
+            ? (int)(t->prev_ticks * 1000 / t->sample_total) : 0;
+        if (t->killable) user_x10 += pct_x10;
+        else sys_x10 += pct_x10;
+    }
+    int cpu_pct = (1000 - idle_x10) / 10;
+    if (cpu_pct < 0) cpu_pct = 0;
+
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("CPU  ");
+    top_bar(cpu_pct, 30);
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf(" %2d%%", cpu_pct);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("  (");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.%d", user_x10 / 10, user_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" us, ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.%d", sys_x10 / 10, sys_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" sy, ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.%d", idle_x10 / 10, idle_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" id)\n");
+
+    /* ═══ Memory bar ════════════════════════════════════════ */
+    uint32_t ram_mb = gfx_get_system_ram_mb();
+    size_t h_used = heap_used();
+    size_t h_total = heap_total();
+    size_t h_free = h_total > h_used ? h_total - h_used : 0;
+    int used_mib_x10 = (int)(h_used / (1024 * 1024 / 10));
+    int free_mib_x10 = (int)(h_free / (1024 * 1024 / 10));
+    int mem_pct = (int)(h_used * 100 / h_total);
+
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("Mem  ");
+    top_bar(mem_pct, 30);
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf(" %d.%d", used_mib_x10 / 10, used_mib_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("MiB / ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.0", (int)ram_mb);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("MiB  (");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d.%d", free_mib_x10 / 10, free_mib_x10 % 10);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("MiB free)\n");
+
+    /* ═══ Disk + Net ════════════════════════════════════════ */
+    int used_inodes = 0, used_blocks = 0;
+    for (int i = 0; i < NUM_INODES; i++) {
+        inode_t tmp;
+        if (fs_read_inode(i, &tmp) == 0 && tmp.type != INODE_FREE) {
+            used_inodes++;
+            used_blocks += tmp.num_blocks;
+            if (tmp.indirect_block) used_blocks++;
+        }
+    }
+    uint32_t rd_ops = 0, rd_bytes = 0, wr_ops = 0, wr_bytes = 0;
+    fs_get_io_stats(&rd_ops, &rd_bytes, &wr_ops, &wr_bytes);
+    uint32_t tx_p = 0, tx_b = 0, rx_p = 0, rx_b = 0;
+    net_get_stats(&tx_p, &tx_b, &rx_p, &rx_b);
+
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("Disk ");
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("%d/%d inodes  %d/%d blocks (%dKB)  ",
+           used_inodes, NUM_INODES, used_blocks, NUM_BLOCKS,
+           (int)(used_blocks * BLOCK_SIZE / 1024));
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("R:");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d", (int)rd_ops);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" W:");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d\n", (int)wr_ops);
+
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("Net  ");
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("TX: ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d", (int)tx_p);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" pkts (%dKB)  RX: ", (int)(tx_b / 1024));
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d", (int)rx_p);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" pkts (%dKB)\n", (int)(rx_b / 1024));
+
+    /* ═══ Task counts ═══════════════════════════════════════ */
+    int n_total = 0, n_running = 0, n_sleeping = 0, n_idle = 0;
+    for (int i = 0; i < TASK_MAX; i++) {
+        task_info_t *t = task_get(i);
+        if (!t) continue;
+        n_total++;
+        if (i == TASK_IDLE) { n_idle++; continue; }
+        int pct = t->sample_total > 0
+            ? (int)(t->prev_ticks * 100 / t->sample_total) : 0;
+        if (pct > 0) n_running++;
+        else n_sleeping++;
+    }
+
+    printf("\n");
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("Tasks: ");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d", n_total);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(" total, ");
+    terminal_setcolor(TOP_C_RUN, TOP_C_BG);
+    printf("%d running", n_running);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(", ");
+    terminal_setcolor(TOP_C_SLEEP, TOP_C_BG);
+    printf("%d sleeping", n_sleeping);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf(", ");
+    terminal_setcolor(TOP_C_IDLE_C, TOP_C_BG);
+    printf("%d idle", n_idle);
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("\n\n");
+
+    /* ═══ Process table header ══════════════════════════════ */
+    const char *cur_user = user_get_current();
+    if (!cur_user) cur_user = "root";
+
+    terminal_setcolor(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_GREY);
+    printf("  %5s %-10s S  %%CPU    RES     TIME+ COMMAND          \n",
+           "PID", "USER");
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+
+    /* ═══ Process rows (sorted by CPU desc) ═════════════════ */
+    int indices[TASK_MAX];
+    int count = 0;
+    for (int i = 0; i < TASK_MAX; i++) {
+        if (task_get(i)) indices[count++] = i;
+    }
+    for (int i = 1; i < count; i++) {
+        int key = indices[i];
+        task_info_t *kt = task_get(key);
+        int kpct = kt->sample_total > 0
+            ? (int)(kt->prev_ticks * 1000 / kt->sample_total) : 0;
+        int j = i - 1;
+        while (j >= 0) {
+            task_info_t *jt = task_get(indices[j]);
+            int jpct = jt->sample_total > 0
+                ? (int)(jt->prev_ticks * 1000 / jt->sample_total) : 0;
+            if (jpct >= kpct) break;
+            indices[j + 1] = indices[j];
+            j--;
+        }
+        indices[j + 1] = key;
+    }
+
+    for (int n = 0; n < count; n++) {
+        int i = indices[n];
+        task_info_t *t = task_get(i);
+        if (!t) continue;
+
+        int task_cpu_x10 = t->sample_total > 0
+            ? (int)(t->prev_ticks * 1000 / t->sample_total) : 0;
+
+        char state;
+        enum vga_color row_color;
+        if (i == TASK_IDLE) { state = 'I'; row_color = TOP_C_IDLE_C; }
+        else if (task_cpu_x10 > 0) { state = 'R'; row_color = TOP_C_RUN; }
+        else { state = 'S'; row_color = TOP_C_SLEEP; }
+
+        uint32_t tticks = t->total_ticks;
+        uint32_t tsecs = tticks / 120;
+        uint32_t tcs = (tticks % 120) * 100 / 120;
+        uint32_t tmins = tsecs / 60;
+        uint32_t ts = tsecs % 60;
+        const char *uname = t->killable ? cur_user : "root";
+
+        char res_str[12];
+        if (t->mem_kb > 0)
+            snprintf(res_str, sizeof(res_str), "%dK", t->mem_kb);
+        else
+            strcpy(res_str, "0K");
+
+        terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+        printf("  %5d ", task_get_pid(i));
+        terminal_setcolor(t->killable ? TOP_C_VALUE : VGA_COLOR_LIGHT_RED, TOP_C_BG);
+        printf("%-10s ", uname);
+        terminal_setcolor(row_color, TOP_C_BG);
+        printf("%c ", state);
+        terminal_setcolor(task_cpu_x10 > 0 ? TOP_C_VALUE : TOP_C_LABEL, TOP_C_BG);
+        printf("%2d.%d ", task_cpu_x10 / 10, task_cpu_x10 % 10);
+        terminal_setcolor(t->mem_kb > 0 ? TOP_C_HEADER : TOP_C_LABEL, TOP_C_BG);
+        printf("%6s ", res_str);
+        terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+        printf(" %4d:%02d.%02d ", (int)tmins, (int)ts, (int)tcs);
+        terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+        printf("%-s\n", t->name);
+    }
+
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("\nPress 'q' to quit, refreshes every 1s\n");
+    terminal_resetcolor();
+
+    wm_composite();
+}
+
+static void top_on_key(char c) {
+    if (c == 'q' || c == 'Q') {
+        if (top_tid >= 0) task_unregister(top_tid);
+        top_tid = -1;
+        shell_unregister_fg_app();
+        terminal_resetcolor();
+        terminal_clear();
+        if (gfx_is_active()) desktop_draw_chrome();
+        shell_draw_prompt();
+        wm_composite();
+    }
+}
+
+static void top_on_tick(void) {
+    if (top_tid >= 0 && task_check_killed(top_tid)) {
+        top_on_key('q');
+        return;
+    }
+    top_render();
+}
+
+static void top_on_close(void) {
+    if (top_tid >= 0) task_unregister(top_tid);
+    top_tid = -1;
+    shell_unregister_fg_app();
+    terminal_resetcolor();
+}
+
+static shell_fg_app_t top_fg_app = {
+    .on_key = top_on_key,
+    .on_tick = top_on_tick,
+    .on_close = top_on_close,
+    .tick_interval = 100,
+    .task_id = -1,
+};
+
 static void cmd_top(int argc, char* argv[]) {
     (void)argc; (void)argv;
-
-    int first = 1;
-    while (1) {
-        terminal_clear();
-        if (first && gfx_is_active()) {
-            desktop_draw_chrome();
-            first = 0;
-        }
-
-        /* Header: uptime + user@hostname */
-        uint32_t secs = pit_get_ticks() / 120;
-        uint32_t hrs = secs / 3600;
-        uint32_t mins = (secs % 3600) / 60;
-        uint32_t sec = secs % 60;
-        printf("top - %dh %dm %ds up, user: %s@%s\n",
-               (int)hrs, (int)mins, (int)sec,
-               user_get_current(), hostname_get());
-
-        /* CPU usage derived from idle task */
-        task_info_t *idle_t = task_get(TASK_IDLE);
-        int cpu_pct = 0;
-        if (idle_t && idle_t->sample_total > 0)
-            cpu_pct = 100 - (int)(idle_t->prev_ticks * 100 / idle_t->sample_total);
-        if (cpu_pct < 0) cpu_pct = 0;
-        int cpu_bar = cpu_pct / 5;
-
-        printf("CPU:   %3d%%  [", cpu_pct);
-        for (int i = 0; i < 20; i++)
-            printf(i < cpu_bar ? "#" : ".");
-        printf("]\n");
-
-        /* Heap memory */
-        size_t used = heap_used();
-        size_t total = heap_total();
-        int pct = total > 0 ? (int)((uint64_t)used * 100 / total) : 0;
-        int bar_fill = pct / 5;
-        printf("Heap:  %dKB / %dKB  [", (int)(used / 1024), (int)(total / 1024));
-        for (int i = 0; i < 20; i++)
-            printf(i < bar_fill ? "#" : ".");
-        printf("] %d%%\n", pct);
-        printf("RAM:   %dMB physical\n", (int)gfx_get_system_ram_mb());
-
-        /* FS stats */
-        int used_inodes = 0;
-        int used_blocks = 0;
-        for (int i = 0; i < NUM_INODES; i++) {
-            inode_t tmp;
-            if (fs_read_inode(i, &tmp) == 0 && tmp.type != INODE_FREE) {
-                used_inodes++;
-                used_blocks += tmp.num_blocks;
-                if (tmp.indirect_block)
-                    used_blocks++;
-            }
-        }
-
-        /* Disk line with I/O stats */
-        uint32_t rd_ops = 0, rd_bytes = 0, wr_ops = 0, wr_bytes = 0;
-        fs_get_io_stats(&rd_ops, &rd_bytes, &wr_ops, &wr_bytes);
-        printf("Disk:  %d/%d inodes, %d/%d blocks (%dKB)  R: %d ops (%dKB)  W: %d ops (%dKB)\n",
-               used_inodes, NUM_INODES,
-               used_blocks, NUM_BLOCKS,
-               (int)(used_blocks * BLOCK_SIZE / 1024),
-               (int)rd_ops, (int)(rd_bytes / 1024),
-               (int)wr_ops, (int)(wr_bytes / 1024));
-
-        /* Net line with I/O stats */
-        uint32_t tx_p = 0, tx_b = 0, rx_p = 0, rx_b = 0;
-        net_get_stats(&tx_p, &tx_b, &rx_p, &rx_b);
-        printf("Net:   TX: %d pkts (%dKB)  RX: %d pkts (%dKB)\n\n",
-               (int)tx_p, (int)(tx_b / 1024),
-               (int)rx_p, (int)(rx_b / 1024));
-
-        /* Process table from task tracker */
-        int total_tasks = task_count();
-        printf("Tasks: %d total\n\n", total_tasks);
-        printf("  %-4s %-16s %-10s %-6s %-9s\n", "PID", "NAME", "STATE", "CPU%", "MEM(KB)");
-        printf("  %-4s %-16s %-10s %-6s %-9s\n", "---", "----", "-----", "----", "-------");
-
-        for (int i = 0; i < TASK_MAX; i++) {
-            task_info_t *t = task_get(i);
-            if (!t) continue;
-
-            int task_cpu = t->sample_total > 0
-                ? (int)(t->prev_ticks * 100 / t->sample_total) : 0;
-
-            const char *state;
-            if (i == TASK_IDLE) state = "idle";
-            else if (task_cpu > 0) state = "running";
-            else state = "sleeping";
-
-            char mem_str[16];
-            if (t->mem_kb > 0)
-                snprintf(mem_str, sizeof(mem_str), "%d", t->mem_kb);
-            else
-                strcpy(mem_str, "-");
-
-            printf("  %-4d %-16s %-10s %3d%%   %-9s\n",
-                   i, t->name, state, task_cpu, mem_str);
-        }
-
-        printf("\nPress 'q' to quit, refreshes every 1s\n");
-
-        /* Wait ~1s while keeping WM responsive */
-        uint32_t wait_end = pit_get_ticks() + 120;
-        while (pit_get_ticks() < wait_end) {
-            cpu_halting = 0;
-            keyboard_run_idle();         /* WM/mouse work (sets TASK_WM internally) */
-            task_set_current(TASK_IDLE); /* restore idle before HLT */
-            cpu_halting = 1;
-            __asm__ volatile ("hlt");
-
-            if (keyboard_data_available()) {
-                cpu_halting = 0;
-                task_set_current(TASK_SHELL);
-                char c = getchar();
-                if (c == 'q' || c == 'Q') {
-                    terminal_clear();
-                    if (gfx_is_active()) desktop_draw_chrome();
-                    return;
-                }
-            }
-        }
-        cpu_halting = 0;
-        task_set_current(TASK_SHELL);
-    }
+    top_tid = task_register("top", 1, -1);
+    top_fg_app.task_id = top_tid;
+    top_first_render = 1;
+    top_render();
+    shell_register_fg_app(&top_fg_app);
 }
