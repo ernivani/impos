@@ -717,6 +717,20 @@ uint32_t *wm_get_canvas(int win_id, int *out_w, int *out_h) {
     return win->canvas;
 }
 
+void wm_fill_rounded_rect(int win_id, int x, int y, int w, int h, int r, uint32_t color) {
+    wm_window_t *win = find_window(win_id);
+    if (!win || !win->canvas) return;
+    gfx_surface_t s = { win->canvas, win->canvas_w, win->canvas_h, win->canvas_w };
+    gfx_surf_rounded_rect(&s, x, y, w, h, r, color);
+}
+
+void wm_fill_rounded_rect_alpha(int win_id, int x, int y, int w, int h, int r, uint32_t color, uint8_t a) {
+    wm_window_t *win = find_window(win_id);
+    if (!win || !win->canvas) return;
+    gfx_surface_t s = { win->canvas, win->canvas_w, win->canvas_h, win->canvas_w };
+    gfx_surf_rounded_rect_alpha(&s, x, y, w, h, r, color, a);
+}
+
 void wm_set_bg_draw(void (*fn)(void)) {
     bg_draw_fn = fn;
 }
