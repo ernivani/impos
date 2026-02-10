@@ -55,4 +55,7 @@ int user_system_initialized(void);
 user_t* user_get_by_index(int index);
 int user_count(void);
 
+/* Create standard home subdirectories (Desktop, Downloads, Documents, Images) */
+void user_create_home_dirs(const char *home);
+
 #endif
