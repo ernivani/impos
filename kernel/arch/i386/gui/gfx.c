@@ -1,5 +1,6 @@
 #include <kernel/gfx.h>
 #include <kernel/multiboot.h>
+#include <kernel/idt.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -910,4 +911,32 @@ void gfx_overlay_darken(int x, int y, int w, int h, uint8_t alpha) {
             dst[col] = (r << 16) | (g << 8) | b;
         }
     }
+}
+
+void gfx_crossfade(int steps, int delay_ms) {
+    if (!have_backbuffer || steps <= 0) { gfx_flip(); return; }
+
+    uint32_t total = fb_height * (fb_pitch / 4);
+
+    /* Save the old scene (current framebuffer) */
+    uint32_t *saved = (uint32_t *)malloc(total * sizeof(uint32_t));
+    if (!saved) { gfx_flip(); return; }
+    memcpy(saved, framebuffer, total * sizeof(uint32_t));
+
+    /* Blend old (saved) → new (backbuf), write to framebuffer */
+    for (int i = 1; i <= steps; i++) {
+        uint32_t t = (uint32_t)(i * 255 / steps);
+        uint32_t inv_t = 255 - t;
+        for (uint32_t j = 0; j < total; j++) {
+            uint32_t src = saved[j];
+            uint32_t dst = backbuf[j];
+            uint32_t r = (((src >> 16) & 0xFF) * inv_t + ((dst >> 16) & 0xFF) * t) / 255;
+            uint32_t g = (((src >> 8) & 0xFF) * inv_t + ((dst >> 8) & 0xFF) * t) / 255;
+            uint32_t b = ((src & 0xFF) * inv_t + (dst & 0xFF) * t) / 255;
+            framebuffer[j] = (r << 16) | (g << 8) | b;
+        }
+        pit_sleep_ms(delay_ms);
+    }
+
+    free(saved);
 }

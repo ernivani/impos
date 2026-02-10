@@ -28,32 +28,6 @@ void desktop_notify_login(void) {
 
 /* ═══ Animation Helpers ═════════════════════════════════════════ */
 
-static void desktop_fade_in(int x, int y, int w, int h, int steps, int delay_ms) {
-    /* The caller already drew gradient+menubar+dock into backbuffer.
-       We save that content, then each frame: restore it, apply a
-       diminishing dark overlay, and do a single flip (no tearing).
-       Start from a mild dim (80) that matches the login exit state,
-       not from near-black. */
-    uint32_t bb_size = gfx_height() * gfx_pitch();
-    /* We'll just re-copy from backbuffer each frame since the content
-       doesn't change — overlay_darken modifies backbuf in place, so
-       we restore from framebuffer (which we set to clean on first flip). */
-
-    /* First: flip the clean content to framebuffer as our "snapshot" */
-    gfx_flip();
-
-    for (int i = steps; i >= 0; i--) {
-        /* Restore clean backbuffer from framebuffer */
-        memcpy(gfx_backbuffer(), gfx_framebuffer(), bb_size);
-        if (i > 0) {
-            uint8_t dark = (uint8_t)(i * 80 / steps);
-            gfx_overlay_darken(x, y, w, h, dark);
-        }
-        gfx_flip();
-        pit_sleep_ms(delay_ms);
-    }
-}
-
 /* Format a 2-digit value with leading zero */
 static void fmt2(char *dst, int val) {
     dst[0] = '0' + (val / 10) % 10;
@@ -78,10 +52,12 @@ static uint32_t lerp_color(uint32_t a, uint32_t b, int t) {
 static uint32_t grad_tl, grad_tr, grad_bl, grad_br;
 
 static void draw_gradient(int w, int h) {
-    grad_tl = GFX_RGB(90, 80, 110);
-    grad_tr = GFX_RGB(65, 60, 95);
-    grad_bl = GFX_RGB(150, 110, 120);
-    grad_br = GFX_RGB(110, 80, 115);
+    /* Slightly warmer/brighter than login gradient so
+       the crossfade transition is visible */
+    grad_tl = GFX_RGB(110, 90, 95);
+    grad_tr = GFX_RGB(85, 70, 90);
+    grad_bl = GFX_RGB(180, 130, 110);
+    grad_br = GFX_RGB(130, 95, 110);
 
     uint32_t *bb = gfx_backbuffer();
     uint32_t pitch4 = gfx_pitch() / 4;
@@ -503,7 +479,7 @@ void desktop_init(void) {
 
     if (desktop_first_show) {
         desktop_first_show = 0;
-        desktop_fade_in(0, 0, fb_w, fb_h, 8, 30);
+        gfx_crossfade(8, 30);
     } else {
         gfx_flip();
     }
@@ -1002,7 +978,7 @@ int desktop_run(void) {
 
     if (desktop_first_show) {
         desktop_first_show = 0;
-        desktop_fade_in(0, 0, fb_w, fb_h, 8, 30);
+        gfx_crossfade(8, 30);
     } else {
         gfx_flip();
     }
