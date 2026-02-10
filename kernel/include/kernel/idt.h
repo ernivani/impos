@@ -24,4 +24,8 @@ void irq_register_handler(int irq, irq_handler_t handler);
 uint32_t pit_get_ticks(void);
 void pit_sleep_ms(uint32_t ms);
 
+/* CPU usage tracking */
+void pit_get_cpu_stats(uint32_t *idle, uint32_t *busy);
+extern volatile int cpu_halting;
+
 #endif

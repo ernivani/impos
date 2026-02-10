@@ -11,108 +11,135 @@ int vsnprintf(char* str, size_t size, const char* format, va_list parameters) {
 
     size_t written = 0;
 
-    while (*format != '\0' && written < size - 1) {
+    /* Helper: write a single char to buffer */
+    #define EMIT(c) do { if (written < size - 1) str[written] = (c); written++; } while(0)
+
+    while (*format != '\0') {
         if (format[0] != '%' || format[1] == '%') {
             if (format[0] == '%')
                 format++;
-            str[written++] = *format++;
+            EMIT(*format);
+            format++;
             continue;
         }
 
         format++;  /* Skip % */
 
+        /* Parse flags */
+        int left_align = 0;
+        int zero_pad = 0;
+        while (*format == '-' || *format == '0') {
+            if (*format == '-') left_align = 1;
+            if (*format == '0') zero_pad = 1;
+            format++;
+        }
+        if (left_align) zero_pad = 0;
+
+        /* Parse width */
+        int width = 0;
+        while (*format >= '0' && *format <= '9') {
+            width = width * 10 + (*format - '0');
+            format++;
+        }
+
+        char pad_char = zero_pad ? '0' : ' ';
+
         if (*format == 'c') {
             format++;
             char c = (char)va_arg(parameters, int);
-            if (written < size - 1) {
-                str[written++] = c;
-            }
+            int padding = width > 1 ? width - 1 : 0;
+            if (!left_align)
+                for (int i = 0; i < padding; i++) EMIT(' ');
+            EMIT(c);
+            if (left_align)
+                for (int i = 0; i < padding; i++) EMIT(' ');
         } else if (*format == 's') {
             format++;
             const char* s = va_arg(parameters, const char*);
-            while (*s && written < size - 1) {
-                str[written++] = *s++;
-            }
+            int slen = (int)strlen(s);
+            int padding = width > slen ? width - slen : 0;
+            if (!left_align)
+                for (int i = 0; i < padding; i++) EMIT(' ');
+            for (int i = 0; i < slen; i++) EMIT(s[i]);
+            if (left_align)
+                for (int i = 0; i < padding; i++) EMIT(' ');
         } else if (*format == 'd') {
             format++;
             int value = va_arg(parameters, int);
             char buf[32];
             int pos = 0;
-            int neg = 0;
 
             if (value < 0) {
-                neg = 1;
-                value = -value;
-            }
-
-            if (value == 0) {
-                buf[pos++] = '0';
+                unsigned int uval = (unsigned int)(-(value + 1)) + 1;
+                char tmp[32];
+                int ti = 0;
+                if (uval == 0) { tmp[ti++] = '0'; }
+                else { while (uval > 0) { tmp[ti++] = '0' + (uval % 10); uval /= 10; } }
+                buf[pos++] = '-';
+                while (ti > 0) buf[pos++] = tmp[--ti];
             } else {
-                int temp = value;
-                int digits = 0;
-                while (temp > 0) {
-                    temp /= 10;
-                    digits++;
-                }
-                pos = digits;
-                temp = value;
-                for (int i = digits - 1; i >= 0; i--) {
-                    buf[i] = '0' + (temp % 10);
-                    temp /= 10;
+                if (value == 0) { buf[pos++] = '0'; }
+                else {
+                    char tmp[32];
+                    int ti = 0;
+                    unsigned int uval = (unsigned int)value;
+                    while (uval > 0) { tmp[ti++] = '0' + (uval % 10); uval /= 10; }
+                    while (ti > 0) buf[pos++] = tmp[--ti];
                 }
             }
 
-            if (neg && written < size - 1) {
-                str[written++] = '-';
-            }
-            for (int i = 0; i < pos && written < size - 1; i++) {
-                str[written++] = buf[i];
-            }
+            int padding = width > pos ? width - pos : 0;
+            if (!left_align)
+                for (int i = 0; i < padding; i++) EMIT(pad_char);
+            for (int i = 0; i < pos; i++) EMIT(buf[i]);
+            if (left_align)
+                for (int i = 0; i < padding; i++) EMIT(' ');
         } else if (*format == 'u' || *format == 'x') {
             int is_hex = (*format == 'x');
             format++;
             unsigned int value = va_arg(parameters, unsigned int);
+            int base = is_hex ? 16 : 10;
             char buf[32];
             int pos = 0;
-            int base = is_hex ? 16 : 10;
 
             if (value == 0) {
                 buf[pos++] = '0';
             } else {
+                char tmp[32];
+                int ti = 0;
                 unsigned int temp = value;
-                int digits = 0;
                 while (temp > 0) {
-                    temp /= base;
-                    digits++;
-                }
-                pos = digits;
-                temp = value;
-                for (int i = digits - 1; i >= 0; i--) {
                     int digit = temp % base;
-                    buf[i] = digit < 10 ? '0' + digit : 'a' + digit - 10;
+                    tmp[ti++] = digit < 10 ? '0' + digit : 'a' + digit - 10;
                     temp /= base;
                 }
+                while (ti > 0) buf[pos++] = tmp[--ti];
             }
 
-            for (int i = 0; i < pos && written < size - 1; i++) {
-                str[written++] = buf[i];
-            }
+            int padding = width > pos ? width - pos : 0;
+            if (!left_align)
+                for (int i = 0; i < padding; i++) EMIT(pad_char);
+            for (int i = 0; i < pos; i++) EMIT(buf[i]);
+            if (left_align)
+                for (int i = 0; i < padding; i++) EMIT(' ');
         } else {
-            /* Unknown format, just copy it */
-            if (written < size - 1) {
-                str[written++] = '%';
-            }
-            if (*format && written < size - 1) {
-                str[written++] = *format++;
+            EMIT('%');
+            if (*format) {
+                EMIT(*format);
+                format++;
             }
         }
     }
 
-    str[written] = '\0';
-    return written;
+    #undef EMIT
+
+    if (written < size)
+        str[written] = '\0';
+    else
+        str[size - 1] = '\0';
+    return (int)written;
 }
 
-/* Simplified snprintf - only supports %s, %d, %u, %x */
 int snprintf(char* str, size_t size, const char* format, ...) {
     va_list ap;
     va_start(ap, format);

@@ -4,6 +4,7 @@
 #if defined(__is_libk)
 #include <kernel/tty.h>
 #include <kernel/io.h>
+#include <kernel/idt.h>
 
 #define CAPSLOCK_SCANCODE    0x3A
 #define NUMLOCK_SCANCODE     0x45
@@ -37,6 +38,10 @@ void keyboard_push_scancode(uint8_t scancode) {
 
 static int kbd_available(void) {
     return kbd_head != kbd_tail;
+}
+
+int keyboard_data_available(void) {
+    return kbd_available();
 }
 
 static uint8_t kbd_pop(void) {
@@ -262,6 +267,7 @@ char getchar(void) {
             /* Idle: process mouse and other events */
             if (idle_callback)
                 idle_callback();
+            cpu_halting = 1;
             __asm__ volatile ("hlt");
             continue;
         }
@@ -428,4 +434,5 @@ void keyboard_push_scancode(uint8_t sc) { (void)sc; }
 void keyboard_set_idle_callback(void (*cb)(void)) { (void)cb; }
 int  keyboard_force_exit(void) { return 0; }
 void keyboard_request_force_exit(void) { }
+int  keyboard_data_available(void) { return 0; }
 #endif

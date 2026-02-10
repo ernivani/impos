@@ -721,7 +721,29 @@ int ui_app_run(ui_window_t *win, void (*on_event)(ui_window_t *, ui_event_t *)) 
     if (win->focused_widget < 0)
         ui_focus_next(win);
 
+    /* Track canvas dimensions to detect resize */
+    int prev_cw = 0, prev_ch = 0;
+    wm_get_canvas(win->wm_id, &prev_cw, &prev_ch);
+
     while (1) {
+        /* Detect canvas resize and adapt widgets */
+        int cur_cw = 0, cur_ch = 0;
+        wm_get_canvas(win->wm_id, &cur_cw, &cur_ch);
+        if (cur_cw != prev_cw || cur_ch != prev_ch) {
+            for (int i = 0; i < win->widget_count; i++) {
+                ui_widget_t *wg = &win->widgets[i];
+                /* Stretch widgets that spanned full width/height */
+                if (wg->w == prev_cw) wg->w = cur_cw;
+                if (wg->h + wg->y == prev_ch) wg->h += (cur_ch - prev_ch);
+                /* Reanchor bottom-pinned widgets (y was relative to old bottom) */
+                else if (wg->y > prev_ch / 2 && wg->h + wg->y <= prev_ch)
+                    wg->y += (cur_ch - prev_ch);
+            }
+            prev_cw = cur_cw;
+            prev_ch = cur_ch;
+            win->dirty = 1;
+        }
+
         if (win->dirty) {
             ui_window_redraw(win);
             wm_composite();

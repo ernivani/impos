@@ -41,4 +41,7 @@ void net_print_ip(const uint8_t ip[4]);
 /* Packet processing */
 void net_process_packets(void);
 
+/* I/O statistics */
+void net_get_stats(uint32_t *tx_pkts, uint32_t *tx_bytes, uint32_t *rx_pkts, uint32_t *rx_bytes);
+
 #endif

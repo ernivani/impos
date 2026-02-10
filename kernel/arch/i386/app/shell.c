@@ -20,6 +20,8 @@
 #include <kernel/desktop.h>
 #include <kernel/firewall.h>
 #include <kernel/mouse.h>
+#include <kernel/wm.h>
+#include <kernel/idt.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,6 +83,7 @@ static void cmd_httpd(int argc, char* argv[]);
 static void cmd_quota(int argc, char* argv[]);
 static void cmd_connect(int argc, char* argv[]);
 static void cmd_firewall(int argc, char* argv[]);
+static void cmd_top(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -751,6 +754,23 @@ static command_t commands[] = {
         "    del N    Delete rule at index N.\n"
         "    flush    Remove all rules.\n"
         "    default  Set default policy to allow or deny.\n"
+    },
+    {
+        "top", cmd_top,
+        "Display live system information",
+        "top: top\n"
+        "    Display live-updating system stats including heap usage,\n"
+        "    RAM, filesystem usage, and open windows.\n"
+        "    Press 'q' to quit.\n",
+        "NAME\n"
+        "    top - display live system information\n\n"
+        "SYNOPSIS\n"
+        "    top\n\n"
+        "DESCRIPTION\n"
+        "    Shows a live-updating display of system stats: uptime,\n"
+        "    heap memory usage, physical RAM, filesystem inode/block\n"
+        "    usage, and a list of open windows. Refreshes every second.\n\n"
+        "    Press 'q' to exit and return to the shell.\n"
     },
 };
 
@@ -2613,5 +2633,183 @@ static void cmd_firewall(int argc, char* argv[]) {
 
     } else {
         printf("Usage: firewall list|add|del|flush|default\n");
+    }
+}
+
+static void cmd_top(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+
+    /* Take initial CPU snapshot for delta calculation */
+    uint32_t prev_idle = 0, prev_busy = 0;
+    pit_get_cpu_stats(&prev_idle, &prev_busy);
+
+    while (1) {
+        terminal_clear();
+        if (gfx_is_active()) desktop_draw_chrome();
+
+        /* Header: uptime + user@hostname */
+        uint32_t secs = pit_get_ticks() / 100;
+        uint32_t hrs = secs / 3600;
+        uint32_t mins = (secs % 3600) / 60;
+        uint32_t sec = secs % 60;
+        printf("top - %dh %dm %ds up, user: %s@%s\n",
+               (int)hrs, (int)mins, (int)sec,
+               user_get_current(), hostname_get());
+
+        /* CPU usage via idle/busy delta */
+        uint32_t cur_idle = 0, cur_busy = 0;
+        pit_get_cpu_stats(&cur_idle, &cur_busy);
+        uint32_t d_idle = cur_idle - prev_idle;
+        uint32_t d_busy = cur_busy - prev_busy;
+        uint32_t d_total = d_idle + d_busy;
+        int cpu_pct = d_total > 0 ? (int)(d_busy * 100 / d_total) : 0;
+        int cpu_bar = cpu_pct / 5;
+        prev_idle = cur_idle;
+        prev_busy = cur_busy;
+
+        printf("CPU:   %3d%%  [", cpu_pct);
+        for (int i = 0; i < 20; i++)
+            printf(i < cpu_bar ? "#" : ".");
+        printf("]\n");
+
+        /* Heap memory */
+        size_t used = heap_used();
+        size_t total = heap_total();
+        int pct = total > 0 ? (int)((uint64_t)used * 100 / total) : 0;
+        int bar_fill = pct / 5;
+        printf("Heap:  %dKB / %dKB  [", (int)(used / 1024), (int)(total / 1024));
+        for (int i = 0; i < 20; i++)
+            printf(i < bar_fill ? "#" : ".");
+        printf("] %d%%\n", pct);
+        printf("RAM:   %dMB physical\n", (int)gfx_get_system_ram_mb());
+
+        /* FS stats */
+        int used_inodes = 0;
+        int used_blocks = 0;
+        for (int i = 0; i < NUM_INODES; i++) {
+            inode_t tmp;
+            if (fs_read_inode(i, &tmp) == 0 && tmp.type != INODE_FREE) {
+                used_inodes++;
+                used_blocks += tmp.num_blocks;
+                if (tmp.indirect_block)
+                    used_blocks++;
+            }
+        }
+
+        /* Disk line with I/O stats */
+        uint32_t rd_ops = 0, rd_bytes = 0, wr_ops = 0, wr_bytes = 0;
+        fs_get_io_stats(&rd_ops, &rd_bytes, &wr_ops, &wr_bytes);
+        printf("Disk:  %d/%d inodes, %d/%d blocks (%dKB)  R: %d ops (%dKB)  W: %d ops (%dKB)\n",
+               used_inodes, NUM_INODES,
+               used_blocks, NUM_BLOCKS,
+               (int)(used_blocks * BLOCK_SIZE / 1024),
+               (int)rd_ops, (int)(rd_bytes / 1024),
+               (int)wr_ops, (int)(wr_bytes / 1024));
+
+        /* Net line with I/O stats */
+        uint32_t tx_p = 0, tx_b = 0, rx_p = 0, rx_b = 0;
+        net_get_stats(&tx_p, &tx_b, &rx_p, &rx_b);
+        printf("Net:   TX: %d pkts (%dKB)  RX: %d pkts (%dKB)\n\n",
+               (int)tx_p, (int)(tx_b / 1024),
+               (int)rx_p, (int)(rx_b / 1024));
+
+        /* Process table: kernel subsystems + windows */
+        int pid = 0;
+        int wcount = wm_get_window_count();
+        net_config_t *ncfg = net_get_config();
+        int net_up = ncfg && ncfg->link_up;
+
+        /* Count total tasks */
+        int total_tasks = 6;
+        if (net_up) total_tasks++;
+        if (gfx_is_active()) total_tasks++;
+        total_tasks += wcount;
+
+        printf("Tasks: %d total\n\n", total_tasks);
+        printf("  %-4s %-16s %-10s %-9s %s\n", "PID", "NAME", "STATE", "MEM(KB)", "INFO");
+        printf("  %-4s %-16s %-10s %-9s %s\n", "---", "----", "-----", "-------", "----");
+
+        /* PID 0: kernel */
+        printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "kernel", "running", "-", "i386 multiboot");
+
+        /* PID 1: pit_timer */
+        {
+            char info[48];
+            snprintf(info, sizeof(info), "100Hz, %d ticks", (int)pit_get_ticks());
+            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "pit_timer", "running", "-", info);
+        }
+
+        /* PID 2: keyboard */
+        {
+            const char *layout = keyboard_get_layout() == KB_LAYOUT_FR ? "FR" : "US";
+            char info[32];
+            snprintf(info, sizeof(info), "IRQ1, layout %s", layout);
+            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "keyboard", "running", "-", info);
+        }
+
+        /* PID 3: mouse */
+        printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "mouse", "running", "-", "IRQ12, PS/2");
+
+        /* PID 4: fs — memory = inode table + used data blocks */
+        {
+            int fs_mem = (int)((NUM_INODES * sizeof(inode_t) + (uint32_t)used_blocks * BLOCK_SIZE) / 1024);
+            char mem[16];
+            snprintf(mem, sizeof(mem), "%d", fs_mem);
+            char info[48];
+            snprintf(info, sizeof(info), "%d/%d inodes, %dKB",
+                     used_inodes, NUM_INODES, (int)(used_blocks * BLOCK_SIZE / 1024));
+            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "fs", "running", mem, info);
+        }
+
+        /* PID 5: net (if up) */
+        if (net_up) {
+            char info[48];
+            snprintf(info, sizeof(info), "%d.%d.%d.%d",
+                     ncfg->ip[0], ncfg->ip[1], ncfg->ip[2], ncfg->ip[3]);
+            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "net", "running", "-", info);
+        }
+
+        /* WM (if active) — memory = framebuffer */
+        if (gfx_is_active()) {
+            int fb_kb = (int)(gfx_width() * gfx_height() * 4 / 1024);
+            char mem[16];
+            snprintf(mem, sizeof(mem), "%d", fb_kb);
+            char info[48];
+            snprintf(info, sizeof(info), "%d windows, fb=%dKB", wcount, fb_kb);
+            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "wm", "running", mem, info);
+        }
+
+        /* PID N: shell */
+        printf("  %-4d %-16s %-10s %-9s %s\n", pid++, "shell", "sleeping", "-", "waiting (top)");
+
+        /* Windows as tasks */
+        for (int i = 0; i < wcount; i++) {
+            wm_window_t *w = wm_get_window_by_index(i);
+            if (!w) continue;
+            int win_mem = w->canvas_w * w->canvas_h * 4 / 1024;
+            char mem[16];
+            snprintf(mem, sizeof(mem), "%d", win_mem);
+            char info[64];
+            snprintf(info, sizeof(info), "%dx%d%s",
+                     w->w, w->h,
+                     (w->flags & WM_WIN_FOCUSED) ? " [focused]" : "");
+            const char *state = (w->flags & WM_WIN_MINIMIZED) ? "suspended" : "running";
+            printf("  %-4d %-16s %-10s %-9s %s\n", pid++, w->title, state, mem, info);
+        }
+
+        printf("\nPress 'q' to quit, refreshes every 1s\n");
+
+        /* Wait ~1s, checking for 'q' every 100ms */
+        for (int i = 0; i < 10; i++) {
+            pit_sleep_ms(100);
+            if (keyboard_data_available()) {
+                char c = getchar();
+                if (c == 'q' || c == 'Q') {
+                    terminal_clear();
+                    if (gfx_is_active()) desktop_draw_chrome();
+                    return;
+                }
+            }
+        }
     }
 }
