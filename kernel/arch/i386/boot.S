@@ -40,6 +40,15 @@ stack_top:
 _start:
 	movl $stack_top, %esp
 
+	/* Enable SSE2 for non-temporal framebuffer writes */
+	mov %cr0, %eax
+	and $0xFFFFFFFB, %eax    /* Clear CR0.EM (bit 2) */
+	or  $0x00000002, %eax    /* Set CR0.MP (bit 1) */
+	mov %eax, %cr0
+	mov %cr4, %eax
+	or  $0x00000600, %eax    /* Set CR4.OSFXSR (9) + CR4.OSXMMEXCPT (10) */
+	mov %eax, %cr4
+
 	# Save multiboot info pointer (ebx) before _init clobbers it
 	pushl %ebx
 

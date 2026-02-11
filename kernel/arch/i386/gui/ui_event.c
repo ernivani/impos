@@ -78,6 +78,7 @@ int ui_poll_event(ui_event_t *out) {
 /* Standard idle handler: processes mouse via WM and pushes events */
 void ui_idle_handler(void) {
     wm_mouse_idle();
+    wm_flush_pending();
 
     /* Check for close request */
     if (wm_close_was_requested()) {

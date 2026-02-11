@@ -37,6 +37,9 @@ typedef struct {
     int      hog_count;       /* consecutive seconds at >90% */
     int      pid;             /* monotonically increasing PID */
     uint32_t total_ticks;     /* cumulative CPU ticks (for TIME+) */
+    uint32_t gpu_ticks;       /* GPU ticks in current sample window */
+    uint32_t gpu_prev_ticks;  /* GPU ticks from last completed window */
+    uint32_t gpu_sample_total;/* total GPU ticks in last window */
 
     /* Preemptive multitasking fields */
     task_state_t state;
@@ -81,6 +84,7 @@ int         task_find_by_pid(int pid); /* slot index or -1 */
 int         task_get_pid(int tid);     /* PID for slot, or -1 */
 int         task_kill_by_pid(int pid); /* 0=ok, -1=not found, -2=system */
 void        task_set_name(int tid, const char *name);
+void        task_add_gpu_ticks(int tid, uint32_t ticks);
 
 /* Preemptive multitasking API */
 int         task_create_thread(const char *name, void (*entry)(void), int killable);

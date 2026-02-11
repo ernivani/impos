@@ -3401,20 +3401,23 @@ static void top_render(void) {
     printf(" pkts (%dKB)\n", (int)(rx_b / 1024));
 
     /* ═══ GPU / Display ═════════════════════════════════════ */
-    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
-    printf("GPU  ");
-    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
-    printf("%dx%dx%d  ", (int)gfx_width(), (int)gfx_height(), (int)gfx_bpp());
-    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
-    printf("VRAM:");
-    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
-    printf("%dKB", (int)(gfx_width() * gfx_height() * (gfx_bpp() / 8) / 1024));
-    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
-    printf("  FPS:");
-    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
-    printf("%d", (int)wm_get_fps());
-    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
-    printf("  (software rendering)\n");
+    {
+        int gpu_pct = (int)wm_get_gpu_usage();
+        terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+        printf("GPU  ");
+        top_bar(gpu_pct, 30);
+        terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+        printf(" %2d%%", gpu_pct);
+        terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+        printf("  FPS:");
+        terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+        printf("%d", (int)wm_get_fps());
+        terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+        printf("  %dx%dx%d", (int)gfx_width(), (int)gfx_height(), (int)gfx_bpp());
+        printf("  VRAM:");
+        terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+        printf("%dKB\n", (int)(gfx_width() * gfx_height() * (gfx_bpp() / 8) / 1024));
+    }
 
     /* ═══ Task counts ═══════════════════════════════════════ */
     int n_total = 0, n_running = 0, n_sleeping = 0, n_idle = 0;
@@ -3454,7 +3457,7 @@ static void top_render(void) {
     if (!cur_user) cur_user = "root";
 
     terminal_setcolor(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_GREY);
-    printf("  %5s %-10s S  %%CPU    RES     TIME+ COMMAND          \n",
+    printf("  %5s %-8s S %%CPU %%GPU    RES     TIME+ COMMAND      \n",
            "PID", "USER");
     terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
 
@@ -3508,14 +3511,19 @@ static void top_render(void) {
         else
             strcpy(res_str, "0K");
 
+        int gpu_pct = t->gpu_sample_total > 0
+            ? (int)(t->gpu_prev_ticks * 100 / t->gpu_sample_total) : 0;
+
         terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
         printf("  %5d ", task_get_pid(i));
         terminal_setcolor(t->killable ? TOP_C_VALUE : VGA_COLOR_LIGHT_RED, TOP_C_BG);
-        printf("%-10s ", uname);
+        printf("%-8s ", uname);
         terminal_setcolor(row_color, TOP_C_BG);
         printf("%c ", state);
         terminal_setcolor(task_cpu_x10 > 0 ? TOP_C_VALUE : TOP_C_LABEL, TOP_C_BG);
         printf("%2d.%d ", task_cpu_x10 / 10, task_cpu_x10 % 10);
+        terminal_setcolor(gpu_pct > 0 ? GFX_RGB(80, 180, 255) : TOP_C_LABEL, TOP_C_BG);
+        printf("%3d ", gpu_pct);
         terminal_setcolor(t->mem_kb > 0 ? TOP_C_HEADER : TOP_C_LABEL, TOP_C_BG);
         printf("%6s ", res_str);
         terminal_setcolor(TOP_C_LABEL, TOP_C_BG);

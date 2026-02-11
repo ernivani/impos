@@ -16,13 +16,14 @@
 
 /* ═══ Layout constants ════════════════════════════════════════ */
 
-#define TM_HEADER_H    140   /* Summary bar height (expanded for stats) */
+#define TM_HEADER_H    158   /* Summary bar height (expanded for stats) */
 #define TM_COL_NAME    10    /* X offset for Name column */
-#define TM_COL_STATE  220    /* X offset for State column */
-#define TM_COL_CPU    240    /* X offset for CPU% column */
-#define TM_COL_MEM    360    /* X offset for Memory column */
-#define TM_COL_TIME   440    /* X offset for TIME+ column */
-#define TM_COL_PID    540    /* X offset for PID column */
+#define TM_COL_STATE  180    /* X offset for State column */
+#define TM_COL_CPU    200    /* X offset for CPU% column */
+#define TM_COL_GPU    310    /* X offset for GPU% column */
+#define TM_COL_MEM    400    /* X offset for Memory column */
+#define TM_COL_TIME   470    /* X offset for TIME+ column */
+#define TM_COL_PID    560    /* X offset for PID column */
 #define TM_COL_KILL   600    /* X offset for Kill column */
 #define TM_ROW_H       22   /* Row height */
 #define TM_TABLE_HDR_H 24   /* Table header row height */
@@ -34,9 +35,10 @@ static int w_cpu_label;
 static int w_uptime_label;
 static int w_mem_bar;
 static int w_mem_label;
+static int w_gpu_bar;
+static int w_gpu_label;
 static int w_disk_label;
 static int w_net_label;
-static int w_gpu_label;
 static int w_task_table;
 
 /* Task snapshot */
@@ -46,6 +48,7 @@ typedef struct {
     int pid;
     int cpu_pct;        /* 0-100 */
     int cpu_pct_x10;    /* 0-1000 for decimal display */
+    int gpu_pct;        /* 0-100 */
     int mem_kb;
     int killable;
     int active;
@@ -64,9 +67,9 @@ static char task_count_str[64];
 static char uptime_str[48];
 static char cpu_label_str[64];
 static char mem_label_str[64];
+static char gpu_label_str[64];
 static char disk_label_str[80];
 static char net_label_str[80];
-static char gpu_label_str[80];
 
 /* ═══ Snapshot ════════════════════════════════════════════════ */
 
@@ -92,6 +95,12 @@ static void tm_snapshot(void) {
             r->cpu_pct = 0;
             r->cpu_pct_x10 = 0;
         }
+        /* GPU%: gpu_prev_ticks / gpu_sample_total * 100 */
+        if (t->gpu_sample_total > 0) {
+            r->gpu_pct = (int)((uint64_t)t->gpu_prev_ticks * 100 / t->gpu_sample_total);
+        } else {
+            r->gpu_pct = 0;
+        }
         /* State */
         r->state = (r->cpu_pct_x10 > 0) ? 'R' : 'S';
         row_count++;
@@ -106,6 +115,7 @@ static void tm_snapshot(void) {
             case 1: swap = rows[i].cpu_pct < rows[j].cpu_pct; break;
             case 2: swap = rows[i].mem_kb < rows[j].mem_kb; break;
             case 3: swap = rows[i].pid > rows[j].pid; break;
+            case 4: swap = rows[i].gpu_pct < rows[j].gpu_pct; break;
             }
             if (swap) {
                 tm_row_t tmp = rows[i];
@@ -149,6 +159,8 @@ static void tm_draw_table(ui_window_t *win, int widget_idx,
                          "S", ui_theme.text_secondary, hdr_bg);
     gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_CPU, y0 + 4,
                          "CPU%", ui_theme.text_secondary, hdr_bg);
+    gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_GPU, y0 + 4,
+                         "GPU%", ui_theme.text_secondary, hdr_bg);
     gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_MEM, y0 + 4,
                          "MEM", ui_theme.text_secondary, hdr_bg);
     gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_TIME, y0 + 4,
@@ -160,8 +172,8 @@ static void tm_draw_table(ui_window_t *win, int widget_idx,
                        ui_theme.border);
 
     /* Sort indicator */
-    const char *sort_labels[] = { "NAME", "CPU%", "MEM", "PID" };
-    int sort_x[] = { x0 + TM_COL_NAME, x0 + TM_COL_CPU, x0 + TM_COL_MEM, x0 + TM_COL_PID };
+    const char *sort_labels[] = { "NAME", "CPU%", "MEM", "PID", "GPU%" };
+    int sort_x[] = { x0 + TM_COL_NAME, x0 + TM_COL_CPU, x0 + TM_COL_MEM, x0 + TM_COL_PID, x0 + TM_COL_GPU };
     int label_w = (int)strlen(sort_labels[sort_col]) * FONT_W;
     gfx_buf_fill_rect(canvas, cw, ch, sort_x[sort_col],
                        y0 + TM_TABLE_HDR_H - 2, label_w, 2, ui_theme.accent);
@@ -220,6 +232,26 @@ static void tm_draw_table(ui_window_t *win, int widget_idx,
         gfx_buf_draw_string(canvas, cw, ch, bar_x + bar_w + 4,
                              ry + (TM_ROW_H - FONT_H) / 2,
                              cpu_str, ui_theme.text_sub, row_bg);
+
+        /* GPU% with colored bar */
+        {
+            int gbar_x = x0 + TM_COL_GPU;
+            gfx_buf_fill_rect(canvas, cw, ch, gbar_x, bar_y, bar_w, bar_h,
+                               ui_theme.progress_bg);
+            if (r->gpu_pct > 0) {
+                int gfill = bar_w * r->gpu_pct / 100;
+                if (gfill > bar_w) gfill = bar_w;
+                uint32_t gc = (r->gpu_pct > 80) ? ui_theme.danger :
+                              (r->gpu_pct > 50) ? ui_theme.progress_warn :
+                              GFX_RGB(80, 180, 255);
+                gfx_buf_fill_rect(canvas, cw, ch, gbar_x, bar_y, gfill, bar_h, gc);
+            }
+            char gpu_str[8];
+            snprintf(gpu_str, sizeof(gpu_str), "%d%%", r->gpu_pct);
+            gfx_buf_draw_string(canvas, cw, ch, gbar_x + bar_w + 4,
+                                 ry + (TM_ROW_H - FONT_H) / 2,
+                                 gpu_str, ui_theme.text_sub, row_bg);
+        }
 
         /* Memory */
         char mem_str2[16];
@@ -361,6 +393,19 @@ static void tm_refresh(ui_window_t *win) {
     wg = ui_get_widget(win, w_uptime_label);
     if (wg) strncpy(wg->label.text, uptime_str, UI_TEXT_MAX - 1);
 
+    /* GPU bar + label */
+    int gpu_pct = (int)wm_get_gpu_usage();
+    wg = ui_get_widget(win, w_gpu_bar);
+    if (wg) wg->progress.value = gpu_pct;
+
+    snprintf(gpu_label_str, sizeof(gpu_label_str),
+             "%d%%  FPS:%d  %dx%d  VRAM:%dKB",
+             gpu_pct, (int)wm_get_fps(),
+             (int)gfx_width(), (int)gfx_height(),
+             (int)(gfx_width() * gfx_height() * (gfx_bpp() / 8) / 1024));
+    wg = ui_get_widget(win, w_gpu_label);
+    if (wg) strncpy(wg->label.text, gpu_label_str, UI_TEXT_MAX - 1);
+
     /* Disk stats */
     int used_inodes = 0, used_blocks = 0;
     for (int i = 0; i < NUM_INODES; i++) {
@@ -391,15 +436,6 @@ static void tm_refresh(ui_window_t *win) {
     wg = ui_get_widget(win, w_net_label);
     if (wg) strncpy(wg->label.text, net_label_str, UI_TEXT_MAX - 1);
 
-    /* GPU / Display stats */
-    snprintf(gpu_label_str, sizeof(gpu_label_str),
-             "GPU: %dx%dx%d  VRAM:%dKB  FPS:%d",
-             (int)gfx_width(), (int)gfx_height(), (int)gfx_bpp(),
-             (int)(gfx_width() * gfx_height() * (gfx_bpp() / 8) / 1024),
-             (int)wm_get_fps());
-    wg = ui_get_widget(win, w_gpu_label);
-    if (wg) strncpy(wg->label.text, gpu_label_str, UI_TEXT_MAX - 1);
-
     win->dirty = 1;
 }
 
@@ -414,6 +450,7 @@ void app_taskmgr_on_event(ui_window_t *win, ui_event_t *ev) {
         if (key == 'c') { sort_col = 1; tm_refresh(win); return; }
         if (key == 'm') { sort_col = 2; tm_refresh(win); return; }
         if (key == 'p') { sort_col = 3; tm_refresh(win); return; }
+        if (key == 'g') { sort_col = 4; tm_refresh(win); return; }
 
         /* Kill selected */
         if (key == 'k' && selected_row >= 0 && selected_row < row_count &&
@@ -477,18 +514,20 @@ ui_window_t *app_taskmgr_create(void) {
     w_mem_bar = ui_add_progress(win, pad + 36, 46, 160, 10, 0, NULL);
     w_mem_label = ui_add_label(win, pad + 204, 44, cw - pad - 210, 16, "", ui_theme.text_sub);
 
-    /* Row 4 (y=64): Disk stats */
-    w_disk_label = ui_add_label(win, pad, 64, cw - 2 * pad, 16, "Disk: ...", ui_theme.text_sub);
+    /* Row 4 (y=62): GPU bar + info */
+    ui_add_label(win, pad, 62, 32, 12, "GPU", ui_theme.text_secondary);
+    w_gpu_bar = ui_add_progress(win, pad + 36, 64, 160, 10, 0, NULL);
+    w_gpu_label = ui_add_label(win, pad + 204, 62, cw - pad - 210, 16, "", ui_theme.text_sub);
 
-    /* Row 5 (y=82): Net stats */
-    w_net_label = ui_add_label(win, pad, 82, cw - 2 * pad, 16, "Net: ...", ui_theme.text_sub);
+    /* Row 5 (y=82): Disk stats */
+    w_disk_label = ui_add_label(win, pad, 82, cw - 2 * pad, 16, "Disk: ...", ui_theme.text_sub);
 
-    /* Row 6 (y=100): GPU stats */
-    w_gpu_label = ui_add_label(win, pad, 100, cw - 2 * pad, 16, "GPU: ...", ui_theme.text_sub);
+    /* Row 6 (y=100): Net stats */
+    w_net_label = ui_add_label(win, pad, 100, cw - 2 * pad, 16, "Net: ...", ui_theme.text_sub);
 
     /* Sort hint */
     ui_add_label(win, pad, TM_HEADER_H - 18, cw - 2 * pad, 16,
-                 "Sort: n=name c=cpu m=mem p=pid | k=kill | Up/Down=select",
+                 "Sort: n=name c=cpu g=gpu m=mem p=pid | k=kill | Up/Dn=sel",
                  ui_theme.text_dim);
 
     /* Separator */

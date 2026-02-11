@@ -95,14 +95,23 @@ void task_tick(void) {
         tasks[ct].ticks++;
 }
 
+void task_add_gpu_ticks(int tid, uint32_t ticks) {
+    if (tid >= 0 && tid < TASK_MAX && tasks[tid].active)
+        tasks[tid].gpu_ticks += ticks;
+}
+
 /* Called once per second from PIT handler */
 void task_sample(void) {
     uint32_t total = 0;
+    uint32_t gpu_total = 0;
     for (int i = 0; i < TASK_MAX; i++) {
-        if (tasks[i].active)
+        if (tasks[i].active) {
             total += tasks[i].ticks;
+            gpu_total += tasks[i].gpu_ticks;
+        }
     }
     if (total == 0) total = 1;
+    if (gpu_total == 0) gpu_total = 1;
 
     for (int i = 0; i < TASK_MAX; i++) {
         if (!tasks[i].active) continue;
@@ -110,6 +119,9 @@ void task_sample(void) {
         tasks[i].prev_ticks = tasks[i].ticks;
         tasks[i].sample_total = total;
         tasks[i].ticks = 0;
+        tasks[i].gpu_prev_ticks = tasks[i].gpu_ticks;
+        tasks[i].gpu_sample_total = gpu_total;
+        tasks[i].gpu_ticks = 0;
 
         /* Watchdog: check killable tasks */
         if (tasks[i].killable) {
