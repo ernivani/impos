@@ -4,6 +4,7 @@
 #include <kernel/idt.h>
 #include <kernel/io.h>
 #include <kernel/pmm.h>
+#include <kernel/pipe.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -62,10 +63,11 @@ registers_t* schedule(registers_t* regs) {
     /* Determine if current task is a preemptive thread (has own stack) */
     int cur_is_preemptive = (cur && (cur->stack_base != NULL || cur->is_user));
 
-    /* Clean up zombie threads (free their stacks and page dirs safely) */
+    /* Clean up zombie threads (free their stacks, page dirs, and pipes safely) */
     for (int i = 4; i < TASK_MAX; i++) {
         task_info_t *t = task_get_raw(i);
         if (t && t->state == TASK_STATE_ZOMBIE) {
+            pipe_cleanup_task(i);
             if (t->is_user) {
                 if (t->kernel_stack) {
                     pmm_free_frame(t->kernel_stack);

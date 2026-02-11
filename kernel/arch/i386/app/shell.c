@@ -25,12 +25,29 @@
 #include <kernel/arp.h>
 #include <kernel/task.h>
 #include <kernel/sched.h>
+#include <kernel/pipe.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 
 int shell_exit_requested = 0;
+
+/* ── Shell pipe infrastructure ── */
+#define SHELL_PIPE_BUF_SIZE 4096
+static char  shell_pipe_buf[SHELL_PIPE_BUF_SIZE];
+static int   shell_pipe_len;
+static int   shell_pipe_mode;  /* 1 = capturing output into pipe_buf */
+
+/* Hook for printf redirection: called from putchar when pipe mode active */
+void shell_pipe_putchar(char c) {
+    if (shell_pipe_mode && shell_pipe_len < SHELL_PIPE_BUF_SIZE - 1)
+        shell_pipe_buf[shell_pipe_len++] = c;
+}
+
+int shell_is_pipe_mode(void) {
+    return shell_pipe_mode;
+}
 
 /* Foreground app (non-blocking command like top) */
 static shell_fg_app_t *active_fg_app = NULL;
@@ -790,16 +807,20 @@ static command_t commands[] = {
     {
         "kill", cmd_kill,
         "Terminate a process by PID",
-        "kill: kill PID\n"
-        "    Send a termination signal to the process with the given PID.\n",
+        "kill: kill [-9|-INT|-TERM|-KILL] PID\n"
+        "    Send a signal to the process with the given PID.\n",
         "NAME\n"
-        "    kill - terminate a process by PID\n\n"
+        "    kill - send a signal to a process\n\n"
         "SYNOPSIS\n"
-        "    kill PID\n\n"
+        "    kill [-9|-INT|-TERM|-KILL] PID\n\n"
         "DESCRIPTION\n"
-        "    Terminates the process identified by PID. System processes\n"
-        "    (idle, kernel, wm, shell) cannot be killed. Use 'top' to\n"
-        "    see running processes and their PIDs.\n"
+        "    Sends a signal to the process identified by PID.\n"
+        "    Without a signal flag, sends TERM. System processes\n"
+        "    (idle, kernel, wm, shell) cannot be killed.\n\n"
+        "OPTIONS\n"
+        "    -9, -KILL    Forcefully kill the process\n"
+        "    -INT         Send interrupt signal\n"
+        "    -TERM        Send termination signal (default)\n"
     },
     {
         "display", cmd_display,
@@ -1470,7 +1491,119 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
     return buffer_pos;
 }
 
+/* ── Pipe right-side commands ── */
+
+static void pipe_cmd_grep(const char *buf, int len, const char *pattern) {
+    if (!pattern) {
+        printf("grep: missing pattern\n");
+        return;
+    }
+    const char *p = buf;
+    const char *end = buf + len;
+    while (p < end) {
+        const char *nl = p;
+        while (nl < end && *nl != '\n') nl++;
+        int line_len = nl - p;
+        /* Check if line contains pattern */
+        for (int i = 0; i <= line_len - (int)strlen(pattern); i++) {
+            if (memcmp(p + i, pattern, strlen(pattern)) == 0) {
+                /* Print matching line */
+                for (int j = 0; j < line_len; j++)
+                    putchar(p[j]);
+                putchar('\n');
+                break;
+            }
+        }
+        p = (nl < end) ? nl + 1 : nl;
+    }
+}
+
+static void pipe_cmd_cat(const char *buf, int len) {
+    for (int i = 0; i < len; i++)
+        putchar(buf[i]);
+}
+
+static void pipe_cmd_wc(const char *buf, int len) {
+    int lines = 0, words = 0, chars = len;
+    int in_word = 0;
+    for (int i = 0; i < len; i++) {
+        if (buf[i] == '\n') lines++;
+        if (buf[i] == ' ' || buf[i] == '\n' || buf[i] == '\t') {
+            in_word = 0;
+        } else {
+            if (!in_word) words++;
+            in_word = 1;
+        }
+    }
+    /* Count final line if not newline-terminated */
+    if (len > 0 && buf[len - 1] != '\n') lines++;
+    printf("  %d  %d  %d\n", lines, words, chars);
+}
+
 void shell_process_command(char* command) {
+    /* Check for pipe operator */
+    char *pipe_pos = strchr(command, '|');
+    if (pipe_pos) {
+        /* Split into left and right commands */
+        *pipe_pos = '\0';
+        char *left_cmd = command;
+        char *right_cmd = pipe_pos + 1;
+
+        /* Trim leading spaces on right command */
+        while (*right_cmd == ' ') right_cmd++;
+
+        /* Trim trailing spaces on left command */
+        char *lend = pipe_pos - 1;
+        while (lend > left_cmd && *lend == ' ') { *lend = '\0'; lend--; }
+
+        /* Run left command with output captured */
+        shell_pipe_mode = 1;
+        shell_pipe_len = 0;
+        shell_pipe_buf[0] = '\0';
+
+        /* Parse and execute left command */
+        char *argv[MAX_ARGS];
+        int argc = 0;
+        char *token = strtok(left_cmd, " ");
+        while (token != NULL && argc < MAX_ARGS) {
+            argv[argc++] = token;
+            token = strtok(NULL, " ");
+        }
+
+        if (argc > 0) {
+            for (size_t i = 0; i < NUM_COMMANDS; i++) {
+                if (strcmp(argv[0], commands[i].name) == 0) {
+                    commands[i].func(argc, argv);
+                    break;
+                }
+            }
+        }
+
+        shell_pipe_mode = 0;
+        shell_pipe_buf[shell_pipe_len] = '\0';
+
+        /* Parse right command */
+        char *rargv[MAX_ARGS];
+        int rargc = 0;
+        token = strtok(right_cmd, " ");
+        while (token != NULL && rargc < MAX_ARGS) {
+            rargv[rargc++] = token;
+            token = strtok(NULL, " ");
+        }
+
+        if (rargc > 0) {
+            if (strcmp(rargv[0], "grep") == 0)
+                pipe_cmd_grep(shell_pipe_buf, shell_pipe_len, rargc > 1 ? rargv[1] : NULL);
+            else if (strcmp(rargv[0], "cat") == 0)
+                pipe_cmd_cat(shell_pipe_buf, shell_pipe_len);
+            else if (strcmp(rargv[0], "wc") == 0)
+                pipe_cmd_wc(shell_pipe_buf, shell_pipe_len);
+            else
+                printf("%s: pipe command not supported\n", rargv[0]);
+        }
+        return;
+    }
+
     char* argv[MAX_ARGS];
     int argc = 0;
 
@@ -3038,10 +3171,27 @@ static void cmd_firewall(int argc, char* argv[]) {
 
 static void cmd_kill(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Usage: kill PID\n");
+        printf("Usage: kill [-9|-INT|-TERM|-KILL] PID\n");
         return;
     }
-    int pid = atoi(argv[1]);
+
+    int pid;
+    const char *sig_name = "TERM";
+
+    if (argv[1][0] == '-') {
+        /* Signal flag provided */
+        if (argc < 3) {
+            printf("Usage: kill [-9|-INT|-TERM|-KILL] PID\n");
+            return;
+        }
+        sig_name = argv[1] + 1;  /* skip the '-' */
+        pid = atoi(argv[2]);
+    } else {
+        pid = atoi(argv[1]);
+    }
+
+    /* For now all signals just kill the process */
+    (void)sig_name;
     int rc = task_kill_by_pid(pid);
     if (rc == 0)
         printf("Killed process %d\n", pid);
