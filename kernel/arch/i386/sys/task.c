@@ -1,5 +1,8 @@
 #include <kernel/task.h>
+#include <kernel/io.h>
+#include <kernel/sched.h>
 #include <string.h>
+#include <stdlib.h>
 
 static task_info_t tasks[TASK_MAX];
 static volatile int current_task = TASK_IDLE;
@@ -35,6 +38,7 @@ void task_init(void) {
 }
 
 int task_register(const char *name, int killable, int wm_id) {
+    uint32_t flags = irq_save();
     for (int i = 4; i < TASK_MAX; i++) {
         if (!tasks[i].active) {
             memset(&tasks[i], 0, sizeof(task_info_t));
@@ -44,18 +48,24 @@ int task_register(const char *name, int killable, int wm_id) {
             tasks[i].killable = killable;
             tasks[i].wm_id = wm_id;
             tasks[i].pid = next_pid++;
+            tasks[i].state = TASK_STATE_READY;
+            irq_restore(flags);
             return i;
         }
     }
+    irq_restore(flags);
     return -1;
 }
 
 void task_unregister(int tid) {
+    uint32_t flags = irq_save();
     if (tid >= 0 && tid < TASK_MAX) {
         tasks[tid].active = 0;
+        tasks[tid].state = TASK_STATE_UNUSED;
         if (current_task == tid)
             current_task = TASK_IDLE;
     }
+    irq_restore(flags);
 }
 
 void task_set_current(int tid) {
@@ -95,8 +105,14 @@ void task_sample(void) {
             uint32_t cpu_pct = tasks[i].prev_ticks * 100 / total;
             if (cpu_pct > 90) {
                 tasks[i].hog_count++;
-                if (tasks[i].hog_count >= 5)
+                if (tasks[i].hog_count >= 5) {
                     tasks[i].killed = 1;
+                    /* For preemptive threads, mark as zombie so scheduler stops them */
+                    if (tasks[i].stack_base) {
+                        tasks[i].state = TASK_STATE_ZOMBIE;
+                        tasks[i].active = 0;
+                    }
+                }
             } else {
                 tasks[i].hog_count = 0;
             }
@@ -106,6 +122,12 @@ void task_sample(void) {
 
 task_info_t *task_get(int tid) {
     if (tid >= 0 && tid < TASK_MAX && tasks[tid].active)
+        return &tasks[tid];
+    return 0;
+}
+
+task_info_t *task_get_raw(int tid) {
+    if (tid >= 0 && tid < TASK_MAX)
         return &tasks[tid];
     return 0;
 }
@@ -148,7 +170,19 @@ int task_kill_by_pid(int pid) {
     int tid = task_find_by_pid(pid);
     if (tid < 0) return -1;
     if (!tasks[tid].killable) return -2;
+
+    uint32_t flags = irq_save();
     tasks[tid].killed = 1;
+
+    /* If this is a preemptive thread (has its own stack), kill it immediately */
+    if (tasks[tid].stack_base) {
+        tasks[tid].state = TASK_STATE_ZOMBIE;
+        tasks[tid].active = 0;
+        free(tasks[tid].stack_base);
+        tasks[tid].stack_base = 0;
+    }
+
+    irq_restore(flags);
     return 0;
 }
 
@@ -157,4 +191,146 @@ void task_set_name(int tid, const char *name) {
         strncpy(tasks[tid].name, name, 31);
         tasks[tid].name[31] = '\0';
     }
+}
+
+/* ═══ Preemptive multitasking ═══════════════════════════════════ */
+
+/*
+ * Stack layout for a newly created thread (grows downward):
+ *   [top of allocated stack]
+ *   ...
+ *   GS  (0x10)        ← ESP points here after setup
+ *   FS  (0x10)
+ *   ES  (0x10)
+ *   DS  (0x10)
+ *   EDI (0)           ← pusha block
+ *   ESI (0)
+ *   EBP (0)
+ *   ESP (ignored by popa)
+ *   EBX (0)
+ *   EDX (0)
+ *   ECX (0)
+ *   EAX (0)
+ *   int_no (0)
+ *   err_code (0)
+ *   EIP (entry)       ← iret restores from here
+ *   CS  (0x08)
+ *   EFLAGS (0x202)    ← IF=1
+ *   [bottom/start of stack allocation]
+ */
+
+int task_create_thread(const char *name, void (*entry)(void), int killable) {
+    uint32_t flags = irq_save();
+
+    int tid = -1;
+    for (int i = 4; i < TASK_MAX; i++) {
+        if (!tasks[i].active) {
+            tid = i;
+            break;
+        }
+    }
+    if (tid < 0) {
+        irq_restore(flags);
+        return -1;
+    }
+
+    /* Reserve the slot immediately so no one else takes it */
+    tasks[tid].active = 1;
+    tasks[tid].state = TASK_STATE_BLOCKED; /* Not ready yet */
+
+    /* Allocate stack with interrupts enabled */
+    irq_restore(flags);
+    uint32_t *stack = (uint32_t *)malloc(TASK_STACK_SIZE);
+    if (!stack) {
+        tasks[tid].active = 0;
+        tasks[tid].state = TASK_STATE_UNUSED;
+        return -1;
+    }
+    memset(stack, 0, TASK_STACK_SIZE);
+    flags = irq_save();
+
+    /* Initialize task slot (keeping active=1 from reservation) */
+    tasks[tid].active = 1;
+    strncpy(tasks[tid].name, name, 31);
+    tasks[tid].name[31] = '\0';
+    tasks[tid].killable = killable;
+    tasks[tid].wm_id = -1;
+    tasks[tid].pid = next_pid++;
+    tasks[tid].stack_base = stack;
+    tasks[tid].stack_size = TASK_STACK_SIZE;
+
+    /* Set up initial stack frame to look like an interrupt context */
+    uint32_t *sp = (uint32_t *)((uint8_t *)stack + TASK_STACK_SIZE);
+
+    /* Return address for when entry() returns — safety net */
+    *(--sp) = (uint32_t)task_exit;
+
+    /* iret frame (pushed by CPU) */
+    *(--sp) = 0x202;           /* EFLAGS: IF=1 */
+    *(--sp) = 0x08;            /* CS: kernel code segment */
+    *(--sp) = (uint32_t)entry; /* EIP: thread entry point */
+
+    /* Error code and interrupt number (pushed by ISR stub) */
+    *(--sp) = 0;               /* err_code */
+    *(--sp) = 0;               /* int_no */
+
+    /* pusha block (EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI) */
+    *(--sp) = 0;               /* EAX */
+    *(--sp) = 0;               /* ECX */
+    *(--sp) = 0;               /* EDX */
+    *(--sp) = 0;               /* EBX */
+    *(--sp) = 0;               /* ESP (ignored by popa) */
+    *(--sp) = 0;               /* EBP */
+    *(--sp) = 0;               /* ESI */
+    *(--sp) = 0;               /* EDI */
+
+    /* Segment registers (pushed by isr_common) */
+    *(--sp) = 0x10;            /* DS */
+    *(--sp) = 0x10;            /* ES */
+    *(--sp) = 0x10;            /* FS */
+    *(--sp) = 0x10;            /* GS */
+
+    tasks[tid].esp = (uint32_t)sp;
+    tasks[tid].state = TASK_STATE_READY;
+
+    irq_restore(flags);
+    return tid;
+}
+
+void task_yield(void) {
+    /* INT 0x80: dedicated yield interrupt — calls schedule() without PIT side effects */
+    __asm__ volatile("int $0x80");
+}
+
+void task_exit(void) {
+    uint32_t flags = irq_save();
+
+    int tid = current_task;
+    if (tid >= 0 && tid < TASK_MAX) {
+        /* Mark as zombie — scheduler will free the stack after switching away */
+        tasks[tid].state = TASK_STATE_ZOMBIE;
+        tasks[tid].active = 0;
+    }
+
+    irq_restore(flags);
+
+    /* Yield to scheduler — we'll never return since state is ZOMBIE */
+    task_yield();
+
+    /* Should never reach here */
+    while (1) __asm__ volatile("hlt");
+}
+
+void task_block(int tid) {
+    uint32_t flags = irq_save();
+    if (tid >= 0 && tid < TASK_MAX && tasks[tid].active)
+        tasks[tid].state = TASK_STATE_BLOCKED;
+    irq_restore(flags);
+}
+
+void task_unblock(int tid) {
+    uint32_t flags = irq_save();
+    if (tid >= 0 && tid < TASK_MAX && tasks[tid].active)
+        tasks[tid].state = TASK_STATE_READY;
+    irq_restore(flags);
 }

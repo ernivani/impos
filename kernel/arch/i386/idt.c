@@ -2,6 +2,7 @@
 #include <kernel/io.h>
 #include <kernel/config.h>
 #include <kernel/task.h>
+#include <kernel/sched.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -108,6 +109,8 @@ extern void irq9(void);  extern void irq10(void); extern void irq11(void);
 extern void irq12(void); extern void irq13(void); extern void irq14(void);
 extern void irq15(void);
 
+extern void isr128(void);  /* INT 0x80: yield/schedule */
+
 /* ========== PIC ========== */
 
 #define PIC1_CMD  0x20
@@ -166,10 +169,25 @@ uint32_t pit_get_ticks(void) {
 }
 
 void pit_sleep_ms(uint32_t ms) {
+    if (sched_is_active()) {
+        /* Preemptive mode: mark task as sleeping and yield */
+        int tid = task_get_current();
+        task_info_t *t = task_get(tid);
+        if (t && t->stack_base) {
+            /* Thread with its own stack: use proper sleep */
+            t->sleep_until = pit_ticks + (ms * TARGET_HZ / 1000) + 1;
+            t->state = TASK_STATE_SLEEPING;
+            task_yield();
+            return;
+        }
+        /* Cooperative task (no own stack): fall through to busy-wait */
+    }
+
+    /* Legacy/boot mode or cooperative task: busy-wait with HLT */
     int saved_task = task_get_current();
     task_set_current(TASK_IDLE);
     uint32_t target = pit_ticks + (ms * TARGET_HZ / 1000);
-    if (ms * TARGET_HZ % 1000) target++; /* Round up */
+    if (ms * TARGET_HZ % 1000) target++;
     while (pit_ticks < target) {
         cpu_halting = 1;
         __asm__ volatile ("hlt");
@@ -224,8 +242,9 @@ static void keyboard_irq_handler(registers_t* regs) {
     keyboard_push_scancode(scancode);
 }
 
-/* C-level ISR dispatcher, called from isr_common */
-void isr_handler(registers_t* regs) {
+/* C-level ISR dispatcher, called from isr_common.
+   Returns (possibly different) stack pointer for context switching. */
+registers_t* isr_handler(registers_t* regs) {
     uint32_t int_no = regs->int_no;
 
     if (int_no >= 32 && int_no < 48) {
@@ -239,6 +258,13 @@ void isr_handler(registers_t* regs) {
         if (irq >= 8)
             outb(PIC2_CMD, 0x20);
         outb(PIC1_CMD, 0x20);
+
+        /* Timer IRQ: invoke scheduler for context switching */
+        if (irq == 0)
+            regs = schedule(regs);
+    } else if (int_no == 0x80) {
+        /* Software interrupt: yield — just call scheduler, no PIT side effects */
+        regs = schedule(regs);
     } else if (int_no < 32) {
         /* CPU Exception */
         /* For now, just print and halt for fatal exceptions */
@@ -249,6 +275,8 @@ void isr_handler(registers_t* regs) {
             __asm__ volatile ("cli; hlt");
         }
     }
+
+    return regs;
 }
 
 /* ========== CMOS RTC ========== */
@@ -363,6 +391,9 @@ void idt_initialize(void) {
     idt_set_gate(45, (uint32_t)irq13, 0x08, 0x8E);
     idt_set_gate(46, (uint32_t)irq14, 0x08, 0x8E);
     idt_set_gate(47, (uint32_t)irq15, 0x08, 0x8E);
+
+    /* INT 0x80: yield/schedule software interrupt */
+    idt_set_gate(0x80, (uint32_t)isr128, 0x08, 0x8E);
 
     /* Load IDT */
     idt_ptr.limit = sizeof(idt_entries) - 1;

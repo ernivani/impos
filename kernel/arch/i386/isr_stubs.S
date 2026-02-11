@@ -81,6 +81,13 @@ IRQ 13, 45  /* FPU */
 IRQ 14, 46  /* Primary ATA */
 IRQ 15, 47  /* Secondary ATA */
 
+/* Software interrupt for task_yield (INT 0x80) */
+.global isr128
+isr128:
+    pushl $0        /* dummy error code */
+    pushl $0x80     /* interrupt number */
+    jmp isr_common
+
 /* Common ISR handler - saves all regs, calls C handler, restores regs */
 .extern isr_handler
 isr_common:
@@ -98,7 +105,7 @@ isr_common:
 
     push %esp       /* Push pointer to registers struct */
     call isr_handler
-    add $4, %esp
+    mov %eax, %esp  /* Use returned ESP (may be different task's stack) */
 
     pop %gs
     pop %fs

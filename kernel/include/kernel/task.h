@@ -10,6 +10,17 @@
 #define TASK_SHELL       3
 /* Dynamic tasks: 4+ */
 
+#define TASK_STACK_SIZE  8192  /* 8 KB per thread stack */
+
+typedef enum {
+    TASK_STATE_UNUSED = 0,
+    TASK_STATE_READY,
+    TASK_STATE_RUNNING,
+    TASK_STATE_BLOCKED,
+    TASK_STATE_SLEEPING,
+    TASK_STATE_ZOMBIE
+} task_state_t;
+
 typedef struct {
     int      active;
     char     name[32];
@@ -23,6 +34,13 @@ typedef struct {
     int      hog_count;       /* consecutive seconds at >90% */
     int      pid;             /* monotonically increasing PID */
     uint32_t total_ticks;     /* cumulative CPU ticks (for TIME+) */
+
+    /* Preemptive multitasking fields */
+    task_state_t state;
+    uint32_t     esp;         /* saved stack pointer */
+    uint32_t*    stack_base;  /* malloc'd stack (NULL for boot task) */
+    uint32_t     stack_size;  /* stack size in bytes */
+    uint32_t     sleep_until; /* PIT tick to wake at (for SLEEPING) */
 } task_info_t;
 
 void        task_init(void);
@@ -33,6 +51,7 @@ int         task_get_current(void);
 void        task_tick(void);           /* called from PIT handler */
 void        task_sample(void);         /* called every second from PIT */
 task_info_t *task_get(int tid);
+task_info_t *task_get_raw(int tid);  /* like task_get but doesn't check active */
 int         task_count(void);
 void        task_set_mem(int tid, int kb);
 int         task_check_killed(int tid); /* returns & clears killed flag */
@@ -40,5 +59,12 @@ int         task_find_by_pid(int pid); /* slot index or -1 */
 int         task_get_pid(int tid);     /* PID for slot, or -1 */
 int         task_kill_by_pid(int pid); /* 0=ok, -1=not found, -2=system */
 void        task_set_name(int tid, const char *name);
+
+/* Preemptive multitasking API */
+int         task_create_thread(const char *name, void (*entry)(void), int killable);
+void        task_yield(void);
+void        task_exit(void);
+void        task_block(int tid);
+void        task_unblock(int tid);
 
 #endif

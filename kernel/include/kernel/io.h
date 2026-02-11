@@ -45,4 +45,18 @@ static inline void io_wait(void) {
     outb(0x80, 0);
 }
 
+/* Interrupt control for preemptive multitasking */
+static inline void cli(void) { __asm__ volatile("cli"); }
+static inline void sti(void) { __asm__ volatile("sti"); }
+
+static inline uint32_t irq_save(void) {
+    uint32_t flags;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(flags));
+    return flags;
+}
+
+static inline void irq_restore(uint32_t flags) {
+    __asm__ volatile("push %0; popf" : : "r"(flags));
+}
+
 #endif

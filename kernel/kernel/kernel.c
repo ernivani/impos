@@ -20,6 +20,7 @@
 #include <kernel/fs.h>
 #include <kernel/config.h>
 #include <kernel/task.h>
+#include <kernel/sched.h>
 
 #define PROMPT      "$ "
 
@@ -328,6 +329,9 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Initialize task tracking (before any tasks are created) */
     task_init();
+
+    /* Initialize preemptive scheduler */
+    sched_init();
 
     /* Initialize UI theme */
     ui_theme_init();

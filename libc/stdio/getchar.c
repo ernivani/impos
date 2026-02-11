@@ -287,7 +287,8 @@ char getchar(void) {
 
         /* Read from interrupt-driven ring buffer */
         if (!kbd_available()) {
-            /* Idle: only HLT is truly idle; callback does real work */
+            /* HLT-based idle — works with preemptive scheduling because
+               real PIT interrupts fire during HLT and run schedule() */
             task_set_current(TASK_IDLE);
             if (idle_callback) {
                 cpu_halting = 0;  /* callback does real WM/mouse work */
