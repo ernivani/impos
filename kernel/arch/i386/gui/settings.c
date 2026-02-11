@@ -29,8 +29,11 @@ static const char *tab_labels[NUM_TABS] = {
     "General", "Display", "Network", "Users", "About"
 };
 
+#define SIDEBAR_W    140
+
 /* Widget indices */
-static int w_tabs;
+static int w_sidebar;
+static int active_tab;
 
 /* Per-tab widget range: [tab_start[t], tab_end[t]) */
 static int tab_start[NUM_TABS];
@@ -95,11 +98,93 @@ static void show_tab(ui_window_t *win, int tab) {
         ui_widget_set_visible_range(win, tab_start[t], tab_end[t], 0);
     /* Show selected tab */
     ui_widget_set_visible_range(win, tab_start[tab], tab_end[tab], 1);
+    active_tab = tab;
+}
+
+/* ═══ Sidebar custom draw ═════════════════════════════════════ */
+
+static void settings_draw_sidebar(ui_window_t *win, int widget_idx,
+                                   uint32_t *canvas, int cw, int ch) {
+    ui_widget_t *wg = ui_get_widget(win, widget_idx);
+    if (!wg) return;
+    int x0 = wg->x, y0 = wg->y;
+    int w = wg->w, h = wg->h;
+
+    /* Background */
+    gfx_buf_fill_rect(canvas, cw, ch, x0, y0, w, h, ui_theme.surface);
+    /* Right border */
+    gfx_buf_fill_rect(canvas, cw, ch, x0 + w - 1, y0, 1, h, ui_theme.border);
+
+    /* Title */
+    gfx_buf_draw_string(canvas, cw, ch, x0 + 12, y0 + 10,
+                         "Settings", ui_theme.text_secondary, ui_theme.surface);
+
+    /* Tab items */
+    int row_h = 28;
+    int ry = y0 + 34;
+    for (int i = 0; i < NUM_TABS; i++) {
+        int selected = (i == active_tab);
+
+        if (selected) {
+            /* Accent bar on left + highlight background */
+            gfx_buf_fill_rect(canvas, cw, ch, x0, ry, 3, row_h, ui_theme.accent);
+            gfx_buf_fill_rect(canvas, cw, ch, x0 + 3, ry, w - 4, row_h,
+                               GFX_RGB(38, 38, 52));
+        }
+
+        uint32_t tc = selected ? GFX_RGB(255, 255, 255) : ui_theme.text_secondary;
+        gfx_buf_draw_string(canvas, cw, ch, x0 + 16, ry + (row_h - FONT_H) / 2,
+                             tab_labels[i], tc,
+                             selected ? GFX_RGB(38, 38, 52) : ui_theme.surface);
+
+        ry += row_h;
+    }
+}
+
+static int settings_sidebar_event(ui_window_t *win, int widget_idx, ui_event_t *ev) {
+    ui_widget_t *wg = ui_get_widget(win, widget_idx);
+    if (!wg) return 0;
+
+    if (ev->type == UI_EVENT_MOUSE_DOWN) {
+        int wy = ev->mouse.wy - wg->y;
+        int row_h = 28;
+        int ry = 34;
+        for (int i = 0; i < NUM_TABS; i++) {
+            if (wy >= ry && wy < ry + row_h) {
+                show_tab(win, i);
+                /* Refresh data for the selected tab */
+                extern void refresh_network(ui_window_t *win);
+                extern void refresh_users(ui_window_t *win);
+                extern void refresh_about(ui_window_t *win);
+                if (i == TAB_NETWORK) refresh_network(win);
+                else if (i == TAB_USERS) refresh_users(win);
+                else if (i == TAB_ABOUT) refresh_about(win);
+                win->dirty = 1;
+                return 1;
+            }
+            ry += row_h;
+        }
+    }
+
+    if (ev->type == UI_EVENT_KEY_PRESS) {
+        if (ev->key.key == KEY_UP && active_tab > 0) {
+            show_tab(win, active_tab - 1);
+            win->dirty = 1;
+            return 1;
+        }
+        if (ev->key.key == KEY_DOWN && active_tab < NUM_TABS - 1) {
+            show_tab(win, active_tab + 1);
+            win->dirty = 1;
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 /* ═══ Data refresh ════════════════════════════════════════════ */
 
-static void refresh_network(ui_window_t *win) {
+void refresh_network(ui_window_t *win) {
     net_config_t *cfg = net_get_config();
     ui_widget_t *wg;
 
@@ -109,7 +194,6 @@ static void refresh_network(ui_window_t *win) {
 
     char tmp[20];
     fmt_mac(mac_str, cfg->mac);
-    snprintf(mac_str + strlen(mac_str), sizeof(mac_str) - strlen(mac_str), "");
     char mac_full[64];
     snprintf(mac_full, sizeof(mac_full), "MAC:  %s", mac_str);
     wg = ui_get_widget(win, w_mac_label);
@@ -131,7 +215,7 @@ static void refresh_network(ui_window_t *win) {
     if (wg) strncpy(wg->label.text, gw_str, UI_TEXT_MAX - 1);
 }
 
-static void refresh_users(ui_window_t *win) {
+void refresh_users(ui_window_t *win) {
     const char *cur = user_get_current();
     snprintf(cur_user_str, sizeof(cur_user_str), "Current: %s", cur ? cur : "none");
     ui_widget_t *wg = ui_get_widget(win, w_cur_user_label);
@@ -154,7 +238,7 @@ static void refresh_users(ui_window_t *win) {
     }
 }
 
-static void refresh_about(ui_window_t *win) {
+void refresh_about(ui_window_t *win) {
     uint32_t ticks = pit_get_ticks();
     uint32_t secs = ticks / 100;
     snprintf(uptime_str, sizeof(uptime_str), "Uptime: %dh %dm %ds",
@@ -174,18 +258,6 @@ static void refresh_about(ui_window_t *win) {
 }
 
 /* ═══ Callbacks ════════════════════════════════════════════════ */
-
-static void on_tab_change(ui_window_t *win, int idx) {
-    ui_widget_t *wg = ui_get_widget(win, idx);
-    if (!wg) return;
-    int tab = wg->tabs.active;
-    show_tab(win, tab);
-
-    /* Refresh data for the selected tab */
-    if (tab == TAB_NETWORK) refresh_network(win);
-    else if (tab == TAB_USERS) refresh_users(win);
-    else if (tab == TAB_ABOUT) refresh_about(win);
-}
 
 static void on_kbd_toggle(ui_window_t *win, int idx) {
     ui_widget_t *wg = ui_get_widget(win, idx);
@@ -214,7 +286,9 @@ static void on_hostname_submit(ui_window_t *win, int idx) {
 
 ui_window_t *app_settings_create(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
-    int win_w = 600, win_h = 500;
+    int win_w = 650, win_h = 500;
+
+    active_tab = TAB_GENERAL;
 
     ui_window_t *win = ui_window_create(fb_w / 2 - win_w / 2,
                                          fb_h / 2 - win_h / 2 - 20,
@@ -225,25 +299,26 @@ ui_window_t *app_settings_create(void) {
     wm_get_canvas(win->wm_id, &cw, &ch);
 
     int pad = ui_theme.padding;
-    int y_content = ui_theme.tab_height + 8;
+    int cx = SIDEBAR_W + pad;       /* content x start */
+    int content_w = cw - SIDEBAR_W - 2 * pad;
+    int y_content = 8;
 
-    /* Tabs */
-    w_tabs = ui_add_tabs(win, 0, 0, cw, ui_theme.tab_height, tab_labels, NUM_TABS);
-    ui_widget_t *tw = ui_get_widget(win, w_tabs);
-    if (tw) tw->tabs.on_change = on_tab_change;
+    /* Sidebar (custom widget) */
+    w_sidebar = ui_add_custom(win, 0, 0, SIDEBAR_W, ch,
+                               settings_draw_sidebar, settings_sidebar_event, NULL);
 
     /* ─── General tab ─────────────────────────────────── */
     tab_start[TAB_GENERAL] = win->widget_count;
 
-    ui_add_card(win, pad, y_content, cw - 2 * pad, 44, "Keyboard", 0, 0);
-    w_kbd_toggle = ui_add_toggle(win, pad + 12, y_content + 26, cw - 2 * pad - 24, 14,
+    ui_add_card(win, cx, y_content, content_w, 44, "Keyboard", 0, 0);
+    w_kbd_toggle = ui_add_toggle(win, cx + 12, y_content + 26, content_w - 24, 14,
                                   "FR (AZERTY)", keyboard_get_layout() == KB_LAYOUT_FR);
     ui_widget_t *kt = ui_get_widget(win, w_kbd_toggle);
     if (kt) kt->toggle.on_change = on_kbd_toggle;
 
     int y2 = y_content + 54;
-    ui_add_card(win, pad, y2, cw - 2 * pad, 68, "Hostname", 0, 0);
-    w_hostname_input = ui_add_textinput(win, pad + 12, y2 + 28, cw - 2 * pad - 24, 28,
+    ui_add_card(win, cx, y2, content_w, 68, "Hostname", 0, 0);
+    w_hostname_input = ui_add_textinput(win, cx + 12, y2 + 28, content_w - 24, 28,
                                          "hostname", MAX_HOSTNAME, 0);
     ui_widget_t *hi = ui_get_widget(win, w_hostname_input);
     if (hi) {
@@ -254,9 +329,9 @@ ui_window_t *app_settings_create(void) {
     }
 
     int y3 = y2 + 78;
-    ui_add_card(win, pad, y3, cw - 2 * pad, 44, "Time Format", 0, 0);
+    ui_add_card(win, cx, y3, content_w, 44, "Time Format", 0, 0);
     system_config_t *scfg = config_get();
-    w_24h_toggle = ui_add_toggle(win, pad + 12, y3 + 26, cw - 2 * pad - 24, 14,
+    w_24h_toggle = ui_add_toggle(win, cx + 12, y3 + 26, content_w - 24, 14,
                                   "24-hour clock", scfg->use_24h_format);
     ui_widget_t *tt = ui_get_widget(win, w_24h_toggle);
     if (tt) tt->toggle.on_change = on_24h_toggle;
@@ -266,14 +341,14 @@ ui_window_t *app_settings_create(void) {
     /* ─── Display tab ─────────────────────────────────── */
     tab_start[TAB_DISPLAY] = win->widget_count;
 
-    ui_add_card(win, pad, y_content, cw - 2 * pad, 80, "Display Info", 0, 0);
+    ui_add_card(win, cx, y_content, content_w, 80, "Display Info", 0, 0);
     snprintf(res_str, sizeof(res_str), "Resolution: %dx%d @ %dbpp",
              (int)gfx_width(), (int)gfx_height(), (int)gfx_bpp());
-    w_res_label = ui_add_label(win, pad + 12, y_content + 30, cw - 2 * pad - 24, 20,
+    w_res_label = ui_add_label(win, cx + 12, y_content + 30, content_w - 24, 20,
                                 res_str, 0);
     snprintf(fb_str, sizeof(fb_str), "Pitch: %d bytes, RAM: %dMB",
              (int)gfx_pitch(), (int)gfx_get_system_ram_mb());
-    w_fb_label = ui_add_label(win, pad + 12, y_content + 52, cw - 2 * pad - 24, 20,
+    w_fb_label = ui_add_label(win, cx + 12, y_content + 52, content_w - 24, 20,
                                fb_str, ui_theme.text_sub);
 
     tab_end[TAB_DISPLAY] = win->widget_count;
@@ -281,17 +356,17 @@ ui_window_t *app_settings_create(void) {
     /* ─── Network tab ─────────────────────────────────── */
     tab_start[TAB_NETWORK] = win->widget_count;
 
-    ui_add_card(win, pad, y_content, cw - 2 * pad, 150, "Network Status", 0, 0);
+    ui_add_card(win, cx, y_content, content_w, 150, "Network Status", 0, 0);
     int ny = y_content + 30;
-    w_link_label = ui_add_label(win, pad + 12, ny, cw - 2 * pad - 24, 20, "Link: ...", 0);
+    w_link_label = ui_add_label(win, cx + 12, ny, content_w - 24, 20, "Link: ...", 0);
     ny += 22;
-    w_mac_label = ui_add_label(win, pad + 12, ny, cw - 2 * pad - 24, 20, "MAC:  ...", ui_theme.text_sub);
+    w_mac_label = ui_add_label(win, cx + 12, ny, content_w - 24, 20, "MAC:  ...", ui_theme.text_sub);
     ny += 22;
-    w_ip_label = ui_add_label(win, pad + 12, ny, cw - 2 * pad - 24, 20, "IP:   ...", ui_theme.text_sub);
+    w_ip_label = ui_add_label(win, cx + 12, ny, content_w - 24, 20, "IP:   ...", ui_theme.text_sub);
     ny += 22;
-    w_mask_label = ui_add_label(win, pad + 12, ny, cw - 2 * pad - 24, 20, "Mask: ...", ui_theme.text_sub);
+    w_mask_label = ui_add_label(win, cx + 12, ny, content_w - 24, 20, "Mask: ...", ui_theme.text_sub);
     ny += 22;
-    w_gw_label = ui_add_label(win, pad + 12, ny, cw - 2 * pad - 24, 20, "GW:   ...", ui_theme.text_sub);
+    w_gw_label = ui_add_label(win, cx + 12, ny, content_w - 24, 20, "GW:   ...", ui_theme.text_sub);
     refresh_network(win);
 
     tab_end[TAB_NETWORK] = win->widget_count;
@@ -299,13 +374,13 @@ ui_window_t *app_settings_create(void) {
     /* ─── Users tab ───────────────────────────────────── */
     tab_start[TAB_USERS] = win->widget_count;
 
-    ui_add_card(win, pad, y_content, cw - 2 * pad, 36, "Current User", 0, 0);
-    w_cur_user_label = ui_add_label(win, pad + 12, y_content + 26, cw - 2 * pad - 24, 16,
+    ui_add_card(win, cx, y_content, content_w, 36, "Current User", 0, 0);
+    w_cur_user_label = ui_add_label(win, cx + 12, y_content + 26, content_w - 24, 16,
                                      "", 0);
 
-    ui_add_card(win, pad, y_content + 46, cw - 2 * pad, ch - y_content - 56, "All Users", 0, 0);
-    w_user_list = ui_add_list(win, pad + 4, y_content + 72,
-                               cw - 2 * pad - 8, ch - y_content - 82, NULL, 0);
+    ui_add_card(win, cx, y_content + 46, content_w, ch - y_content - 56, "All Users", 0, 0);
+    w_user_list = ui_add_list(win, cx + 4, y_content + 72,
+                               content_w - 8, ch - y_content - 82, NULL, 0);
     refresh_users(win);
 
     tab_end[TAB_USERS] = win->widget_count;
@@ -313,18 +388,18 @@ ui_window_t *app_settings_create(void) {
     /* ─── About tab ───────────────────────────────────── */
     tab_start[TAB_ABOUT] = win->widget_count;
 
-    ui_add_card(win, pad, y_content, cw - 2 * pad, 160, "System Information", 0, 0);
+    ui_add_card(win, cx, y_content, content_w, 160, "System Information", 0, 0);
     int ay = y_content + 30;
-    w_os_label = ui_add_label(win, pad + 12, ay, cw - 2 * pad - 24, 20,
+    w_os_label = ui_add_label(win, cx + 12, ay, content_w - 24, 20,
                                "ImposOS v1.0 (i386)", ui_theme.accent);
     ay += 24;
-    w_uptime_label = ui_add_label(win, pad + 12, ay, cw - 2 * pad - 24, 20, "Uptime: ...", 0);
+    w_uptime_label = ui_add_label(win, cx + 12, ay, content_w - 24, 20, "Uptime: ...", 0);
     ay += 28;
-    w_mem_bar = ui_add_progress(win, pad + 12, ay, cw - 2 * pad - 24, 14, 0, NULL);
+    w_mem_bar = ui_add_progress(win, cx + 12, ay, content_w - 24, 14, 0, NULL);
     ay += 22;
-    w_mem_label = ui_add_label(win, pad + 12, ay, cw - 2 * pad - 24, 20, "", ui_theme.text_sub);
+    w_mem_label = ui_add_label(win, cx + 12, ay, content_w - 24, 20, "", ui_theme.text_sub);
     ay += 24;
-    w_build_label = ui_add_label(win, pad + 12, ay, cw - 2 * pad - 24, 20,
+    w_build_label = ui_add_label(win, cx + 12, ay, content_w - 24, 20,
                                   "Built with i686-elf-gcc, GRUB multiboot", ui_theme.text_dim);
     refresh_about(win);
 
@@ -333,9 +408,8 @@ ui_window_t *app_settings_create(void) {
     /* Show only General tab initially */
     show_tab(win, TAB_GENERAL);
 
-    /* Auto-focus first focusable widget */
-    if (win->focused_widget < 0)
-        ui_focus_next(win);
+    /* Auto-focus sidebar */
+    win->focused_widget = w_sidebar;
 
     return win;
 }
@@ -345,8 +419,7 @@ ui_window_t *app_settings_create(void) {
 void app_settings_on_event(ui_window_t *win, ui_event_t *ev) {
     (void)ev;
     /* Refresh About data on every event so uptime updates */
-    ui_widget_t *tw = ui_get_widget(win, w_tabs);
-    if (tw && tw->tabs.active == TAB_ABOUT) {
+    if (active_tab == TAB_ABOUT) {
         refresh_about(win);
         win->dirty = 1;
     }

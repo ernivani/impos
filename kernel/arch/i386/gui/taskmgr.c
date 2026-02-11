@@ -338,6 +338,12 @@ ui_window_t *app_taskmgr_create(void) {
     return win;
 }
 
+/* ═══ Periodic tick (auto-refresh) ════════════════════════════ */
+
+void app_taskmgr_on_tick(ui_window_t *win) {
+    tm_refresh(win);
+}
+
 /* ═══ Standalone entry point ══════════════════════════════════ */
 
 void app_taskmgr(void) {

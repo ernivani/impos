@@ -105,4 +105,10 @@ void wm_fill_rounded_rect_alpha(int win_id, int x, int y, int w, int h, int r, u
 /* Background draw callback (called by wm_composite after clearing) */
 void wm_set_bg_draw(void (*fn)(void));
 
+/* Post-composite callback (drawn after windows + dock, before flip) */
+void wm_set_post_composite(void (*fn)(void));
+
+/* Hit test: returns window id at screen (x,y), or -1 if none */
+int wm_hit_test(int mx, int my);
+
 #endif

@@ -37,6 +37,9 @@ static int dock_hover_idx = -1;
 /* Background draw callback */
 static void (*bg_draw_fn)(void) = 0;
 
+/* Post-composite callback */
+static void (*post_composite_fn)(void) = 0;
+
 /* Cached background (gradient + menubar + dock) */
 static uint32_t *bg_cache = 0;
 static int bg_cache_valid = 0;
@@ -443,6 +446,10 @@ void wm_composite(void) {
     /* Dock always on top of windows */
     desktop_draw_dock();
 
+    /* Post-composite overlay (context menus, etc.) */
+    if (post_composite_fn)
+        post_composite_fn();
+
     /* Flip to framebuffer */
     gfx_flip();
 
@@ -524,9 +531,7 @@ static int dock_hit(int mx, int my) {
 }
 
 static const int dock_action_map[] = {
-    DESKTOP_ACTION_FILES, DESKTOP_ACTION_TERMINAL, DESKTOP_ACTION_BROWSER,
-    DESKTOP_ACTION_EDITOR, DESKTOP_ACTION_POWER,
-    DESKTOP_ACTION_SETTINGS, DESKTOP_ACTION_MONITOR
+    DESKTOP_ACTION_FILES, DESKTOP_ACTION_TRASH
 };
 
 void wm_mouse_idle(void) {
@@ -591,7 +596,7 @@ void wm_mouse_idle(void) {
     if (left_click) {
         /* Check dock first */
         int di = dock_hit(mx, my);
-        if (di >= 0 && di < 7) {
+        if (di >= 0 && di < (int)(sizeof(dock_action_map)/sizeof(dock_action_map[0]))) {
             dock_action = dock_action_map[di];
             return;
         }
@@ -733,4 +738,14 @@ void wm_fill_rounded_rect_alpha(int win_id, int x, int y, int w, int h, int r, u
 
 void wm_set_bg_draw(void (*fn)(void)) {
     bg_draw_fn = fn;
+}
+
+void wm_set_post_composite(void (*fn)(void)) {
+    post_composite_fn = fn;
+}
+
+int wm_hit_test(int mx, int my) {
+    int idx = hit_test_window(mx, my);
+    if (idx < 0) return -1;
+    return windows[idx].id;
 }

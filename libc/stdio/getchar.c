@@ -393,8 +393,8 @@ char getchar(void) {
         if (alt_pressed && scancode == 0x0F)
             return KEY_ALT_TAB;
 
-        /* Alt+Space — open Finder */
-        if (alt_pressed && scancode == 0x39)
+        /* Ctrl+Space — open Finder */
+        if (ctrl_pressed && scancode == 0x39)
             return KEY_FINDER;
 
         /* --- Numpad keys (0x47-0x53, no E0 = physical numpad) --- */
@@ -434,6 +434,10 @@ char getchar(void) {
             }
             continue;
         }
+
+        /* F12 — toggle mobile view (mapped to Super) */
+        if (scancode == 0x58)
+            return KEY_SUPER;
 
         /* --- Regular character keys --- */
         if (scancode >= KEYMAP_SIZE)
