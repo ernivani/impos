@@ -47,6 +47,8 @@ static int w_24h_toggle;
 /* Display tab */
 static int w_res_label;
 static int w_fb_label;
+static int w_dpi_toggle;
+static int w_vec_font_toggle;
 
 /* Network tab */
 static int w_link_label;
@@ -267,6 +269,21 @@ static void on_kbd_toggle(ui_window_t *win, int idx) {
     config_save();
 }
 
+static void on_dpi_toggle(ui_window_t *win, int idx) {
+    ui_widget_t *wg = ui_get_widget(win, idx);
+    if (!wg) return;
+    ui_theme.dpi_scale = wg->toggle.on ? 2 : 1;
+    (void)win;
+}
+
+static void on_vec_font_toggle(ui_window_t *win, int idx) {
+    ui_widget_t *wg = ui_get_widget(win, idx);
+    if (!wg) return;
+    ui_theme.font_size = wg->toggle.on ? 2 : 0;
+    wm_mark_dirty();
+    (void)win;
+}
+
 static void on_24h_toggle(ui_window_t *win, int idx) {
     ui_widget_t *wg = ui_get_widget(win, idx);
     if (!wg) return;
@@ -350,6 +367,22 @@ ui_window_t *app_settings_create(void) {
              (int)gfx_pitch(), (int)gfx_get_system_ram_mb());
     w_fb_label = ui_add_label(win, cx + 12, y_content + 52, content_w - 24, 20,
                                fb_str, ui_theme.text_sub);
+
+    ui_add_card(win, cx, y_content + 90, content_w, 50, "DPI Scale", 0, 0);
+    w_dpi_toggle = ui_add_toggle(win, cx + content_w - 60, y_content + 116, 40, 20,
+                                  "2x", ui_theme.dpi_scale == 2);
+    {
+        ui_widget_t *dt = ui_get_widget(win, w_dpi_toggle);
+        if (dt) dt->toggle.on_change = on_dpi_toggle;
+    }
+
+    ui_add_card(win, cx, y_content + 150, content_w, 50, "Vector Font", 0, 0);
+    w_vec_font_toggle = ui_add_toggle(win, cx + content_w - 60, y_content + 176, 40, 20,
+                                       "Enabled", ui_theme.font_size == 2);
+    {
+        ui_widget_t *vt = ui_get_widget(win, w_vec_font_toggle);
+        if (vt) vt->toggle.on_change = on_vec_font_toggle;
+    }
 
     tab_end[TAB_DISPLAY] = win->widget_count;
 

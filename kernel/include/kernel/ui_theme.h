@@ -99,7 +99,14 @@ typedef struct {
     int titlebar_height;
     int win_border_width;
     int close_btn_radius;
+
+    /* Compositing */
+    int win_corner_radius;  /* window corner radius (default 10) */
+    int font_size;          /* 0 = 8x16, 1 = 16x32 */
+    int dpi_scale;          /* 1 or 2 */
 } ui_theme_t;
+
+#define DPI(x) ((x) * ui_theme.dpi_scale)
 
 extern ui_theme_t ui_theme;
 
