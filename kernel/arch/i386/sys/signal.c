@@ -1,6 +1,7 @@
 #include <kernel/signal.h>
 #include <kernel/task.h>
 #include <kernel/pipe.h>
+#include <kernel/shm.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <kernel/io.h>
@@ -42,6 +43,7 @@ static void sig_kill_task(int tid) {
     if (!t || !t->active) return;
 
     pipe_cleanup_task(tid);
+    shm_cleanup_task(tid);
     t->killed = 1;
 
     if (t->is_user) {
