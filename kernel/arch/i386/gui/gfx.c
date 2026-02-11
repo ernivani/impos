@@ -1,6 +1,7 @@
 #include <kernel/gfx.h>
 #include <kernel/multiboot.h>
 #include <kernel/idt.h>
+#include <kernel/mouse.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -129,11 +130,15 @@ void gfx_surf_fill_rect(gfx_surface_t *s, int x, int y, int w, int h, uint32_t c
     if (x1 > s->w) x1 = s->w;
     if (y1 > s->h) y1 = s->h;
     if (x0 >= x1 || y0 >= y1) return;
-    for (int row = y0; row < y1; row++) {
-        uint32_t *dst = s->buf + row * s->pitch + x0;
-        for (int col = 0; col < x1 - x0; col++)
-            dst[col] = color;
-    }
+    int width = x1 - x0;
+    /* Fill first row */
+    uint32_t *first = s->buf + y0 * s->pitch + x0;
+    for (int col = 0; col < width; col++)
+        first[col] = color;
+    /* Replicate to remaining rows via memcpy (uses rep movsd) */
+    size_t row_bytes = (size_t)width * 4;
+    for (int row = y0 + 1; row < y1; row++)
+        memcpy(s->buf + row * s->pitch + x0, first, row_bytes);
 }
 
 void gfx_surf_draw_rect(gfx_surface_t *s, int x, int y, int w, int h, uint32_t color) {
@@ -546,12 +551,18 @@ void gfx_draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
 }
 
 void gfx_clear(uint32_t color) {
-    gfx_surface_t s = gfx_get_surface();
-    for (int y = 0; y < s.h; y++) {
-        uint32_t *row = s.buf + y * s.pitch;
-        for (int x = 0; x < s.w; x++)
-            row[x] = color;
+    if (color == 0) {
+        memset(backbuf, 0, fb_height * fb_pitch);
+        return;
     }
+    uint32_t pitch4 = fb_pitch / 4;
+    /* Fill first row */
+    uint32_t *first = backbuf;
+    for (uint32_t x = 0; x < fb_width; x++)
+        first[x] = color;
+    /* Replicate to remaining rows */
+    for (uint32_t y = 1; y < fb_height; y++)
+        memcpy(backbuf + y * pitch4, first, fb_width * 4);
 }
 
 /* ═══ Buffer-targeted drawing (legacy — delegate to surface) ═══ */
@@ -870,7 +881,19 @@ void gfx_set_cursor(int col, int row) {
 
 void gfx_flip(void) {
     if (!have_backbuffer) return;
-    memcpy(framebuffer, backbuf, fb_height * fb_pitch);
+    /* Remove cursor before overwriting framebuffer so cursor_save stays valid */
+    gfx_restore_mouse_cursor();
+    /* Scanline-diff: only copy lines that actually changed.
+       Writes to MMIO framebuffer are slow; skipping unchanged lines is a big win. */
+    uint32_t pitch4 = fb_pitch / 4;
+    size_t row_bytes = fb_width * 4;
+    for (uint32_t y = 0; y < fb_height; y++) {
+        uint32_t off = y * pitch4;
+        if (memcmp(backbuf + off, framebuffer + off, row_bytes) != 0)
+            memcpy(framebuffer + off, backbuf + off, row_bytes);
+    }
+    /* Re-save pixels under cursor from fresh framebuffer content and redraw */
+    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
 }
 
 void gfx_flip_rect(int x, int y, int w, int h) {
@@ -883,12 +906,18 @@ void gfx_flip_rect(int x, int y, int w, int h) {
     if (y + h > (int)fb_height) h = (int)fb_height - y;
     if (w <= 0 || h <= 0) return;
 
+    /* Remove cursor before overwriting framebuffer so cursor_save stays valid */
+    gfx_restore_mouse_cursor();
+
     uint32_t pitch4 = fb_pitch / 4;
     for (int row = y; row < y + h; row++) {
         memcpy(&framebuffer[row * pitch4 + x],
                &backbuf[row * pitch4 + x],
                (size_t)w * 4);
     }
+
+    /* Re-save pixels under cursor from fresh framebuffer content and redraw */
+    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
 }
 
 void gfx_overlay_darken(int x, int y, int w, int h, uint8_t alpha) {

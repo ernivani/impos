@@ -948,6 +948,32 @@ int fs_readlink(const char* path, char* buf, size_t bufsize) {
     return 0;
 }
 
+int fs_rename(const char* old_name, const char* new_name) {
+    if (!old_name || !new_name || new_name[0] == '\0') return -1;
+    if (local_strncmp(old_name, ".", MAX_NAME_LEN) == 0 ||
+        local_strncmp(old_name, "..", MAX_NAME_LEN) == 0) return -1;
+
+    /* Check new name doesn't already exist */
+    if (dir_lookup(sb.cwd_inode, new_name) >= 0) return -1;
+
+    /* Find and rename the directory entry in-place */
+    inode_t *dir = &inodes[sb.cwd_inode];
+    for (uint8_t b = 0; b < dir->num_blocks; b++) {
+        dir_entry_t *entries = (dir_entry_t *)data_blocks[dir->blocks[b]];
+        int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
+        for (int e = 0; e < entries_per_block; e++) {
+            if (entries[e].name[0] != '\0' &&
+                local_strncmp(entries[e].name, old_name, MAX_NAME_LEN) == 0) {
+                local_strncpy(entries[e].name, new_name, MAX_NAME_LEN);
+                fs_dirty = 1;
+                if (ata_is_available()) fs_sync();
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
 void fs_get_io_stats(uint32_t *rd_ops, uint32_t *rd_bytes, uint32_t *wr_ops, uint32_t *wr_bytes) {
     if (rd_ops) *rd_ops = fs_rd_ops;
     if (rd_bytes) *rd_bytes = fs_rd_bytes;

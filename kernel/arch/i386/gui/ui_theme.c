@@ -64,6 +64,20 @@ void ui_theme_init(void) {
     ui_theme.progress_fill     = GFX_RGB(137, 180, 250);
     ui_theme.progress_warn     = GFX_RGB(243, 139, 168);
 
+    /* Toggle */
+    ui_theme.toggle_on_bg      = GFX_RGB(137, 180, 250);
+    ui_theme.toggle_off_bg     = GFX_RGB(69, 71, 90);
+    ui_theme.toggle_handle     = GFX_RGB(240, 240, 250);
+
+    /* Card */
+    ui_theme.card_bg           = GFX_RGB(30, 30, 46);
+    ui_theme.card_border       = GFX_RGB(49, 50, 68);
+
+    /* Semantic */
+    ui_theme.danger            = GFX_RGB(243, 139, 168);
+    ui_theme.success           = GFX_RGB(166, 227, 161);
+    ui_theme.icon_grid_sel     = GFX_RGB(137, 180, 250);
+
     /* Accent / misc */
     ui_theme.accent            = GFX_RGB(137, 180, 250);
     ui_theme.dot               = GFX_RGB(108, 112, 134);

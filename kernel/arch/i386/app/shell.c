@@ -94,6 +94,9 @@ static void cmd_connect(int argc, char* argv[]);
 static void cmd_firewall(int argc, char* argv[]);
 static void cmd_top(int argc, char* argv[]);
 static void cmd_kill(int argc, char* argv[]);
+static void cmd_display(int argc, char* argv[]);
+static void cmd_gfxbench(int argc, char* argv[]);
+static void cmd_fps(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -795,6 +798,53 @@ static command_t commands[] = {
         "    Terminates the process identified by PID. System processes\n"
         "    (idle, kernel, wm, shell) cannot be killed. Use 'top' to\n"
         "    see running processes and their PIDs.\n"
+    },
+    {
+        "display", cmd_display,
+        "Show real-time FPS and input monitor",
+        "display: display\n"
+        "    Show a live FPS counter, mouse coordinates, and input state.\n"
+        "    Press 'q' to quit.\n",
+        "NAME\n"
+        "    display - real-time FPS and input monitor\n\n"
+        "SYNOPSIS\n"
+        "    display\n\n"
+        "DESCRIPTION\n"
+        "    Displays a fullscreen overlay with a live frames-per-second\n"
+        "    counter, mouse position, button state, and a crosshair at\n"
+        "    the current mouse coordinates. Useful for diagnosing input\n"
+        "    and rendering issues. Press 'q' or ESC to exit.\n"
+    },
+    {
+        "gfxbench", cmd_gfxbench,
+        "Run graphics rendering stress test",
+        "gfxbench: gfxbench\n"
+        "    Stress test the rendering pipeline at max throughput.\n"
+        "    Press 'q' to quit early.\n",
+        "NAME\n"
+        "    gfxbench - graphics rendering stress test\n\n"
+        "SYNOPSIS\n"
+        "    gfxbench\n\n"
+        "DESCRIPTION\n"
+        "    Runs five stress phases with no frame cap: rect flood,\n"
+        "    line storm, circle cascade, alpha blending, and combined\n"
+        "    chaos. Each phase runs for 5 seconds. FPS is measured and\n"
+        "    printed as a summary at the end. Press 'q' or ESC to quit.\n"
+    },
+    {
+        "fps", cmd_fps,
+        "Toggle FPS overlay on screen",
+        "fps: fps\n"
+        "    Toggle a live FPS counter in the top-right corner of the desktop.\n",
+        "NAME\n"
+        "    fps - toggle FPS overlay\n\n"
+        "SYNOPSIS\n"
+        "    fps\n\n"
+        "DESCRIPTION\n"
+        "    Toggles a persistent FPS counter overlay on the top-right\n"
+        "    corner of the desktop. The counter updates every second and\n"
+        "    shows the number of WM composites per second. Run 'fps'\n"
+        "    again to turn it off.\n"
     },
 };
 
@@ -2382,7 +2432,7 @@ static void demo_scene_orbits(int W, int H, int frame) {
     int cx = W / 2, cy = H / 2 - 30;
 
     /* Title */
-    gfx_draw_string_smooth(cx - gfx_string_scaled_w("Orbital Motion", 3) / 2,
+    gfx_draw_string_scaled(cx - gfx_string_scaled_w("Orbital Motion", 3) / 2,
                            40, "Orbital Motion", GFX_WHITE, 3);
 
     /* Central glow */
@@ -2437,7 +2487,7 @@ static int particle_init_done = 0;
 static void demo_scene_particles(int W, int H, int frame) {
     demo_draw_bg(W, H, frame);
 
-    gfx_draw_string_smooth(W / 2 - gfx_string_scaled_w("Particle System", 3) / 2,
+    gfx_draw_string_scaled(W / 2 - gfx_string_scaled_w("Particle System", 3) / 2,
                            40, "Particle System", GFX_WHITE, 3);
 
     if (!particle_init_done) {
@@ -2489,7 +2539,7 @@ static void demo_scene_particles(int W, int H, int frame) {
 static void demo_scene_cards(int W, int H, int frame) {
     demo_draw_bg(W, H, frame);
 
-    gfx_draw_string_smooth(W / 2 - gfx_string_scaled_w("Modern UI", 3) / 2,
+    gfx_draw_string_scaled(W / 2 - gfx_string_scaled_w("Modern UI", 3) / 2,
                            40, "Modern UI", GFX_WHITE, 3);
 
     /* Floating cards */
@@ -2541,7 +2591,7 @@ static void demo_scene_cards(int W, int H, int frame) {
 
         /* Title text */
         int tw = gfx_string_scaled_w(cards[i].title, 2);
-        gfx_draw_string_smooth(icon_cx - tw / 2, cy + 160,
+        gfx_draw_string_scaled(icon_cx - tw / 2, cy + 160,
                                cards[i].title, GFX_WHITE, 2);
 
         /* Subtitle */
@@ -2571,7 +2621,7 @@ static void demo_scene_cards(int W, int H, int frame) {
 static void demo_scene_waves(int W, int H, int frame) {
     demo_draw_bg(W, H, frame);
 
-    gfx_draw_string_smooth(W / 2 - gfx_string_scaled_w("Wave Synthesis", 3) / 2,
+    gfx_draw_string_scaled(W / 2 - gfx_string_scaled_w("Wave Synthesis", 3) / 2,
                            40, "Wave Synthesis", GFX_WHITE, 3);
 
     int cy = H / 2;
@@ -3295,4 +3345,321 @@ static void cmd_top(int argc, char* argv[]) {
     top_first_render = 1;
     top_render();
     shell_register_fg_app(&top_fg_app);
+}
+
+/* ═══ display — real-time FPS and input monitor ═══════════════ */
+
+static void cmd_display(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+
+    if (!gfx_is_active()) {
+        printf("Graphics mode not available\n");
+        return;
+    }
+
+    int W = (int)gfx_width();
+    int H = (int)gfx_height();
+
+    keyboard_set_idle_callback(0);
+    int tid = task_register("display", 1, -1);
+
+    uint32_t frame = 0;
+    uint32_t fps = 0;
+    uint32_t sec_start = pit_get_ticks();
+    uint32_t frames_this_sec = 0;
+    uint32_t fps_min = 0, fps_max = 0;
+    uint32_t fps_accum = 0, fps_samples = 0;
+
+    while (1) {
+        uint32_t now = pit_get_ticks();
+
+        /* Calculate FPS every second (120 ticks) */
+        if (now - sec_start >= 120) {
+            fps = frames_this_sec * 120 / (now - sec_start);
+            if (fps_samples == 0 || fps < fps_min) fps_min = fps;
+            if (fps > fps_max) fps_max = fps;
+            fps_accum += fps;
+            fps_samples++;
+            frames_this_sec = 0;
+            sec_start = now;
+        }
+
+        /* Background */
+        gfx_clear(GFX_RGB(18, 20, 28));
+
+        /* Animated ring of dots — light load to show real frame rate */
+        int cx = W / 2, cy = H / 2 + 60;
+        for (int i = 0; i < 12; i++) {
+            int angle = (int)frame * 3 + i * 85;
+            int rx = cx + isin(angle) * 180 / 244;
+            int ry = cy + icos(angle) * 180 / 244;
+            uint32_t c = hsv_to_rgb((i * 85 + (int)frame * 4) & 1023, 200, 220);
+            gfx_fill_circle(rx, ry, 12, c);
+        }
+
+        char buf[128];
+
+        /* FPS — big centered */
+        snprintf(buf, sizeof(buf), "FPS: %u", (unsigned)fps);
+        gfx_draw_string_scaled(cx - gfx_string_scaled_w(buf, 5) / 2,
+                               50, buf, GFX_WHITE, 5);
+
+        /* Min / Avg / Max */
+        snprintf(buf, sizeof(buf), "MIN: %u   AVG: %u   MAX: %u",
+                 (unsigned)(fps_samples > 0 ? fps_min : 0),
+                 (unsigned)(fps_samples > 0 ? fps_accum / fps_samples : 0),
+                 (unsigned)fps_max);
+        gfx_draw_string_scaled(cx - gfx_string_scaled_w(buf, 2) / 2,
+                               140, buf, GFX_RGB(180, 185, 200), 2);
+
+        /* Mouse info */
+        int mx = mouse_get_x(), my = mouse_get_y();
+        uint8_t mb = mouse_get_buttons();
+        snprintf(buf, sizeof(buf), "Mouse: %d, %d   Buttons: %c %c %c",
+                 mx, my,
+                 (mb & 1) ? 'L' : '-',
+                 (mb & 4) ? 'M' : '-',
+                 (mb & 2) ? 'R' : '-');
+        gfx_draw_string_scaled(cx - gfx_string_scaled_w(buf, 2) / 2,
+                               190, buf, GFX_RGB(160, 165, 180), 2);
+
+        /* Crosshair at mouse position (drawn to backbuffer) */
+        gfx_draw_line(mx - 30, my, mx - 6, my, GFX_RGB(255, 60, 60));
+        gfx_draw_line(mx + 6, my, mx + 30, my, GFX_RGB(255, 60, 60));
+        gfx_draw_line(mx, my - 30, mx, my - 6, GFX_RGB(255, 60, 60));
+        gfx_draw_line(mx, my + 6, mx, my + 30, GFX_RGB(255, 60, 60));
+        gfx_fill_circle(mx, my, 3, GFX_RGB(255, 60, 60));
+
+        /* Frame counter + help */
+        snprintf(buf, sizeof(buf), "Frame: %u", (unsigned)frame);
+        gfx_draw_string(cx - (int)strlen(buf) * FONT_W / 2, H - 60,
+                         buf, GFX_RGB(100, 105, 120), GFX_RGB(18, 20, 28));
+        gfx_draw_string(cx - 11 * FONT_W / 2, H - 30,
+                         "Q: quit", GFX_RGB(80, 85, 100), GFX_RGB(18, 20, 28));
+
+        gfx_flip();
+        frame++;
+        frames_this_sec++;
+
+        if (tid >= 0 && task_check_killed(tid)) break;
+
+        int key = keyboard_getchar_nb();
+        if (key == 'q' || key == 'Q' || key == 27) break;
+
+        /* No frame cap — measure true rendering throughput */
+    }
+
+    if (tid >= 0) task_unregister(tid);
+    keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
+    terminal_clear();
+    if (gfx_is_active()) wm_composite();
+}
+
+/* ═══ gfxbench — max-throughput rendering stress test ═════════ */
+
+static uint32_t bench_seed;
+static uint32_t bench_brand(void) {
+    bench_seed = bench_seed * 1103515245 + 12345;
+    return (bench_seed >> 16) & 0x7FFF;
+}
+
+static void cmd_gfxbench(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+
+    if (!gfx_is_active()) {
+        printf("Graphics mode not available\n");
+        return;
+    }
+
+    int W = (int)gfx_width();
+    int H = (int)gfx_height();
+
+    keyboard_set_idle_callback(0);
+    int tid = task_register("gfxbench", 1, -1);
+
+    bench_seed = pit_get_ticks() ^ 0xDEADBEEF;
+    uint32_t frame = 0;
+    uint32_t fps = 0;
+    uint32_t sec_start = pit_get_ticks();
+    uint32_t frames_this_sec = 0;
+    int phase = 0;
+    uint32_t phase_start = pit_get_ticks();
+    int total_phases = 5;
+    uint32_t phase_fps[5] = {0};
+    uint32_t phase_pixels_ok[5] = {0};
+    uint32_t phase_frames[5] = {0};
+    int quit = 0;
+
+    static const char *phase_names[] = {
+        "Rect Flood", "Line Storm", "Circle Cascade",
+        "Alpha Blend", "Combined Chaos"
+    };
+
+    while (!quit) {
+        uint32_t now = pit_get_ticks();
+
+        /* FPS every second */
+        if (now - sec_start >= 120) {
+            fps = frames_this_sec * 120 / (now - sec_start);
+            phase_fps[phase] = fps;
+            frames_this_sec = 0;
+            sec_start = now;
+        }
+
+        /* Auto-advance phase every 5 seconds (600 ticks at 120Hz) */
+        if (now - phase_start >= 600) {
+            phase++;
+            if (phase >= total_phases) break;
+            phase_start = now;
+        }
+
+        gfx_clear(GFX_BLACK);
+
+        /* Inline PRNG */
+        #define BRAND() bench_brand()
+
+        switch (phase) {
+        case 0: /* Rect flood — 200 random filled rects */
+            for (int i = 0; i < 200; i++) {
+                int rx = (int)(BRAND() % (unsigned)W);
+                int ry = (int)(BRAND() % (unsigned)H);
+                int rw = 10 + (int)(BRAND() % 200);
+                int rh = 10 + (int)(BRAND() % 200);
+                uint32_t c = hsv_to_rgb(((int)BRAND() + (int)frame * 7) & 1023, 200, 220);
+                gfx_fill_rect(rx, ry, rw, rh, c);
+            }
+            break;
+
+        case 1: /* Line storm — 500 random lines */
+            for (int i = 0; i < 500; i++) {
+                int x0 = (int)(BRAND() % (unsigned)W);
+                int y0 = (int)(BRAND() % (unsigned)H);
+                int x1 = (int)(BRAND() % (unsigned)W);
+                int y1 = (int)(BRAND() % (unsigned)H);
+                uint32_t c = hsv_to_rgb(((int)BRAND() + (int)frame * 5) & 1023, 240, 255);
+                gfx_draw_line(x0, y0, x1, y1, c);
+            }
+            break;
+
+        case 2: /* Circle cascade — 100 random circles */
+            for (int i = 0; i < 100; i++) {
+                int ccx = (int)(BRAND() % (unsigned)W);
+                int ccy = (int)(BRAND() % (unsigned)H);
+                int r = 5 + (int)(BRAND() % 80);
+                uint32_t c = hsv_to_rgb((i * 10 + (int)frame * 8) & 1023, 220, 240);
+                gfx_fill_circle(ccx, ccy, r, c);
+            }
+            break;
+
+        case 3: /* Alpha blend stress — 150 overlapping translucent rects */
+            for (int i = 0; i < 150; i++) {
+                int rx = (int)(BRAND() % (unsigned)W);
+                int ry = (int)(BRAND() % (unsigned)H);
+                int rw = 20 + (int)(BRAND() % 300);
+                int rh = 20 + (int)(BRAND() % 300);
+                uint32_t c = hsv_to_rgb(((int)BRAND() + (int)frame * 3) & 1023, 200, 200);
+                uint8_t a = (uint8_t)(60 + BRAND() % 140);
+                gfx_fill_rect_alpha(rx, ry, rw, rh,
+                    GFX_RGBA((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, a));
+            }
+            break;
+
+        case 4: /* Combined chaos — rects + lines + circles */
+            for (int i = 0; i < 80; i++) {
+                int rx = (int)(BRAND() % (unsigned)W);
+                int ry = (int)(BRAND() % (unsigned)H);
+                int rw = 10 + (int)(BRAND() % 150);
+                int rh = 10 + (int)(BRAND() % 150);
+                gfx_fill_rect(rx, ry, rw, rh,
+                    hsv_to_rgb(((int)BRAND() + (int)frame * 6) & 1023, 200, 200));
+            }
+            for (int i = 0; i < 200; i++) {
+                gfx_draw_line(
+                    (int)(BRAND() % (unsigned)W), (int)(BRAND() % (unsigned)H),
+                    (int)(BRAND() % (unsigned)W), (int)(BRAND() % (unsigned)H),
+                    hsv_to_rgb(((int)BRAND() + (int)frame * 4) & 1023, 240, 255));
+            }
+            for (int i = 0; i < 30; i++) {
+                gfx_fill_circle(
+                    (int)(BRAND() % (unsigned)W), (int)(BRAND() % (unsigned)H),
+                    5 + (int)(BRAND() % 50),
+                    hsv_to_rgb(((int)BRAND() + (int)frame * 9) & 1023, 220, 230));
+            }
+            break;
+        }
+
+        #undef BRAND
+
+        /* HUD bar */
+        gfx_fill_rect(0, 0, W, 50, GFX_RGB(0, 0, 0));
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Phase %d/%d: %s   FPS: %u   Frame: %u",
+                 phase + 1, total_phases, phase_names[phase],
+                 (unsigned)fps, (unsigned)frame);
+        gfx_draw_string(10, 8, buf, GFX_WHITE, GFX_BLACK);
+
+        /* Progress bar */
+        int elapsed = (int)(now - phase_start);
+        int bar_w = W - 20;
+        int fill = elapsed * bar_w / 600;
+        if (fill > bar_w) fill = bar_w;
+        gfx_fill_rect(10, 34, bar_w, 8, GFX_RGB(40, 40, 50));
+        gfx_fill_rect(10, 34, fill, 8, GFX_RGB(80, 160, 255));
+
+        gfx_draw_string(W - 18 * FONT_W, 8,
+                         "Q: quit early", GFX_RGB(120, 125, 140), GFX_BLACK);
+
+        gfx_flip();
+        frame++;
+        frames_this_sec++;
+
+        if (tid >= 0 && task_check_killed(tid)) break;
+
+        int key = keyboard_getchar_nb();
+        if (key == 'q' || key == 'Q' || key == 27) { quit = 1; break; }
+
+        /* Validation: sample a pixel from backbuffer after drawing */
+        {
+            uint32_t *bb = gfx_backbuffer();
+            int sx = W / 2, sy = H / 2;
+            uint32_t px = bb[sy * (int)(gfx_pitch() / 4) + sx];
+            if (px != 0) phase_pixels_ok[phase]++;
+            phase_frames[phase]++;
+        }
+
+        /* No frame cap — maximum throughput */
+    }
+
+    if (tid >= 0) task_unregister(tid);
+    keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
+    terminal_clear();
+
+    /* Print results summary with validation */
+    printf("=== Graphics Benchmark Results ===\n");
+    int all_pass = 1;
+    for (int i = 0; i < total_phases; i++) {
+        if (i > phase) break;
+        int drawn = (phase_frames[i] > 0 && phase_pixels_ok[i] > 0);
+        int rate_ok = (phase_fps[i] > 0);
+        int pass = drawn && rate_ok;
+        if (!pass) all_pass = 0;
+        printf("  %-18s %4u fps  %5u frames  %s\n",
+               phase_names[i], (unsigned)phase_fps[i],
+               (unsigned)phase_frames[i],
+               pass ? "PASS" : "FAIL");
+    }
+    printf("  Total frames: %u\n", (unsigned)frame);
+    printf("  Result: %s\n", all_pass ? "ALL PASS" : "SOME FAILED");
+    printf("==================================\n");
+
+    if (gfx_is_active()) wm_composite();
+}
+
+/* ═══ fps — toggle FPS overlay on desktop ═════════════════════ */
+
+static void cmd_fps(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    wm_toggle_fps();
+    printf("FPS overlay: %s\n", wm_fps_enabled() ? "ON" : "OFF");
+    wm_composite();
 }

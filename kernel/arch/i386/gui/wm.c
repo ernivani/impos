@@ -37,6 +37,9 @@ static int dock_hover_idx = -1;
 /* Background draw callback */
 static void (*bg_draw_fn)(void) = 0;
 
+/* Post-composite callback */
+static void (*post_composite_fn)(void) = 0;
+
 /* Cached background (gradient + menubar + dock) */
 static uint32_t *bg_cache = 0;
 static int bg_cache_valid = 0;
@@ -46,6 +49,12 @@ static volatile int composite_needed = 0;
 
 /* Throttle compositing during drag/resize to ~30fps */
 static uint32_t last_drag_composite_tick = 0;
+
+/* FPS overlay */
+static int fps_overlay_enabled = 0;
+static uint32_t fps_frame_count = 0;
+static uint32_t fps_last_tick = 0;
+static uint32_t fps_display_value = 0;
 
 void wm_initialize(void) {
     memset(windows, 0, sizeof(windows));
@@ -369,11 +378,28 @@ static void draw_window(wm_window_t *w) {
     if (!(w->flags & WM_WIN_VISIBLE) || (w->flags & WM_WIN_MINIMIZED)) return;
     int focused = (w->flags & WM_WIN_FOCUSED) != 0;
 
-    /* Cheap shadow: 2px dark border offset (no alpha blending) */
-    gfx_fill_rect(w->x + 2, w->y + 2, w->w, w->h, GFX_RGB(8, 8, 12));
+    /* Cheap shadow: thin edge strips (right + bottom) instead of full rect */
+    uint32_t shc = GFX_RGB(8, 8, 12);
+    gfx_fill_rect(w->x + w->w, w->y + 2, 2, w->h, shc);       /* right */
+    gfx_fill_rect(w->x + 2, w->y + w->h, w->w, 2, shc);       /* bottom */
 
-    /* Window body */
-    gfx_fill_rect(w->x, w->y, w->w, w->h, ui_theme.win_body_bg);
+    /* Window body — skip area covered by canvas */
+    int body_y = w->y + WM_TITLEBAR_H;
+    int body_h = w->h - WM_TITLEBAR_H;
+    if (w->canvas && body_h > 0) {
+        /* Only fill left/right border strips beside the canvas */
+        if (WM_BORDER > 0) {
+            gfx_fill_rect(w->x, body_y, WM_BORDER, body_h, ui_theme.win_body_bg);
+            gfx_fill_rect(w->x + w->w - WM_BORDER, body_y, WM_BORDER, body_h, ui_theme.win_body_bg);
+        }
+        /* Bottom border strip below canvas */
+        int canvas_bot = body_y + w->canvas_h;
+        int bottom_strip = w->y + w->h - canvas_bot;
+        if (bottom_strip > 0)
+            gfx_fill_rect(w->x, canvas_bot, w->w, bottom_strip, ui_theme.win_body_bg);
+    } else {
+        gfx_fill_rect(w->x, w->y, w->w, w->h, ui_theme.win_body_bg);
+    }
 
     /* Title bar */
     uint32_t hdr = focused ? ui_theme.win_header_focused : ui_theme.win_header_bg;
@@ -442,6 +468,28 @@ void wm_composite(void) {
 
     /* Dock always on top of windows */
     desktop_draw_dock();
+
+    /* Post-composite overlay (context menus, etc.) */
+    if (post_composite_fn)
+        post_composite_fn();
+
+    /* FPS overlay (top-right corner) */
+    if (fps_overlay_enabled) {
+        fps_frame_count++;
+        uint32_t now = pit_get_ticks();
+        if (fps_last_tick == 0) fps_last_tick = now;
+        if (now - fps_last_tick >= 120) {  /* every second at 120Hz PIT */
+            fps_display_value = fps_frame_count * 120 / (now - fps_last_tick);
+            fps_frame_count = 0;
+            fps_last_tick = now;
+        }
+        char fps_buf[16];
+        snprintf(fps_buf, sizeof(fps_buf), "FPS:%u", (unsigned)fps_display_value);
+        int fw = (int)strlen(fps_buf) * FONT_W + 12;
+        int fx = (int)gfx_width() - fw - 4;
+        gfx_fill_rect(fx, 2, fw, FONT_H + 6, GFX_RGB(0, 0, 0));
+        gfx_draw_string(fx + 6, 5, fps_buf, GFX_RGB(0, 255, 80), GFX_RGB(0, 0, 0));
+    }
 
     /* Flip to framebuffer */
     gfx_flip();
@@ -523,11 +571,7 @@ static int dock_hit(int mx, int my) {
     return -1;
 }
 
-static const int dock_action_map[] = {
-    DESKTOP_ACTION_FILES, DESKTOP_ACTION_TERMINAL, DESKTOP_ACTION_BROWSER,
-    DESKTOP_ACTION_EDITOR, DESKTOP_ACTION_POWER,
-    DESKTOP_ACTION_SETTINGS, DESKTOP_ACTION_MONITOR
-};
+/* dock actions are now dynamic — use desktop_dock_action() */
 
 void wm_mouse_idle(void) {
     if (!mouse_poll()) return;
@@ -557,6 +601,9 @@ void wm_mouse_idle(void) {
                     wm_resize_window(w->id, new_w, new_h);
                     wm_composite();
                     last_drag_composite_tick = now;
+                } else {
+                    /* Still update cursor so it doesn't freeze between composites */
+                    gfx_draw_mouse_cursor(mx, my);
                 }
             }
         } else {
@@ -579,6 +626,9 @@ void wm_mouse_idle(void) {
             if (now - last_drag_composite_tick >= 3) {
                 wm_composite();
                 last_drag_composite_tick = now;
+            } else {
+                /* Still update cursor so it doesn't freeze between composites */
+                gfx_draw_mouse_cursor(mx, my);
             }
         } else {
             dragging = -1;
@@ -591,8 +641,15 @@ void wm_mouse_idle(void) {
     if (left_click) {
         /* Check dock first */
         int di = dock_hit(mx, my);
-        if (di >= 0 && di < 7) {
-            dock_action = dock_action_map[di];
+        if (di >= 0) {
+            int da_val = desktop_dock_action(di);
+            if (da_val > 0) {
+                dock_action = da_val;
+            } else {
+                /* Running app — focus its window */
+                /* Encode as negative dock index for desktop to handle */
+                dock_action = -(di + 1);
+            }
             return;
         }
 
@@ -717,6 +774,42 @@ uint32_t *wm_get_canvas(int win_id, int *out_w, int *out_h) {
     return win->canvas;
 }
 
+void wm_fill_rounded_rect(int win_id, int x, int y, int w, int h, int r, uint32_t color) {
+    wm_window_t *win = find_window(win_id);
+    if (!win || !win->canvas) return;
+    gfx_surface_t s = { win->canvas, win->canvas_w, win->canvas_h, win->canvas_w };
+    gfx_surf_rounded_rect(&s, x, y, w, h, r, color);
+}
+
+void wm_fill_rounded_rect_alpha(int win_id, int x, int y, int w, int h, int r, uint32_t color, uint8_t a) {
+    wm_window_t *win = find_window(win_id);
+    if (!win || !win->canvas) return;
+    gfx_surface_t s = { win->canvas, win->canvas_w, win->canvas_h, win->canvas_w };
+    gfx_surf_rounded_rect_alpha(&s, x, y, w, h, r, color, a);
+}
+
 void wm_set_bg_draw(void (*fn)(void)) {
     bg_draw_fn = fn;
+}
+
+void wm_set_post_composite(void (*fn)(void)) {
+    post_composite_fn = fn;
+}
+
+int wm_hit_test(int mx, int my) {
+    int idx = hit_test_window(mx, my);
+    if (idx < 0) return -1;
+    return windows[idx].id;
+}
+
+void wm_toggle_fps(void) {
+    fps_overlay_enabled = !fps_overlay_enabled;
+    fps_frame_count = 0;
+    fps_last_tick = 0;
+    fps_display_value = 0;
+    wm_mark_dirty();
+}
+
+int wm_fps_enabled(void) {
+    return fps_overlay_enabled;
 }
