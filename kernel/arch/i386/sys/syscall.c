@@ -2,6 +2,8 @@
 #include <kernel/task.h>
 #include <kernel/sched.h>
 #include <kernel/pipe.h>
+#include <kernel/signal.h>
+#include <kernel/vmm.h>
 #include <stdint.h>
 
 extern volatile uint32_t pit_ticks;
@@ -99,9 +101,54 @@ registers_t* syscall_handler(registers_t* regs) {
 
         case SYS_KILL: {
             int pid = (int)regs->ebx;
-            /* ECX = signal number (unused for now, just kill) */
-            int rc = task_kill_by_pid(pid);
+            int signum = (int)regs->ecx;
+            if (signum <= 0 || signum >= NSIG) signum = SIGTERM;
+            int rc = sig_send_pid(pid, signum);
             regs->eax = (uint32_t)rc;
+            return regs;
+        }
+
+        case SYS_SIGACTION: {
+            int tid = task_get_current();
+            int signum = (int)regs->ebx;
+            sig_handler_t handler = (sig_handler_t)regs->ecx;
+            sig_handler_t old = sig_set_handler(tid, signum, handler);
+            regs->eax = (uint32_t)old;
+            return regs;
+        }
+
+        case SYS_SIGRETURN: {
+            int tid = task_get_current();
+            task_info_t *t = task_get(tid);
+            if (!t || !t->is_user) return regs;
+
+            /* User ESP at int $0x80 points to: [signum] [sig_context_t] */
+            uint32_t user_esp = regs->useresp;
+            uint32_t offset = user_esp - USER_SPACE_BASE;
+            if (offset > PAGE_SIZE) return regs;
+
+            uint32_t *phys_sp = (uint32_t *)(t->user_stack + offset);
+            sig_context_t *ctx = (sig_context_t *)(phys_sp + 1); /* skip signum */
+
+            /* Restore all registers */
+            regs->eip     = ctx->eip;
+            regs->cs      = ctx->cs;
+            regs->eflags  = ctx->eflags;
+            regs->useresp = ctx->esp;
+            regs->ss      = ctx->ss;
+            regs->eax     = ctx->eax;
+            regs->ecx     = ctx->ecx;
+            regs->edx     = ctx->edx;
+            regs->ebx     = ctx->ebx;
+            regs->esi     = ctx->esi;
+            regs->edi     = ctx->edi;
+            regs->ebp     = ctx->ebp;
+            regs->ds      = ctx->ds;
+            regs->es      = ctx->es;
+            regs->fs      = ctx->fs;
+            regs->gs      = ctx->gs;
+
+            t->sig.in_handler = 0;
             return regs;
         }
 

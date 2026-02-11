@@ -5,6 +5,7 @@
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <kernel/pipe.h>
+#include <kernel/signal.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -177,45 +178,7 @@ int task_get_pid(int tid) {
 }
 
 int task_kill_by_pid(int pid) {
-    int tid = task_find_by_pid(pid);
-    if (tid < 0) return -1;
-    if (!tasks[tid].killable) return -2;
-
-    uint32_t flags = irq_save();
-    tasks[tid].killed = 1;
-
-    /* Clean up any open pipe FDs */
-    pipe_cleanup_task(tid);
-
-    /* If this is a preemptive thread (has its own stack), kill it immediately */
-    if (tasks[tid].is_user) {
-        tasks[tid].state = TASK_STATE_ZOMBIE;
-        tasks[tid].active = 0;
-        if (tasks[tid].kernel_stack) {
-            pmm_free_frame(tasks[tid].kernel_stack);
-            tasks[tid].kernel_stack = 0;
-        }
-        if (tasks[tid].user_stack) {
-            pmm_free_frame(tasks[tid].user_stack);
-            tasks[tid].user_stack = 0;
-        }
-        if (tasks[tid].user_page_table) {
-            pmm_free_frame(tasks[tid].user_page_table);
-            tasks[tid].user_page_table = 0;
-        }
-        if (tasks[tid].page_dir && tasks[tid].page_dir != vmm_get_kernel_pagedir()) {
-            vmm_destroy_user_pagedir(tasks[tid].page_dir);
-            tasks[tid].page_dir = 0;
-        }
-    } else if (tasks[tid].stack_base) {
-        tasks[tid].state = TASK_STATE_ZOMBIE;
-        tasks[tid].active = 0;
-        free(tasks[tid].stack_base);
-        tasks[tid].stack_base = 0;
-    }
-
-    irq_restore(flags);
-    return 0;
+    return sig_send_pid(pid, SIGKILL);
 }
 
 void task_set_name(int tid, const char *name) {
@@ -324,6 +287,7 @@ int task_create_thread(const char *name, void (*entry)(void), int killable) {
 
     tasks[tid].esp = (uint32_t)sp;
     tasks[tid].page_dir = vmm_get_kernel_pagedir();
+    sig_init(&tasks[tid].sig);
     tasks[tid].state = TASK_STATE_READY;
 
     irq_restore(flags);
@@ -505,6 +469,7 @@ int task_create_user_thread(const char *name, void (*entry)(void), int killable)
     tasks[tid].esp = (uint32_t)ksp;
     tasks[tid].page_dir = pd;
     tasks[tid].user_page_table = pt;
+    sig_init(&tasks[tid].sig);
     tasks[tid].state = TASK_STATE_READY;
 
     irq_restore(flags);

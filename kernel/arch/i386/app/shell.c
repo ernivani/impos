@@ -26,6 +26,7 @@
 #include <kernel/task.h>
 #include <kernel/sched.h>
 #include <kernel/pipe.h>
+#include <kernel/signal.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -806,21 +807,24 @@ static command_t commands[] = {
     },
     {
         "kill", cmd_kill,
-        "Terminate a process by PID",
-        "kill: kill [-9|-INT|-TERM|-KILL] PID\n"
+        "Send a signal to a process",
+        "kill: kill [-9|-INT|-TERM|-KILL|-USR1|-USR2|-PIPE] PID\n"
         "    Send a signal to the process with the given PID.\n",
         "NAME\n"
         "    kill - send a signal to a process\n\n"
         "SYNOPSIS\n"
-        "    kill [-9|-INT|-TERM|-KILL] PID\n\n"
+        "    kill [-9|-INT|-TERM|-KILL|-USR1|-USR2|-PIPE] PID\n\n"
         "DESCRIPTION\n"
         "    Sends a signal to the process identified by PID.\n"
-        "    Without a signal flag, sends TERM. System processes\n"
-        "    (idle, kernel, wm, shell) cannot be killed.\n\n"
+        "    Without a signal flag, sends SIGTERM (15). System\n"
+        "    processes (idle, kernel, wm, shell) cannot be signaled.\n\n"
         "OPTIONS\n"
-        "    -9, -KILL    Forcefully kill the process\n"
-        "    -INT         Send interrupt signal\n"
-        "    -TERM        Send termination signal (default)\n"
+        "    -9, -KILL    Forcefully kill (uncatchable)\n"
+        "    -INT         Send interrupt signal (2)\n"
+        "    -TERM        Send termination signal (15, default)\n"
+        "    -USR1        Send user-defined signal 1 (10)\n"
+        "    -USR2        Send user-defined signal 2 (12)\n"
+        "    -PIPE        Send broken pipe signal (13)\n"
     },
     {
         "display", cmd_display,
@@ -3171,32 +3175,45 @@ static void cmd_firewall(int argc, char* argv[]) {
 
 static void cmd_kill(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Usage: kill [-9|-INT|-TERM|-KILL] PID\n");
+        printf("Usage: kill [-9|-INT|-TERM|-KILL|-USR1|-USR2|-PIPE] PID\n");
         return;
     }
 
     int pid;
-    const char *sig_name = "TERM";
+    int signum = SIGTERM;  /* default */
 
     if (argv[1][0] == '-') {
-        /* Signal flag provided */
         if (argc < 3) {
-            printf("Usage: kill [-9|-INT|-TERM|-KILL] PID\n");
+            printf("Usage: kill [-9|-INT|-TERM|-KILL|-USR1|-USR2|-PIPE] PID\n");
             return;
         }
-        sig_name = argv[1] + 1;  /* skip the '-' */
+        const char *s = argv[1] + 1;
+        if (strcmp(s, "9") == 0 || strcmp(s, "KILL") == 0)
+            signum = SIGKILL;
+        else if (strcmp(s, "INT") == 0)
+            signum = SIGINT;
+        else if (strcmp(s, "TERM") == 0)
+            signum = SIGTERM;
+        else if (strcmp(s, "USR1") == 0)
+            signum = SIGUSR1;
+        else if (strcmp(s, "USR2") == 0)
+            signum = SIGUSR2;
+        else if (strcmp(s, "PIPE") == 0)
+            signum = SIGPIPE;
+        else {
+            printf("kill: unknown signal '%s'\n", s);
+            return;
+        }
         pid = atoi(argv[2]);
     } else {
         pid = atoi(argv[1]);
     }
 
-    /* For now all signals just kill the process */
-    (void)sig_name;
-    int rc = task_kill_by_pid(pid);
+    int rc = sig_send_pid(pid, signum);
     if (rc == 0)
-        printf("Killed process %d\n", pid);
+        printf("Sent signal %d to process %d\n", signum, pid);
     else if (rc == -2)
-        printf("kill: cannot kill system process (PID %d)\n", pid);
+        printf("kill: cannot signal system process (PID %d)\n", pid);
     else
         printf("kill: no such process (PID %d)\n", pid);
 }
