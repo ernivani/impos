@@ -851,21 +851,23 @@ static command_t commands[] = {
     {
         "spawn", cmd_spawn,
         "Spawn a background thread",
-        "spawn: spawn [counter|hog]\n"
+        "spawn: spawn [counter|hog|user-counter]\n"
         "    Spawn a background thread for testing preemptive multitasking.\n"
-        "    counter — prints a number every second\n"
-        "    hog     — CPU-intensive loop (watchdog will kill it)\n",
+        "    counter      — prints a number every second (ring 0)\n"
+        "    hog          — CPU-intensive loop (watchdog will kill it)\n"
+        "    user-counter — prints a number every second (ring 3)\n",
         "NAME\n"
         "    spawn - spawn a background thread\n\n"
         "SYNOPSIS\n"
-        "    spawn [counter|hog]\n\n"
+        "    spawn [counter|hog|user-counter]\n\n"
         "DESCRIPTION\n"
-        "    Creates a new kernel thread running in the background.\n"
+        "    Creates a new thread running in the background.\n"
         "    The thread runs preemptively alongside the shell.\n"
         "    Use 'kill PID' to terminate a spawned thread.\n"
         "    Types:\n"
-        "      counter - increments and prints a counter every second\n"
-        "      hog     - infinite CPU loop (watchdog kills after 5s)\n"
+        "      counter      - increments and prints a counter every second (ring 0)\n"
+        "      hog          - infinite CPU loop (watchdog kills after 5s)\n"
+        "      user-counter - like counter but runs in ring 3 (user mode)\n"
     },
 };
 
@@ -3701,9 +3703,42 @@ static void thread_hog(void) {
     while (1) x++;
 }
 
+/* Ring 3 user-mode counter thread.
+ * Uses INT 0x80 syscalls instead of kernel functions for sleep/getpid. */
+static void user_thread_counter(void) {
+    int pid;
+    __asm__ volatile (
+        "mov $3, %%eax\n\t"    /* SYS_GETPID */
+        "int $0x80\n\t"
+        "mov %%eax, %0"
+        : "=r"(pid) : : "eax"
+    );
+
+    for (int i = 0; ; i++) {
+        printf("[user %d] count = %d\n", pid, i);
+        __asm__ volatile (
+            "mov $2, %%eax\n\t"    /* SYS_SLEEP */
+            "mov $1000, %%ebx\n\t" /* 1000ms */
+            "int $0x80\n\t"
+            : : : "eax", "ebx"
+        );
+    }
+}
+
 static void cmd_spawn(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Usage: spawn [counter|hog]\n");
+        printf("Usage: spawn [counter|hog|user-counter]\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "user-counter") == 0) {
+        int tid = task_create_user_thread("user-counter", user_thread_counter, 1);
+        if (tid < 0) {
+            printf("spawn: failed to create user thread (no free slots)\n");
+            return;
+        }
+        int pid = task_get_pid(tid);
+        printf("[User Thread %d] user-counter started (PID %d, ring 3)\n", tid, pid);
         return;
     }
 
@@ -3716,7 +3751,7 @@ static void cmd_spawn(int argc, char* argv[]) {
         entry = thread_hog;
     else {
         printf("spawn: unknown thread type '%s'\n", argv[1]);
-        printf("  Available: counter, hog\n");
+        printf("  Available: counter, hog, user-counter\n");
         return;
     }
 
