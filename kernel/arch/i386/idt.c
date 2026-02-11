@@ -214,10 +214,13 @@ static void pit_handler(registers_t* regs) {
 }
 
 /* Keyboard IRQ1 handler — read scancode from port 0x60 and push to ring buffer.
-   This prevents mouse bytes from being misread as keyboard scancodes. */
+   Check status register bit 5 to filter out mouse data (auxiliary flag). */
 static void keyboard_irq_handler(registers_t* regs) {
     (void)regs;
+    uint8_t status = inb(0x64);
+    if (!(status & 0x01)) return;       /* No data available */
     uint8_t scancode = inb(0x60);
+    if (status & 0x20) return;          /* Mouse data — discard */
     keyboard_push_scancode(scancode);
 }
 

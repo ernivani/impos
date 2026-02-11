@@ -99,8 +99,20 @@ void wm_draw_rect(int win_id, int x, int y, int w, int h, uint32_t color);
 void wm_draw_line(int win_id, int x0, int y0, int x1, int y1, uint32_t color);
 void wm_clear_canvas(int win_id, uint32_t color);
 uint32_t *wm_get_canvas(int win_id, int *out_w, int *out_h);
+void wm_fill_rounded_rect(int win_id, int x, int y, int w, int h, int r, uint32_t color);
+void wm_fill_rounded_rect_alpha(int win_id, int x, int y, int w, int h, int r, uint32_t color, uint8_t a);
 
 /* Background draw callback (called by wm_composite after clearing) */
 void wm_set_bg_draw(void (*fn)(void));
+
+/* Post-composite callback (drawn after windows + dock, before flip) */
+void wm_set_post_composite(void (*fn)(void));
+
+/* Hit test: returns window id at screen (x,y), or -1 if none */
+int wm_hit_test(int mx, int my);
+
+/* FPS overlay toggle (drawn on top-right of screen during composite) */
+void wm_toggle_fps(void);
+int  wm_fps_enabled(void);
 
 #endif

@@ -188,9 +188,81 @@ int ui_add_custom(ui_window_t *win, int x, int y, int w, int h,
     return idx;
 }
 
+int ui_add_toggle(ui_window_t *win, int x, int y, int w, int h,
+                  const char *text, int on) {
+    int idx = alloc_widget(win);
+    if (idx < 0) return -1;
+    ui_widget_t *wg = &win->widgets[idx];
+    wg->type = UI_TOGGLE;
+    wg->x = x; wg->y = y; wg->w = w; wg->h = h;
+    wg->flags |= UI_FLAG_FOCUSABLE;
+    if (text) strncpy(wg->toggle.text, text, 47);
+    wg->toggle.on = on ? 1 : 0;
+    win->dirty = 1;
+    return idx;
+}
+
+int ui_add_icon_grid(ui_window_t *win, int x, int y, int w, int h,
+                     int cols, int cell_w, int cell_h,
+                     const char **labels, int count,
+                     void (*draw_icon)(int idx, int x, int y, int sel)) {
+    int idx = alloc_widget(win);
+    if (idx < 0) return -1;
+    ui_widget_t *wg = &win->widgets[idx];
+    wg->type = UI_ICON_GRID;
+    wg->x = x; wg->y = y; wg->w = w; wg->h = h;
+    wg->flags |= UI_FLAG_FOCUSABLE;
+    wg->icon_grid.cols = cols;
+    wg->icon_grid.cell_w = cell_w;
+    wg->icon_grid.cell_h = cell_h;
+    wg->icon_grid.labels = labels;
+    wg->icon_grid.count = count;
+    wg->icon_grid.selected = 0;
+    wg->icon_grid.scroll = 0;
+    wg->icon_grid.draw_icon = draw_icon;
+    win->dirty = 1;
+    return idx;
+}
+
+int ui_add_card(ui_window_t *win, int x, int y, int w, int h,
+                const char *title, uint32_t bg_color, int radius) {
+    int idx = alloc_widget(win);
+    if (idx < 0) return -1;
+    ui_widget_t *wg = &win->widgets[idx];
+    wg->type = UI_CARD;
+    wg->x = x; wg->y = y; wg->w = w; wg->h = h;
+    if (title) strncpy(wg->card.title, title, 47);
+    wg->card.bg_color = bg_color ? bg_color : ui_theme.card_bg;
+    wg->card.radius = radius > 0 ? radius : ui_theme.border_radius;
+    win->dirty = 1;
+    return idx;
+}
+
 ui_widget_t *ui_get_widget(ui_window_t *win, int idx) {
     if (!win || idx < 0 || idx >= win->widget_count) return 0;
     return &win->widgets[idx];
+}
+
+void ui_widget_set_visible(ui_window_t *win, int idx, int visible) {
+    if (!win || idx < 0 || idx >= win->widget_count) return;
+    if (visible)
+        win->widgets[idx].flags |= UI_FLAG_VISIBLE;
+    else
+        win->widgets[idx].flags &= ~UI_FLAG_VISIBLE;
+    win->dirty = 1;
+}
+
+void ui_widget_set_visible_range(ui_window_t *win, int from, int to, int visible) {
+    if (!win) return;
+    if (from < 0) from = 0;
+    if (to > win->widget_count) to = win->widget_count;
+    for (int i = from; i < to; i++) {
+        if (visible)
+            win->widgets[i].flags |= UI_FLAG_VISIBLE;
+        else
+            win->widgets[i].flags &= ~UI_FLAG_VISIBLE;
+    }
+    win->dirty = 1;
 }
 
 /* ═══ Drawing ════════════════════════════════════════════════════ */
@@ -403,6 +475,101 @@ static void draw_custom(ui_window_t *win, ui_widget_t *wg) {
     }
 }
 
+static void draw_toggle(ui_window_t *win, ui_widget_t *wg, int focused) {
+    /* Draw label text on the left */
+    if (wg->toggle.text[0]) {
+        wm_draw_string(win->wm_id, wg->x, wg->y + (wg->h - FONT_H) / 2,
+                       wg->toggle.text, ui_theme.text_primary, ui_theme.win_bg);
+    }
+
+    /* Draw toggle pill on the right */
+    int tw = 40, th = 22;
+    int tx = wg->x + wg->w - tw - 4;
+    int ty = wg->y + (wg->h - th) / 2;
+    uint32_t pill_bg = wg->toggle.on ? ui_theme.toggle_on_bg : ui_theme.toggle_off_bg;
+
+    wm_fill_rounded_rect(win->wm_id, tx, ty, tw, th, th / 2, pill_bg);
+
+    /* Handle circle */
+    int handle_r = (th - 6) / 2;
+    int handle_cx = wg->toggle.on ? tx + tw - handle_r - 4 : tx + handle_r + 4;
+    int handle_cy = ty + th / 2;
+    /* Draw filled circle for handle */
+    for (int dy = -handle_r; dy <= handle_r; dy++)
+        for (int dx = -handle_r; dx <= handle_r; dx++)
+            if (dx * dx + dy * dy <= handle_r * handle_r)
+                wm_put_pixel(win->wm_id, handle_cx + dx, handle_cy + dy,
+                             ui_theme.toggle_handle);
+
+    if (focused)
+        wm_draw_rect(win->wm_id, tx - 1, ty - 1, tw + 2, th + 2, ui_theme.accent);
+}
+
+static void draw_icon_grid(ui_window_t *win, ui_widget_t *wg, int focused) {
+    int cols = wg->icon_grid.cols > 0 ? wg->icon_grid.cols : 4;
+    int cw2 = wg->icon_grid.cell_w;
+    int ch2 = wg->icon_grid.cell_h;
+
+    /* Clear area */
+    wm_fill_rect(win->wm_id, wg->x, wg->y, wg->w, wg->h, ui_theme.win_bg);
+
+    for (int i = 0; i < wg->icon_grid.count; i++) {
+        int col = i % cols;
+        int row = i / cols;
+        int cx = wg->x + col * cw2;
+        int cy = wg->y + row * ch2 - wg->icon_grid.scroll;
+        if (cy + ch2 < wg->y || cy > wg->y + wg->h) continue;
+
+        int selected = (i == wg->icon_grid.selected);
+
+        /* Selection highlight */
+        if (selected) {
+            wm_fill_rounded_rect_alpha(win->wm_id, cx + 2, cy + 2,
+                                        cw2 - 4, ch2 - 4, 6,
+                                        ui_theme.icon_grid_sel, 60);
+        }
+
+        /* Draw icon via callback */
+        if (wg->icon_grid.draw_icon) {
+            int icon_x = cx + (cw2 - 48) / 2;
+            int icon_y = cy + 4;
+            wg->icon_grid.draw_icon(i, icon_x, icon_y, selected);
+        }
+
+        /* Draw label below icon */
+        if (wg->icon_grid.labels && wg->icon_grid.labels[i]) {
+            const char *label = wg->icon_grid.labels[i];
+            int lw = (int)strlen(label) * FONT_W;
+            int lx = cx + (cw2 - lw) / 2;
+            if (lx < cx + 2) lx = cx + 2;
+            int ly = cy + ch2 - FONT_H - 4;
+            wm_draw_string(win->wm_id, lx, ly, label,
+                           selected ? ui_theme.text_primary : ui_theme.text_secondary,
+                           ui_theme.win_bg);
+        }
+    }
+}
+
+static void draw_card(ui_window_t *win, ui_widget_t *wg) {
+    uint32_t bg = wg->card.bg_color ? wg->card.bg_color : ui_theme.card_bg;
+    int r = wg->card.radius > 0 ? wg->card.radius : ui_theme.border_radius;
+    wm_fill_rounded_rect(win->wm_id, wg->x, wg->y, wg->w, wg->h, r, bg);
+
+    /* Optional border */
+    /* Draw outline manually: top/bottom/left/right rects (simple) */
+    wm_draw_rect(win->wm_id, wg->x, wg->y, wg->w, wg->h, ui_theme.card_border);
+
+    /* Title header */
+    if (wg->card.title[0]) {
+        wm_draw_string(win->wm_id, wg->x + ui_theme.padding,
+                       wg->y + (24 - FONT_H) / 2 + 2,
+                       wg->card.title, ui_theme.text_secondary, bg);
+        /* Thin separator under title */
+        wm_fill_rect(win->wm_id, wg->x + 4, wg->y + 24,
+                     wg->w - 8, 1, ui_theme.card_border);
+    }
+}
+
 void ui_window_redraw(ui_window_t *win) {
     if (!win) return;
 
@@ -426,6 +593,9 @@ void ui_window_redraw(ui_window_t *win) {
         case UI_LIST:      draw_list(win, wg, focused); break;
         case UI_TEXTINPUT: draw_textinput(win, wg, focused); break;
         case UI_CUSTOM:    draw_custom(win, wg); break;
+        case UI_TOGGLE:    draw_toggle(win, wg, focused); break;
+        case UI_ICON_GRID: draw_icon_grid(win, wg, focused); break;
+        case UI_CARD:      draw_card(win, wg); break;
         }
     }
 
@@ -634,6 +804,37 @@ void ui_dispatch_event(ui_window_t *win, ui_event_t *ev) {
                         win->dirty = 1;
                 }
                 break;
+            case UI_TOGGLE:
+                if (key == '\n' || key == ' ') {
+                    wg->toggle.on = !wg->toggle.on;
+                    if (wg->toggle.on_change) wg->toggle.on_change(win, idx);
+                    win->dirty = 1;
+                }
+                break;
+            case UI_ICON_GRID: {
+                int cols = wg->icon_grid.cols > 0 ? wg->icon_grid.cols : 4;
+                if (key == KEY_LEFT && wg->icon_grid.selected > 0) {
+                    wg->icon_grid.selected--;
+                    win->dirty = 1;
+                }
+                if (key == KEY_RIGHT && wg->icon_grid.selected < wg->icon_grid.count - 1) {
+                    wg->icon_grid.selected++;
+                    win->dirty = 1;
+                }
+                if (key == KEY_UP && wg->icon_grid.selected >= cols) {
+                    wg->icon_grid.selected -= cols;
+                    win->dirty = 1;
+                }
+                if (key == KEY_DOWN && wg->icon_grid.selected + cols < wg->icon_grid.count) {
+                    wg->icon_grid.selected += cols;
+                    win->dirty = 1;
+                }
+                if (key == '\n' && wg->icon_grid.on_activate) {
+                    wg->icon_grid.on_activate(win, idx);
+                    win->dirty = 1;
+                }
+                break;
+            }
             }
         }
     }
@@ -697,6 +898,22 @@ void ui_dispatch_event(ui_window_t *win, ui_event_t *ev) {
                             win->dirty = 1;
                     }
                     break;
+                case UI_TOGGLE:
+                    wg->toggle.on = !wg->toggle.on;
+                    if (wg->toggle.on_change) wg->toggle.on_change(win, i);
+                    break;
+                case UI_ICON_GRID: {
+                    int col = (wx - wg->x) / wg->icon_grid.cell_w;
+                    int row = (wy - wg->y + wg->icon_grid.scroll) / wg->icon_grid.cell_h;
+                    int cols = wg->icon_grid.cols > 0 ? wg->icon_grid.cols : 4;
+                    int clicked = row * cols + col;
+                    if (clicked >= 0 && clicked < wg->icon_grid.count) {
+                        wg->icon_grid.selected = clicked;
+                        if (wg->icon_grid.on_activate)
+                            wg->icon_grid.on_activate(win, i);
+                    }
+                    break;
+                }
                 }
             }
             if (ev->type == UI_EVENT_MOUSE_UP) {

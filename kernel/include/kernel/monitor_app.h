@@ -4,10 +4,11 @@
 #include <kernel/ui_widget.h>
 #include <kernel/ui_event.h>
 
-void app_monitor(void);
+/* Graphical text editor (repurposed from System Monitor) */
+void app_editor(void);
 
 /* Multi-window API */
-ui_window_t *app_monitor_create(void);
-void app_monitor_on_event(ui_window_t *win, ui_event_t *ev);
+ui_window_t *app_editor_create(void);
+void app_editor_on_event(ui_window_t *win, ui_event_t *ev);
 
 #endif
