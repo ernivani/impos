@@ -471,6 +471,72 @@ char getchar(void) {
     }
 }
 
+/* Non-blocking getchar: processes available scancodes and returns
+   the first printable character found, or 0 if none.  Never blocks. */
+int keyboard_getchar_nb(void) {
+    while (kbd_available()) {
+        uint8_t scancode = kbd_pop();
+
+        if (scancode == 0xE0) { extended_scancode = 1; continue; }
+
+        /* Key release */
+        if (scancode & 0x80) {
+            uint8_t released = scancode & 0x7F;
+            if (extended_scancode) {
+                extended_scancode = 0;
+                if (released == 0x38) altgr_pressed = 0;
+                else if (released == LEFT_CTRL_SCANCODE) ctrl_pressed = 0;
+                continue;
+            }
+            if (released == LEFT_SHIFT_SCANCODE || released == RIGHT_SHIFT_SCANCODE)
+                shift_pressed = 0;
+            else if (released == LEFT_CTRL_SCANCODE) ctrl_pressed = 0;
+            else if (released == LEFT_ALT_SCANCODE) alt_pressed = 0;
+            continue;
+        }
+
+        /* Extended key press */
+        if (extended_scancode) {
+            extended_scancode = 0;
+            if (scancode == 0x38) { altgr_pressed = 1; continue; }
+            if (scancode == LEFT_CTRL_SCANCODE) { ctrl_pressed = 1; continue; }
+            switch (scancode) {
+                case 0x48: return KEY_UP;
+                case 0x50: return KEY_DOWN;
+                case 0x4B: return KEY_LEFT;
+                case 0x4D: return KEY_RIGHT;
+                case 0x1C: return '\n';
+                default:   continue;
+            }
+        }
+
+        /* Modifiers / toggles */
+        if (scancode == CAPSLOCK_SCANCODE) { caps_lock_active = !caps_lock_active; continue; }
+        if (scancode == NUMLOCK_SCANCODE)  { num_lock_active = !num_lock_active; continue; }
+        if (scancode == LEFT_SHIFT_SCANCODE || scancode == RIGHT_SHIFT_SCANCODE)
+            { shift_pressed = 1; continue; }
+        if (scancode == LEFT_CTRL_SCANCODE) { ctrl_pressed = 1; continue; }
+        if (scancode == LEFT_ALT_SCANCODE)  { alt_pressed = 1; continue; }
+
+        /* Regular character */
+        if (scancode >= KEYMAP_SIZE) continue;
+        const kbd_layout_t *lay = &layouts[current_layout];
+        char c;
+        if (altgr_pressed) {
+            c = lay->altgr[scancode];
+        } else if (shift_pressed) {
+            c = lay->shift[scancode];
+            if (caps_lock_active && c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+        } else {
+            c = lay->normal[scancode];
+            if (caps_lock_active && c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+        }
+        if (c == 0) continue;
+        return (int)(unsigned char)c;
+    }
+    return 0;  /* Nothing available */
+}
+
 #else
 /* Userspace stub */
 char getchar(void) {
@@ -483,6 +549,7 @@ void keyboard_set_idle_callback(void (*cb)(void)) { (void)cb; }
 int  keyboard_force_exit(void) { return 0; }
 void keyboard_request_force_exit(void) { }
 int  keyboard_data_available(void) { return 0; }
+int  keyboard_getchar_nb(void) { return 0; }
 int  keyboard_check_double_ctrl(void) { return 0; }
 void keyboard_run_idle(void) { }
 #endif

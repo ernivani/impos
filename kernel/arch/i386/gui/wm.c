@@ -50,6 +50,12 @@ static volatile int composite_needed = 0;
 /* Throttle compositing during drag/resize to ~30fps */
 static uint32_t last_drag_composite_tick = 0;
 
+/* FPS overlay */
+static int fps_overlay_enabled = 0;
+static uint32_t fps_frame_count = 0;
+static uint32_t fps_last_tick = 0;
+static uint32_t fps_display_value = 0;
+
 void wm_initialize(void) {
     memset(windows, 0, sizeof(windows));
     for (int i = 0; i < WM_MAX_WINDOWS; i++)
@@ -372,11 +378,28 @@ static void draw_window(wm_window_t *w) {
     if (!(w->flags & WM_WIN_VISIBLE) || (w->flags & WM_WIN_MINIMIZED)) return;
     int focused = (w->flags & WM_WIN_FOCUSED) != 0;
 
-    /* Cheap shadow: 2px dark border offset (no alpha blending) */
-    gfx_fill_rect(w->x + 2, w->y + 2, w->w, w->h, GFX_RGB(8, 8, 12));
+    /* Cheap shadow: thin edge strips (right + bottom) instead of full rect */
+    uint32_t shc = GFX_RGB(8, 8, 12);
+    gfx_fill_rect(w->x + w->w, w->y + 2, 2, w->h, shc);       /* right */
+    gfx_fill_rect(w->x + 2, w->y + w->h, w->w, 2, shc);       /* bottom */
 
-    /* Window body */
-    gfx_fill_rect(w->x, w->y, w->w, w->h, ui_theme.win_body_bg);
+    /* Window body — skip area covered by canvas */
+    int body_y = w->y + WM_TITLEBAR_H;
+    int body_h = w->h - WM_TITLEBAR_H;
+    if (w->canvas && body_h > 0) {
+        /* Only fill left/right border strips beside the canvas */
+        if (WM_BORDER > 0) {
+            gfx_fill_rect(w->x, body_y, WM_BORDER, body_h, ui_theme.win_body_bg);
+            gfx_fill_rect(w->x + w->w - WM_BORDER, body_y, WM_BORDER, body_h, ui_theme.win_body_bg);
+        }
+        /* Bottom border strip below canvas */
+        int canvas_bot = body_y + w->canvas_h;
+        int bottom_strip = w->y + w->h - canvas_bot;
+        if (bottom_strip > 0)
+            gfx_fill_rect(w->x, canvas_bot, w->w, bottom_strip, ui_theme.win_body_bg);
+    } else {
+        gfx_fill_rect(w->x, w->y, w->w, w->h, ui_theme.win_body_bg);
+    }
 
     /* Title bar */
     uint32_t hdr = focused ? ui_theme.win_header_focused : ui_theme.win_header_bg;
@@ -449,6 +472,24 @@ void wm_composite(void) {
     /* Post-composite overlay (context menus, etc.) */
     if (post_composite_fn)
         post_composite_fn();
+
+    /* FPS overlay (top-right corner) */
+    if (fps_overlay_enabled) {
+        fps_frame_count++;
+        uint32_t now = pit_get_ticks();
+        if (fps_last_tick == 0) fps_last_tick = now;
+        if (now - fps_last_tick >= 120) {  /* every second at 120Hz PIT */
+            fps_display_value = fps_frame_count * 120 / (now - fps_last_tick);
+            fps_frame_count = 0;
+            fps_last_tick = now;
+        }
+        char fps_buf[16];
+        snprintf(fps_buf, sizeof(fps_buf), "FPS:%u", (unsigned)fps_display_value);
+        int fw = (int)strlen(fps_buf) * FONT_W + 12;
+        int fx = (int)gfx_width() - fw - 4;
+        gfx_fill_rect(fx, 2, fw, FONT_H + 6, GFX_RGB(0, 0, 0));
+        gfx_draw_string(fx + 6, 5, fps_buf, GFX_RGB(0, 255, 80), GFX_RGB(0, 0, 0));
+    }
 
     /* Flip to framebuffer */
     gfx_flip();
@@ -560,6 +601,9 @@ void wm_mouse_idle(void) {
                     wm_resize_window(w->id, new_w, new_h);
                     wm_composite();
                     last_drag_composite_tick = now;
+                } else {
+                    /* Still update cursor so it doesn't freeze between composites */
+                    gfx_draw_mouse_cursor(mx, my);
                 }
             }
         } else {
@@ -582,6 +626,9 @@ void wm_mouse_idle(void) {
             if (now - last_drag_composite_tick >= 3) {
                 wm_composite();
                 last_drag_composite_tick = now;
+            } else {
+                /* Still update cursor so it doesn't freeze between composites */
+                gfx_draw_mouse_cursor(mx, my);
             }
         } else {
             dragging = -1;
@@ -753,4 +800,16 @@ int wm_hit_test(int mx, int my) {
     int idx = hit_test_window(mx, my);
     if (idx < 0) return -1;
     return windows[idx].id;
+}
+
+void wm_toggle_fps(void) {
+    fps_overlay_enabled = !fps_overlay_enabled;
+    fps_frame_count = 0;
+    fps_last_tick = 0;
+    fps_display_value = 0;
+    wm_mark_dirty();
+}
+
+int wm_fps_enabled(void) {
+    return fps_overlay_enabled;
 }

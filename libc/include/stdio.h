@@ -53,6 +53,7 @@ void keyboard_set_idle_callback(void (*cb)(void));
 int  keyboard_force_exit(void);
 void keyboard_request_force_exit(void);
 int  keyboard_data_available(void);
+int  keyboard_getchar_nb(void);     /* non-blocking: returns char or 0 */
 int  keyboard_check_double_ctrl(void);
 void keyboard_run_idle(void);
 
