@@ -30,6 +30,7 @@ typedef struct {
     uint32_t uptime_seconds;  /* Time since boot */
     char timezone[32];        /* e.g., "UTC", "Europe/Paris" */
     uint8_t use_24h_format;   /* 1 for 24h, 0 for 12h AM/PM */
+    uint8_t auto_dst;         /* 1 = auto summer/winter time, 0 = manual */
 } system_config_t;
 
 /* Initialize configuration system */
