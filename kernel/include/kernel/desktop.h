@@ -67,6 +67,9 @@ int  desktop_dock_items(void);
 int  desktop_dock_sep_pos(void);
 int  desktop_dock_item_rect(int idx, int *out_x, int *out_y, int *out_w, int *out_h);
 
+/* Dynamic dock action for a given index (0 = running app, use focus) */
+int  desktop_dock_action(int idx);
+
 /* Request desktop icon refresh (deferred, checked in idle callback) */
 void desktop_request_refresh(void);
 

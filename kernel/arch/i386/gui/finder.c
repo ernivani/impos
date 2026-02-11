@@ -10,6 +10,7 @@
 #include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* Built-in app entries */
 #define FINDER_APP_COUNT 5
@@ -52,6 +53,9 @@ static int total_results;
 #define FINDER_CAT_H   22
 
 static int finder_x, finder_y;
+
+/* Saved backbuffer to prevent compounding darkening on redraw */
+static uint32_t *finder_saved_bb = 0;
 
 /* ═══ Fuzzy matching ═════════════════════════════════════════ */
 
@@ -178,9 +182,13 @@ static void finder_draw(void) {
     finder_x = fb_w / 2 - FINDER_W / 2;
     finder_y = fb_h / 3 - FINDER_BAR_H / 2;
 
-    /* Darken entire screen with overlay */
+    /* Restore saved backbuffer before darkening to prevent compounding */
     uint32_t *bb = gfx_backbuffer();
     uint32_t pitch4 = gfx_pitch() / 4;
+    if (finder_saved_bb)
+        memcpy(bb, finder_saved_bb, (size_t)fb_h * gfx_pitch());
+
+    /* Darken entire screen with overlay */
     for (int y = 0; y < fb_h; y++) {
         for (int x = 0; x < fb_w; x++) {
             uint32_t px = bb[y * pitch4 + x];
@@ -328,6 +336,15 @@ int finder_show(void) {
     /* Initial search shows all apps */
     finder_search();
 
+    /* Save backbuffer before loop so we can restore on each redraw */
+    {
+        int fb_h = (int)gfx_height();
+        size_t bb_size = (size_t)fb_h * gfx_pitch();
+        finder_saved_bb = malloc(bb_size);
+        if (finder_saved_bb)
+            memcpy(finder_saved_bb, gfx_backbuffer(), bb_size);
+    }
+
     /* Register Finder as a tracked process */
     int finder_tid = task_register("Finder", 1, -1);
 
@@ -342,6 +359,7 @@ int finder_show(void) {
         if (keyboard_check_double_ctrl()) {
             if (finder_tid >= 0) task_unregister(finder_tid);
             keyboard_set_idle_callback(0);
+            if (finder_saved_bb) { free(finder_saved_bb); finder_saved_bb = 0; }
             return 0;
         }
 
@@ -349,18 +367,21 @@ int finder_show(void) {
         if (c == KEY_FINDER) {
             if (finder_tid >= 0) task_unregister(finder_tid);
             keyboard_set_idle_callback(0);
+            if (finder_saved_bb) { free(finder_saved_bb); finder_saved_bb = 0; }
             return 0;
         }
 
         if (c == KEY_ESCAPE) {
             if (finder_tid >= 0) task_unregister(finder_tid);
             keyboard_set_idle_callback(0);
+            if (finder_saved_bb) { free(finder_saved_bb); finder_saved_bb = 0; }
             return 0;
         }
 
         if (c == '\n') {
             if (finder_tid >= 0) task_unregister(finder_tid);
             keyboard_set_idle_callback(0);
+            if (finder_saved_bb) { free(finder_saved_bb); finder_saved_bb = 0; }
             if (total_results > 0 && result_sel < total_results) {
                 if (result_sel < result_count) {
                     return result_actions[result_sel];

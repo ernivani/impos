@@ -530,9 +530,7 @@ static int dock_hit(int mx, int my) {
     return -1;
 }
 
-static const int dock_action_map[] = {
-    DESKTOP_ACTION_FILES, DESKTOP_ACTION_TRASH
-};
+/* dock actions are now dynamic — use desktop_dock_action() */
 
 void wm_mouse_idle(void) {
     if (!mouse_poll()) return;
@@ -596,8 +594,15 @@ void wm_mouse_idle(void) {
     if (left_click) {
         /* Check dock first */
         int di = dock_hit(mx, my);
-        if (di >= 0 && di < (int)(sizeof(dock_action_map)/sizeof(dock_action_map[0]))) {
-            dock_action = dock_action_map[di];
+        if (di >= 0) {
+            int da_val = desktop_dock_action(di);
+            if (da_val > 0) {
+                dock_action = da_val;
+            } else {
+                /* Running app — focus its window */
+                /* Encode as negative dock index for desktop to handle */
+                dock_action = -(di + 1);
+            }
             return;
         }
 
