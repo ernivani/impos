@@ -278,27 +278,42 @@ void desktop_draw_menubar(void) {
     draw_wifi_icon_small(rx + 6, text_y + FONT_H - 4, GFX_RGB(180, 178, 190));
 }
 
+/* ═══ Trash icon ═══════════════════════════════════════════════ */
+
+static void icon_trash(int x, int y, int sel) {
+    uint32_t body = sel ? GFX_RGB(160, 160, 170) : GFX_RGB(120, 120, 130);
+    uint32_t lid  = sel ? GFX_RGB(180, 180, 190) : GFX_RGB(140, 140, 150);
+    uint32_t dark = GFX_RGB(80, 80, 90);
+
+    /* Lid */
+    gfx_fill_rect(x + 4, y + 3, 12, 2, lid);
+    gfx_fill_rect(x + 7, y + 1, 6, 2, lid);
+    /* Body */
+    gfx_fill_rect(x + 5, y + 5, 10, 12, body);
+    gfx_fill_rect(x + 5, y + 5, 10, 1, dark);
+    /* Stripes */
+    gfx_fill_rect(x + 7, y + 7, 1, 8, dark);
+    gfx_fill_rect(x + 10, y + 7, 1, 8, dark);
+    gfx_fill_rect(x + 13, y + 7, 1, 8, dark);
+}
+
 /* ═══ Dock ═════════════════════════════════════════════════════ */
 
-#define DOCK_ITEMS    7
-#define DOCK_SEP_POS  5   /* separator before index 5 (Settings) */
+#define DOCK_ITEMS    2
+#define DOCK_SEP_POS  -1   /* no separator */
 
 static const char *dock_labels[DOCK_ITEMS] = {
-    "Files", "Terminal", "Activity", "Editor",
-    "Power", "Settings", "Monitor"
+    "Files", "Trash"
 };
 
 static const int dock_actions[DOCK_ITEMS] = {
-    DESKTOP_ACTION_FILES, DESKTOP_ACTION_TERMINAL, DESKTOP_ACTION_BROWSER,
-    DESKTOP_ACTION_EDITOR, DESKTOP_ACTION_POWER,
-    DESKTOP_ACTION_SETTINGS, DESKTOP_ACTION_MONITOR
+    DESKTOP_ACTION_FILES, DESKTOP_ACTION_TRASH
 };
 
 typedef void (*icon_fn)(int x, int y, int sel);
 
 static icon_fn dock_icons[DOCK_ITEMS] = {
-    icon_folder, icon_terminal, icon_activity, icon_pencil,
-    icon_power, icon_gear, icon_monitor
+    icon_folder, icon_trash
 };
 
 /* Phase 2: macOS-style dock dimensions (icon-only, no text labels) */
@@ -313,7 +328,8 @@ static icon_fn dock_icons[DOCK_ITEMS] = {
 static int dock_pill_x, dock_pill_y, dock_pill_w;
 
 static void compute_dock_layout(int fb_w, int fb_h) {
-    dock_pill_w = DOCK_ITEMS * DOCK_ITEM_W + (DOCK_ITEMS - 1) * DOCK_ITEM_GAP + DOCK_SEP_W + DOCK_PAD * 2;
+    int sep_w = (DOCK_SEP_POS >= 0) ? DOCK_SEP_W : 0;
+    dock_pill_w = DOCK_ITEMS * DOCK_ITEM_W + (DOCK_ITEMS - 1) * DOCK_ITEM_GAP + sep_w + DOCK_PAD * 2;
     dock_pill_x = fb_w / 2 - dock_pill_w / 2;
     dock_pill_y = fb_h - DOCK_BOTTOM_MARGIN - DOCK_PILL_H;
 }
@@ -351,6 +367,9 @@ typedef struct {
     ui_window_t *ui_win;      /* NULL for terminal */
     void (*on_event)(ui_window_t *, ui_event_t *);
     void (*on_close)(ui_window_t *);
+    void (*on_tick)(ui_window_t *);  /* periodic callback (NULL = none) */
+    int tick_interval;               /* PIT ticks between calls (0 = disabled) */
+    uint32_t last_tick;              /* last tick timestamp */
     int is_terminal;
     int task_id;              /* task tracker id (-1 if none) */
 } running_app_t;
@@ -374,10 +393,27 @@ static int find_running_app_by_wm(int wm_id) {
     return -1;
 }
 
+static int register_app_ex(int wm_id, int dock_idx, ui_window_t *ui_win,
+                           void (*on_event)(ui_window_t *, ui_event_t *),
+                           void (*on_close)(ui_window_t *),
+                           void (*on_tick)(ui_window_t *),
+                           int tick_interval,
+                           const char *app_name);
+
 static int register_app(int wm_id, int dock_idx, ui_window_t *ui_win,
                         void (*on_event)(ui_window_t *, ui_event_t *),
                         void (*on_close)(ui_window_t *),
                         const char *app_name) {
+    return register_app_ex(wm_id, dock_idx, ui_win, on_event, on_close,
+                           NULL, 0, app_name);
+}
+
+static int register_app_ex(int wm_id, int dock_idx, ui_window_t *ui_win,
+                           void (*on_event)(ui_window_t *, ui_event_t *),
+                           void (*on_close)(ui_window_t *),
+                           void (*on_tick)(ui_window_t *),
+                           int tick_interval,
+                           const char *app_name) {
     for (int i = 0; i < MAX_RUNNING_APPS; i++) {
         if (!running_apps[i].active) {
             running_apps[i].active = 1;
@@ -386,6 +422,9 @@ static int register_app(int wm_id, int dock_idx, ui_window_t *ui_win,
             running_apps[i].ui_win = ui_win;
             running_apps[i].on_event = on_event;
             running_apps[i].on_close = on_close;
+            running_apps[i].on_tick = on_tick;
+            running_apps[i].tick_interval = tick_interval;
+            running_apps[i].last_tick = pit_get_ticks();
             running_apps[i].is_terminal = 0;
             running_apps[i].task_id = wm_get_task_id(wm_id);
             if (running_apps[i].task_id >= 0)
@@ -513,6 +552,18 @@ typedef struct {
 static desktop_icon_t desktop_icons[DESKTOP_MAX_ICONS];
 static int desktop_icon_count;
 
+/* Hover / Drag state */
+static int hover_icon = -1;
+static int drag_icon = -1;
+static int drag_ox, drag_oy;       /* mouse offset within icon cell */
+static int drag_screen_x, drag_screen_y; /* current drag position */
+
+/* Refresh flag */
+static int desktop_refresh_pending = 0;
+
+static void desktop_load_layout(void);
+static void desktop_save_layout(void);
+
 static void desktop_load_icons(void) {
     desktop_icon_count = 0;
     memset(desktop_icons, 0, sizeof(desktop_icons));
@@ -551,6 +602,86 @@ static void desktop_load_icons(void) {
 
     /* Restore cwd */
     fs_change_directory_by_inode(saved_cwd);
+
+    /* Apply saved layout positions from .layout file */
+    desktop_load_layout();
+}
+
+/* ═══ .layout Persistence ═════════════════════════════════════ */
+
+typedef struct __attribute__((packed)) {
+    char name[MAX_NAME_LEN];
+    int16_t col, row;
+} layout_entry_t;
+
+static void desktop_load_layout(void) {
+    uint32_t saved_cwd = fs_get_cwd_inode();
+    const char *user = user_get_current();
+    if (!user) return;
+
+    char desktop_path[128];
+    snprintf(desktop_path, sizeof(desktop_path), "/home/%s/Desktop", user);
+    if (fs_change_directory(desktop_path) != 0) {
+        fs_change_directory_by_inode(saved_cwd);
+        return;
+    }
+
+    uint8_t buf[sizeof(layout_entry_t) * DESKTOP_MAX_ICONS];
+    size_t sz = sizeof(buf);
+    if (fs_read_file(".layout", buf, &sz) != 0 || sz == 0) {
+        fs_change_directory_by_inode(saved_cwd);
+        return;
+    }
+
+    int entry_count = (int)(sz / sizeof(layout_entry_t));
+    layout_entry_t *entries = (layout_entry_t *)buf;
+
+    for (int i = 0; i < desktop_icon_count; i++) {
+        for (int j = 0; j < entry_count; j++) {
+            if (strncmp(desktop_icons[i].name, entries[j].name, MAX_NAME_LEN) == 0) {
+                desktop_icons[i].grid_col = entries[j].col;
+                desktop_icons[i].grid_row = entries[j].row;
+                break;
+            }
+        }
+    }
+
+    fs_change_directory_by_inode(saved_cwd);
+}
+
+static void desktop_save_layout(void) {
+    uint32_t saved_cwd = fs_get_cwd_inode();
+    const char *user = user_get_current();
+    if (!user) return;
+
+    char desktop_path[128];
+    snprintf(desktop_path, sizeof(desktop_path), "/home/%s/Desktop", user);
+    if (fs_change_directory(desktop_path) != 0) {
+        fs_change_directory_by_inode(saved_cwd);
+        return;
+    }
+
+    layout_entry_t entries[DESKTOP_MAX_ICONS];
+    int count = 0;
+    for (int i = 0; i < desktop_icon_count; i++) {
+        if (!desktop_icons[i].active) continue;
+        strncpy(entries[count].name, desktop_icons[i].name, MAX_NAME_LEN);
+        entries[count].col = (int16_t)desktop_icons[i].grid_col;
+        entries[count].row = (int16_t)desktop_icons[i].grid_row;
+        count++;
+    }
+
+    /* Delete old .layout and recreate */
+    fs_delete_file(".layout");
+    fs_create_file(".layout", 0);
+    fs_write_file(".layout", (const uint8_t *)entries,
+                  (size_t)count * sizeof(layout_entry_t));
+
+    fs_change_directory_by_inode(saved_cwd);
+}
+
+void desktop_request_refresh(void) {
+    desktop_refresh_pending = 1;
 }
 
 static void desktop_draw_file_icon(int x, int y, uint8_t type, int selected) {
@@ -582,8 +713,17 @@ static void desktop_draw_icons(void) {
         desktop_icon_t *icon = &desktop_icons[i];
         if (!icon->active) continue;
 
+        /* Skip dragged icon in normal position (drawn at cursor later) */
+        if (i == drag_icon) continue;
+
         int x = DESKTOP_ICON_MARGIN_X + icon->grid_col * DESKTOP_ICON_W;
         int y = DESKTOP_ICON_MARGIN_Y + icon->grid_row * DESKTOP_ICON_H;
+
+        /* Hover highlight */
+        if (i == hover_icon && !icon->selected) {
+            gfx_rounded_rect_alpha(x, y, DESKTOP_ICON_W, DESKTOP_ICON_H, 6,
+                                    GFX_RGB(255, 255, 255), 20);
+        }
 
         /* Selection highlight */
         if (icon->selected) {
@@ -619,6 +759,28 @@ static void desktop_draw_icons(void) {
         gfx_draw_string_nobg(lx, ly, label,
                               icon->selected ? GFX_RGB(255, 255, 255) : GFX_RGB(220, 220, 230));
     }
+
+    /* Draw dragged icon at cursor position */
+    if (drag_icon >= 0 && drag_icon < desktop_icon_count) {
+        desktop_icon_t *icon = &desktop_icons[drag_icon];
+        int x = drag_screen_x - drag_ox;
+        int y = drag_screen_y - drag_oy;
+
+        gfx_rounded_rect_alpha(x, y, DESKTOP_ICON_W, DESKTOP_ICON_H, 6,
+                                ui_theme.accent, 40);
+        int icon_x = x + (DESKTOP_ICON_W - 32) / 2;
+        int icon_y = y + 8;
+        desktop_draw_file_icon(icon_x, icon_y, icon->type, 1);
+
+        char label[16];
+        strncpy(label, icon->name, 15);
+        label[15] = '\0';
+        int lw = (int)strlen(label) * FONT_W;
+        int lx = x + (DESKTOP_ICON_W - lw) / 2;
+        if (lx < x + 2) lx = x + 2;
+        int ly = y + DESKTOP_ICON_H - FONT_H - 4;
+        gfx_draw_string_nobg(lx, ly, label, GFX_RGB(255, 255, 255));
+    }
 }
 
 static int desktop_hit_icon(int mx, int my) {
@@ -639,6 +801,194 @@ static void desktop_deselect_all_icons(void) {
         desktop_icons[i].selected = 0;
 }
 
+/* ═══ Context Menu ════════════════════════════════════════════ */
+
+#define CTX_MAX_ITEMS   6
+#define CTX_ITEM_H     24
+#define CTX_PADDING      6
+#define CTX_MENU_W     150
+
+/* Context menu actions */
+#define CTX_ACT_NONE        0
+#define CTX_ACT_OPEN        1
+#define CTX_ACT_RENAME      2
+#define CTX_ACT_TRASH       3
+#define CTX_ACT_CLOSE       4
+#define CTX_ACT_REFRESH     5
+#define CTX_ACT_NEW_FILE    6
+#define CTX_ACT_NEW_FOLDER  7
+#define CTX_ACT_EMPTY_TRASH 8
+
+typedef struct {
+    int visible;
+    int x, y;
+    int item_count;
+    int hover;
+    const char *items[CTX_MAX_ITEMS];
+    int actions[CTX_MAX_ITEMS];
+    int target_icon;    /* -1 if not icon */
+    int target_dock;    /* -1 if not dock */
+} context_menu_t;
+
+static context_menu_t ctx_menu;
+
+/* Rename state */
+static int ctx_renaming = 0;
+static int ctx_rename_icon = -1;
+static char ctx_rename_buf[MAX_NAME_LEN];
+static int ctx_rename_cursor;
+
+static void ctx_close(void) {
+    ctx_menu.visible = 0;
+    ctx_menu.hover = -1;
+}
+
+static void ctx_show_icon(int icon_idx, int mx, int my) {
+    ctx_close();
+    ctx_menu.visible = 1;
+    ctx_menu.x = mx;
+    ctx_menu.y = my;
+    ctx_menu.target_icon = icon_idx;
+    ctx_menu.target_dock = -1;
+    ctx_menu.item_count = 0;
+
+    ctx_menu.items[0] = "Open";
+    ctx_menu.actions[0] = CTX_ACT_OPEN;
+    ctx_menu.items[1] = "Rename";
+    ctx_menu.actions[1] = CTX_ACT_RENAME;
+    ctx_menu.items[2] = "Move to Trash";
+    ctx_menu.actions[2] = CTX_ACT_TRASH;
+    ctx_menu.item_count = 3;
+}
+
+static void ctx_show_dock(int dock_idx, int mx, int my) {
+    ctx_close();
+    ctx_menu.visible = 1;
+    ctx_menu.x = mx;
+    ctx_menu.y = my;
+    ctx_menu.target_icon = -1;
+    ctx_menu.target_dock = dock_idx;
+    ctx_menu.item_count = 0;
+
+    /* Dock item 1 = Trash */
+    if (dock_idx == 1) {
+        ctx_menu.items[0] = "Open";
+        ctx_menu.actions[0] = CTX_ACT_OPEN;
+        ctx_menu.items[1] = "Empty Trash";
+        ctx_menu.actions[1] = CTX_ACT_EMPTY_TRASH;
+        ctx_menu.item_count = 2;
+    } else {
+        ctx_menu.items[0] = "Open";
+        ctx_menu.actions[0] = CTX_ACT_OPEN;
+        ctx_menu.item_count = 1;
+    }
+}
+
+static void ctx_show_desktop(int mx, int my) {
+    ctx_close();
+    ctx_menu.visible = 1;
+    ctx_menu.x = mx;
+    ctx_menu.y = my;
+    ctx_menu.target_icon = -1;
+    ctx_menu.target_dock = -1;
+    ctx_menu.item_count = 0;
+
+    ctx_menu.items[0] = "New File";
+    ctx_menu.actions[0] = CTX_ACT_NEW_FILE;
+    ctx_menu.items[1] = "New Folder";
+    ctx_menu.actions[1] = CTX_ACT_NEW_FOLDER;
+    ctx_menu.items[2] = "Refresh";
+    ctx_menu.actions[2] = CTX_ACT_REFRESH;
+    ctx_menu.item_count = 3;
+}
+
+static void ctx_draw_rename(void);
+
+static void ctx_post_composite(void) {
+    ctx_draw_rename();
+    if (!ctx_menu.visible) return;
+
+    int menu_h = ctx_menu.item_count * CTX_ITEM_H + 2 * CTX_PADDING;
+
+    /* Clamp to screen */
+    int mx = ctx_menu.x, my = ctx_menu.y;
+    if (mx + CTX_MENU_W > (int)gfx_width()) mx = (int)gfx_width() - CTX_MENU_W;
+    if (my + menu_h > (int)gfx_height()) my = (int)gfx_height() - menu_h;
+
+    /* Shadow */
+    gfx_fill_rect(mx + 2, my + 2, CTX_MENU_W, menu_h, GFX_RGB(8, 8, 12));
+
+    /* Background */
+    gfx_fill_rect(mx, my, CTX_MENU_W, menu_h, GFX_RGB(40, 40, 55));
+    gfx_draw_rect(mx, my, CTX_MENU_W, menu_h, GFX_RGB(70, 70, 90));
+
+    /* Items */
+    for (int i = 0; i < ctx_menu.item_count; i++) {
+        int iy = my + CTX_PADDING + i * CTX_ITEM_H;
+        int hovered = (i == ctx_menu.hover);
+        if (hovered) {
+            gfx_fill_rect(mx + 2, iy, CTX_MENU_W - 4, CTX_ITEM_H, ui_theme.accent);
+        }
+        uint32_t text_c = hovered ? GFX_RGB(255, 255, 255) : ui_theme.text_primary;
+        uint32_t bg_c = hovered ? ui_theme.accent : GFX_RGB(40, 40, 55);
+        gfx_draw_string(mx + 12, iy + (CTX_ITEM_H - FONT_H) / 2,
+                          ctx_menu.items[i], text_c, bg_c);
+    }
+}
+
+static int ctx_hit_test(int mx, int my) {
+    if (!ctx_menu.visible) return -1;
+    int menu_h = ctx_menu.item_count * CTX_ITEM_H + 2 * CTX_PADDING;
+    int cx = ctx_menu.x, cy = ctx_menu.y;
+    if (cx + CTX_MENU_W > (int)gfx_width()) cx = (int)gfx_width() - CTX_MENU_W;
+    if (cy + menu_h > (int)gfx_height()) cy = (int)gfx_height() - menu_h;
+
+    if (mx < cx || mx >= cx + CTX_MENU_W || my < cy || my >= cy + menu_h)
+        return -1;
+
+    int idx = (my - cy - CTX_PADDING) / CTX_ITEM_H;
+    if (idx < 0 || idx >= ctx_menu.item_count) return -1;
+    return idx;
+}
+
+static void ctx_update_hover(int mx, int my) {
+    int old = ctx_menu.hover;
+    ctx_menu.hover = ctx_hit_test(mx, my);
+    if (ctx_menu.hover != old)
+        wm_composite();
+}
+
+/* Draw rename overlay on a desktop icon */
+static void ctx_draw_rename(void) {
+    if (!ctx_renaming || ctx_rename_icon < 0) return;
+    desktop_icon_t *icon = &desktop_icons[ctx_rename_icon];
+    if (!icon->active) return;
+
+    int x = DESKTOP_ICON_MARGIN_X + icon->grid_col * DESKTOP_ICON_W;
+    int y = DESKTOP_ICON_MARGIN_Y + icon->grid_row * DESKTOP_ICON_H;
+    int ly = y + DESKTOP_ICON_H - FONT_H - 4;
+
+    /* Input box over label */
+    int bw = DESKTOP_ICON_W;
+    gfx_fill_rect(x, ly - 2, bw, FONT_H + 4, ui_theme.input_bg);
+    gfx_draw_rect(x, ly - 2, bw, FONT_H + 4, ui_theme.accent);
+
+    /* Text */
+    int max_chars = (bw - 4) / FONT_W;
+    char display[MAX_NAME_LEN];
+    strncpy(display, ctx_rename_buf, sizeof(display) - 1);
+    display[sizeof(display) - 1] = '\0';
+    if ((int)strlen(display) > max_chars)
+        display[max_chars] = '\0';
+
+    gfx_draw_string(x + 2, ly, display, ui_theme.text_primary, ui_theme.input_bg);
+
+    /* Cursor */
+    int cx = x + 2 + ctx_rename_cursor * FONT_W;
+    if (cx < x + bw - 2)
+        gfx_fill_rect(cx, ly, 1, FONT_H, ui_theme.accent);
+}
+
 /* ═══ Mobile / Desktop View Mode ═══════════════════════════════ */
 
 #define VIEW_DESKTOP 0
@@ -654,8 +1004,22 @@ static int mobile_selected = 0;
 #define MOBILE_CARD_H 160
 #define MOBILE_GAP    24
 
-/* App entries for mobile grid — same as dock */
-#define MOBILE_APP_COUNT DOCK_ITEMS
+/* Mobile app grid — all launchable apps (independent of dock) */
+#define MOBILE_APP_COUNT 7
+
+static const char *mobile_labels[MOBILE_APP_COUNT] = {
+    "Files", "Terminal", "Activity", "Editor",
+    "Settings", "Trash", "Power"
+};
+static const int mobile_actions[MOBILE_APP_COUNT] = {
+    DESKTOP_ACTION_FILES, DESKTOP_ACTION_TERMINAL, DESKTOP_ACTION_BROWSER,
+    DESKTOP_ACTION_EDITOR, DESKTOP_ACTION_SETTINGS, DESKTOP_ACTION_TRASH,
+    DESKTOP_ACTION_POWER
+};
+static icon_fn mobile_icons[MOBILE_APP_COUNT] = {
+    icon_folder, icon_terminal, icon_activity, icon_pencil,
+    icon_gear, icon_trash, icon_power
+};
 
 static void desktop_draw_mobile_view(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
@@ -700,10 +1064,10 @@ static void desktop_draw_mobile_view(void) {
         /* Icon centered in card (scaled up) */
         int icon_x = cx + (MOBILE_CARD_W - 40) / 2;
         int icon_y = cy + 30;
-        dock_icons[i](icon_x, icon_y, selected);
+        mobile_icons[i](icon_x, icon_y, selected);
 
         /* Label below icon */
-        const char *label = dock_labels[i];
+        const char *label = mobile_labels[i];
         int lw = (int)strlen(label) * FONT_W;
         int lx = cx + (MOBILE_CARD_W - lw) / 2;
         int ly = cy + MOBILE_CARD_H - 36;
@@ -822,6 +1186,125 @@ static void desktop_unified_idle(void) {
         keyboard_request_force_exit();
     }
 
+    /* Left click while context menu visible → close or select */
+    if ((btns & MOUSE_BTN_LEFT) && !(prev_btns & MOUSE_BTN_LEFT) && ctx_menu.visible) {
+        int hit = ctx_hit_test(mx, my);
+        if (hit >= 0) {
+            /* Push a special event for the menu action */
+            ui_event_t cev;
+            cev.type = UI_EVENT_DOCK; /* reuse dock event type */
+            cev.dock.action = 100 + hit; /* encode menu index */
+            ui_push_event(&cev);
+            keyboard_request_force_exit();
+        } else {
+            ctx_close();
+            wm_composite();
+        }
+    }
+
+    /* Right-click → open context menu (only when not over a WM window) */
+    if ((btns & MOUSE_BTN_RIGHT) && !(prev_btns & MOUSE_BTN_RIGHT)) {
+        if (wm_hit_test(mx, my) < 0) {
+            /* Check desktop icons */
+            int icon_hit = desktop_hit_icon(mx, my);
+            if (icon_hit >= 0) {
+                desktop_deselect_all_icons();
+                desktop_icons[icon_hit].selected = 1;
+                ctx_show_icon(icon_hit, mx, my);
+            } else {
+                /* Empty desktop area */
+                ctx_show_desktop(mx, my);
+            }
+            wm_invalidate_bg();
+            wm_composite();
+        }
+    }
+
+    /* Update context menu hover on mouse move */
+    if (ctx_menu.visible) {
+        ctx_update_hover(mx, my);
+    }
+
+    /* Desktop icon hover (only when not over a WM window) */
+    if (wm_hit_test(mx, my) < 0 && drag_icon < 0) {
+        int new_hover = desktop_hit_icon(mx, my);
+        if (new_hover != hover_icon) {
+            hover_icon = new_hover;
+            wm_invalidate_bg();
+            wm_composite();
+        }
+    } else if (hover_icon >= 0 && drag_icon < 0) {
+        hover_icon = -1;
+        wm_invalidate_bg();
+        wm_composite();
+    }
+
+    /* Drag-to-move: start drag on left-press over icon */
+    if ((btns & MOUSE_BTN_LEFT) && !(prev_btns & MOUSE_BTN_LEFT) &&
+        drag_icon < 0 && wm_hit_test(mx, my) < 0 && !ctx_menu.visible) {
+        int hit = desktop_hit_icon(mx, my);
+        if (hit >= 0) {
+            drag_icon = hit;
+            int ix = DESKTOP_ICON_MARGIN_X + desktop_icons[hit].grid_col * DESKTOP_ICON_W;
+            int iy = DESKTOP_ICON_MARGIN_Y + desktop_icons[hit].grid_row * DESKTOP_ICON_H;
+            drag_ox = mx - ix;
+            drag_oy = my - iy;
+            drag_screen_x = mx;
+            drag_screen_y = my;
+            desktop_icons[hit].selected = 1;
+        }
+    }
+
+    /* Drag-to-move: update while dragging */
+    if (drag_icon >= 0 && (btns & MOUSE_BTN_LEFT)) {
+        drag_screen_x = mx;
+        drag_screen_y = my;
+        wm_invalidate_bg();
+        wm_composite();
+    }
+
+    /* Drag-to-move: release → compute new grid position */
+    if (drag_icon >= 0 && !(btns & MOUSE_BTN_LEFT)) {
+        int drop_x = drag_screen_x - drag_ox;
+        int drop_y = drag_screen_y - drag_oy;
+
+        int new_col = (drop_x - DESKTOP_ICON_MARGIN_X + DESKTOP_ICON_W / 2) / DESKTOP_ICON_W;
+        int new_row = (drop_y - DESKTOP_ICON_MARGIN_Y + DESKTOP_ICON_H / 2) / DESKTOP_ICON_H;
+
+        int cols = DESKTOP_ICON_COLS;
+        if (new_col < 0) new_col = 0;
+        if (new_col >= cols) new_col = cols - 1;
+        if (new_row < 0) new_row = 0;
+
+        /* Check for collision */
+        int collision = 0;
+        for (int i = 0; i < desktop_icon_count; i++) {
+            if (i == drag_icon || !desktop_icons[i].active) continue;
+            if (desktop_icons[i].grid_col == new_col && desktop_icons[i].grid_row == new_row) {
+                collision = 1;
+                break;
+            }
+        }
+
+        if (!collision) {
+            desktop_icons[drag_icon].grid_col = new_col;
+            desktop_icons[drag_icon].grid_row = new_row;
+            desktop_save_layout();
+        }
+
+        drag_icon = -1;
+        wm_invalidate_bg();
+        wm_composite();
+    }
+
+    /* Smart desktop refresh */
+    if (desktop_refresh_pending) {
+        desktop_refresh_pending = 0;
+        desktop_load_icons();
+        wm_invalidate_bg();
+        wm_composite();
+    }
+
     prev_btns = btns;
 
     /* Check double-ctrl for finder */
@@ -858,6 +1341,23 @@ static void desktop_unified_idle(void) {
     if (needs_composite) {
         task_set_current(TASK_WM);
         wm_composite();
+    }
+
+    /* Widget app periodic tick callbacks */
+    {
+        uint32_t now_tick = pit_get_ticks();
+        for (int i = 0; i < MAX_RUNNING_APPS; i++) {
+            if (running_apps[i].active && running_apps[i].on_tick &&
+                running_apps[i].tick_interval > 0 && running_apps[i].ui_win) {
+                if (now_tick - running_apps[i].last_tick >= (uint32_t)running_apps[i].tick_interval) {
+                    running_apps[i].last_tick = now_tick;
+                    if (running_apps[i].task_id >= 0)
+                        task_set_current(running_apps[i].task_id);
+                    running_apps[i].on_tick(running_apps[i].ui_win);
+                    task_set_current(TASK_IDLE);
+                }
+            }
+        }
     }
 
     /* Foreground app periodic tick */
@@ -992,6 +1492,24 @@ static void desktop_idle_terminal(void) {
         }
     }
 
+    /* Widget app periodic tick callbacks */
+    {
+        uint32_t now_tick = pit_get_ticks();
+        for (int i = 0; i < MAX_RUNNING_APPS; i++) {
+            if (running_apps[i].active && running_apps[i].on_tick &&
+                running_apps[i].tick_interval > 0 && running_apps[i].ui_win) {
+                if (now_tick - running_apps[i].last_tick >= (uint32_t)running_apps[i].tick_interval) {
+                    running_apps[i].last_tick = now_tick;
+                    if (running_apps[i].task_id >= 0)
+                        task_set_current(running_apps[i].task_id);
+                    running_apps[i].on_tick(running_apps[i].ui_win);
+                    task_set_current(TASK_IDLE);
+                    needs_composite = 1;
+                }
+            }
+        }
+    }
+
     /* Throttled composite — only when something actually changed */
     static uint32_t last_composite_tick = 0;
     uint32_t now = pit_get_ticks();
@@ -1067,8 +1585,7 @@ static void desktop_launch_app(int action) {
     }
 
     switch (action) {
-    case DESKTOP_ACTION_TERMINAL:
-    case DESKTOP_ACTION_EDITOR: {
+    case DESKTOP_ACTION_TERMINAL: {
         /* Non-blocking terminal launch */
         if (active_terminal_win >= 0) {
             wm_focus_window(active_terminal_win);
@@ -1092,17 +1609,26 @@ static void desktop_launch_app(int action) {
             running_apps[ti].is_terminal = 1;
             running_apps[ti].task_id = wm_get_task_id(active_terminal_win);
             if (running_apps[ti].task_id >= 0)
-                task_set_name(running_apps[ti].task_id,
-                              action == DESKTOP_ACTION_EDITOR ? "Editor" : "Terminal");
+                task_set_name(running_apps[ti].task_id, "Terminal");
         }
 
         terminal_close_pending = 0;
         shell_init_interactive();
-        if (action == DESKTOP_ACTION_EDITOR)
-            printf("vi: open a file with 'vi <filename>'\n");
         shell_draw_prompt();
         wm_composite();
         break;  /* Return to event loop — no blocking! */
+    }
+
+    case DESKTOP_ACTION_EDITOR: {
+        ui_window_t *win = app_editor_create();
+        if (win) {
+            int ri = register_app(win->wm_id, dock_idx, win,
+                                  app_editor_on_event, 0, "Editor");
+            (void)ri;
+            ui_window_redraw(win);
+            wm_composite();
+        }
+        break;
     }
 
     case DESKTOP_ACTION_FILES: {
@@ -1120,8 +1646,9 @@ static void desktop_launch_app(int action) {
     case DESKTOP_ACTION_BROWSER: {
         ui_window_t *win = app_taskmgr_create();
         if (win) {
-            int ri = register_app(win->wm_id, dock_idx, win,
-                                  app_taskmgr_on_event, 0, "Activity");
+            int ri = register_app_ex(win->wm_id, dock_idx, win,
+                                     app_taskmgr_on_event, 0,
+                                     app_taskmgr_on_tick, 120, "Activity");
             (void)ri;
             ui_window_redraw(win);
             wm_composite();
@@ -1141,11 +1668,20 @@ static void desktop_launch_app(int action) {
         break;
     }
 
-    case DESKTOP_ACTION_MONITOR: {
-        ui_window_t *win = app_monitor_create();
+    case DESKTOP_ACTION_TRASH: {
+        /* Open file explorer navigated to ~/Trash/ */
+        const char *user = user_get_current();
+        if (user) {
+            char trash_path[128];
+            snprintf(trash_path, sizeof(trash_path), "/home/%s/Trash", user);
+            /* Ensure Trash dir exists */
+            fs_create_file(trash_path, 1);
+            fs_change_directory(trash_path);
+        }
+        ui_window_t *win = app_filemgr_create();
         if (win) {
             int ri = register_app(win->wm_id, dock_idx, win,
-                                  app_monitor_on_event, 0, "Monitor");
+                                  app_filemgr_on_event, app_filemgr_on_close, "Trash");
             (void)ri;
             ui_window_redraw(win);
             wm_composite();
@@ -1196,6 +1732,7 @@ int desktop_run(void) {
     /* Initialize WM */
     wm_initialize();
     wm_set_bg_draw(desktop_bg_draw);
+    wm_set_post_composite(ctx_post_composite);
 
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
     compute_dock_layout(fb_w, fb_h);
@@ -1264,6 +1801,138 @@ int desktop_run(void) {
             }
         }
 
+        /* Handle context menu action (encoded as dock event 100+) */
+        if (ev.type == UI_EVENT_DOCK && ev.dock.action >= 100) {
+            int menu_idx = ev.dock.action - 100;
+            if (menu_idx >= 0 && menu_idx < ctx_menu.item_count) {
+                int act = ctx_menu.actions[menu_idx];
+                int icon_idx = ctx_menu.target_icon;
+                ctx_close();
+
+                switch (act) {
+                case CTX_ACT_OPEN:
+                    if (icon_idx >= 0) {
+                        desktop_launch_app(DESKTOP_ACTION_FILES);
+                    } else if (ctx_menu.target_dock >= 0) {
+                        if (ctx_menu.target_dock == 1)
+                            desktop_launch_app(DESKTOP_ACTION_TRASH);
+                        else
+                            desktop_launch_app(DESKTOP_ACTION_FILES);
+                    }
+                    break;
+
+                case CTX_ACT_RENAME:
+                    if (icon_idx >= 0 && icon_idx < desktop_icon_count) {
+                        ctx_renaming = 1;
+                        ctx_rename_icon = icon_idx;
+                        strncpy(ctx_rename_buf, desktop_icons[icon_idx].name, MAX_NAME_LEN - 1);
+                        ctx_rename_buf[MAX_NAME_LEN - 1] = '\0';
+                        ctx_rename_cursor = (int)strlen(ctx_rename_buf);
+                    }
+                    break;
+
+                case CTX_ACT_TRASH: {
+                    if (icon_idx >= 0 && icon_idx < desktop_icon_count) {
+                        /* Move file from ~/Desktop/ to ~/Trash/ */
+                        const char *user = user_get_current();
+                        if (user) {
+                            char src[128], trash_dir[128];
+                            snprintf(src, sizeof(src), "/home/%s/Desktop", user);
+                            snprintf(trash_dir, sizeof(trash_dir), "/home/%s/Trash", user);
+                            fs_create_file(trash_dir, 1); /* ensure Trash exists */
+
+                            /* Read file content, write to Trash, delete original */
+                            uint32_t saved_cwd = fs_get_cwd_inode();
+                            fs_change_directory(src);
+                            uint8_t fbuf[4096];
+                            size_t fsize = sizeof(fbuf);
+                            char *fname = desktop_icons[icon_idx].name;
+                            if (desktop_icons[icon_idx].type == INODE_DIR) {
+                                /* Just delete empty dirs */
+                                fs_delete_file(fname);
+                            } else if (fs_read_file(fname, fbuf, &fsize) == 0) {
+                                fs_change_directory(trash_dir);
+                                fs_create_file(fname, 0);
+                                fs_write_file(fname, fbuf, fsize);
+                                fs_change_directory(src);
+                                fs_delete_file(fname);
+                            } else {
+                                fs_delete_file(fname);
+                            }
+                            fs_change_directory_by_inode(saved_cwd);
+                        }
+                        desktop_load_icons();
+                    }
+                    break;
+                }
+
+                case CTX_ACT_REFRESH:
+                    desktop_load_icons();
+                    break;
+
+                case CTX_ACT_NEW_FILE: {
+                    const char *user = user_get_current();
+                    if (user) {
+                        char desktop_dir[128];
+                        snprintf(desktop_dir, sizeof(desktop_dir), "/home/%s/Desktop", user);
+                        uint32_t saved_cwd = fs_get_cwd_inode();
+                        fs_change_directory(desktop_dir);
+                        /* Find unique name */
+                        char fname[MAX_NAME_LEN] = "untitled";
+                        int n = 1;
+                        while (fs_create_file(fname, 0) != 0 && n < 100) {
+                            snprintf(fname, sizeof(fname), "untitled%d", n++);
+                        }
+                        fs_change_directory_by_inode(saved_cwd);
+                        desktop_load_icons();
+                    }
+                    break;
+                }
+
+                case CTX_ACT_NEW_FOLDER: {
+                    const char *user = user_get_current();
+                    if (user) {
+                        char desktop_dir[128];
+                        snprintf(desktop_dir, sizeof(desktop_dir), "/home/%s/Desktop", user);
+                        uint32_t saved_cwd = fs_get_cwd_inode();
+                        fs_change_directory(desktop_dir);
+                        char dname[MAX_NAME_LEN] = "New Folder";
+                        int n = 1;
+                        while (fs_create_file(dname, 1) != 0 && n < 100) {
+                            snprintf(dname, sizeof(dname), "Folder%d", n++);
+                        }
+                        fs_change_directory_by_inode(saved_cwd);
+                        desktop_load_icons();
+                    }
+                    break;
+                }
+
+                case CTX_ACT_EMPTY_TRASH: {
+                    const char *user = user_get_current();
+                    if (user) {
+                        char trash_dir[128];
+                        snprintf(trash_dir, sizeof(trash_dir), "/home/%s/Trash", user);
+                        uint32_t saved_cwd = fs_get_cwd_inode();
+                        fs_change_directory(trash_dir);
+                        fs_dir_entry_info_t tfiles[32];
+                        int tcount = fs_enumerate_directory(tfiles, 32, 0);
+                        for (int ti = 0; ti < tcount; ti++)
+                            fs_delete_file(tfiles[ti].name);
+                        fs_change_directory_by_inode(saved_cwd);
+                    }
+                    break;
+                }
+
+                default:
+                    break;
+                }
+
+                wm_invalidate_bg();
+                wm_composite();
+            }
+            continue;
+        }
+
         /* Handle dock events */
         if (ev.type == UI_EVENT_DOCK) {
             wm_clear_dock_action();
@@ -1295,6 +1964,56 @@ int desktop_run(void) {
             desktop_draw_menubar();
             desktop_draw_icons();
             desktop_draw_dock();
+            wm_invalidate_bg();
+            wm_composite();
+            continue;
+        }
+
+        /* Handle inline rename mode */
+        if (ctx_renaming && ev.type == UI_EVENT_KEY_PRESS) {
+            char c = ev.key.key;
+            if (c == KEY_ESCAPE) {
+                ctx_renaming = 0;
+                ctx_rename_icon = -1;
+            } else if (c == '\n' || c == '\r') {
+                /* Commit rename */
+                if (ctx_rename_icon >= 0 && ctx_rename_icon < desktop_icon_count &&
+                    ctx_rename_buf[0] != '\0') {
+                    const char *user = user_get_current();
+                    if (user) {
+                        char desktop_dir[128];
+                        snprintf(desktop_dir, sizeof(desktop_dir), "/home/%s/Desktop", user);
+                        uint32_t saved_cwd = fs_get_cwd_inode();
+                        fs_change_directory(desktop_dir);
+                        fs_rename(desktop_icons[ctx_rename_icon].name, ctx_rename_buf);
+                        fs_change_directory_by_inode(saved_cwd);
+                    }
+                }
+                ctx_renaming = 0;
+                ctx_rename_icon = -1;
+                desktop_load_icons();
+            } else if (c == '\b') {
+                if (ctx_rename_cursor > 0) {
+                    ctx_rename_cursor--;
+                    /* Shift chars left */
+                    int len = (int)strlen(ctx_rename_buf);
+                    for (int i = ctx_rename_cursor; i < len; i++)
+                        ctx_rename_buf[i] = ctx_rename_buf[i + 1];
+                }
+            } else if (c >= 32 && c < 127) {
+                int len = (int)strlen(ctx_rename_buf);
+                if (len < MAX_NAME_LEN - 2 && ctx_rename_cursor < MAX_NAME_LEN - 2) {
+                    /* Shift chars right */
+                    for (int i = len + 1; i > ctx_rename_cursor; i--)
+                        ctx_rename_buf[i] = ctx_rename_buf[i - 1];
+                    ctx_rename_buf[ctx_rename_cursor] = c;
+                    ctx_rename_cursor++;
+                }
+            } else if (c == KEY_LEFT && ctx_rename_cursor > 0) {
+                ctx_rename_cursor--;
+            } else if (c == KEY_RIGHT && ctx_rename_cursor < (int)strlen(ctx_rename_buf)) {
+                ctx_rename_cursor++;
+            }
             wm_invalidate_bg();
             wm_composite();
             continue;
@@ -1356,7 +2075,7 @@ int desktop_run(void) {
                         }
                         if (mc == '\n') {
                             desktop_view_mode = VIEW_DESKTOP;
-                            int action = dock_actions[mobile_selected];
+                            int action = mobile_actions[mobile_selected];
                             if (action == DESKTOP_ACTION_POWER) {
                                 acpi_shutdown();
                             } else {

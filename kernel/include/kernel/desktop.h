@@ -46,6 +46,7 @@
 #define DESKTOP_ACTION_SETTINGS 5
 #define DESKTOP_ACTION_MONITOR  6
 #define DESKTOP_ACTION_POWER    7
+#define DESKTOP_ACTION_TRASH    8
 
 void desktop_init(void);
 void desktop_draw_dock(void);
@@ -65,5 +66,8 @@ int  desktop_dock_w(void);
 int  desktop_dock_items(void);
 int  desktop_dock_sep_pos(void);
 int  desktop_dock_item_rect(int idx, int *out_x, int *out_y, int *out_w, int *out_h);
+
+/* Request desktop icon refresh (deferred, checked in idle callback) */
+void desktop_request_refresh(void);
 
 #endif

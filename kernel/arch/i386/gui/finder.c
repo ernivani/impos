@@ -12,14 +12,14 @@
 #include <stdio.h>
 
 /* Built-in app entries */
-#define FINDER_APP_COUNT 6
+#define FINDER_APP_COUNT 5
 
 static const char *app_names[FINDER_APP_COUNT] = {
-    "Files", "Terminal", "Activity Monitor", "Editor", "Settings", "System Monitor"
+    "Files", "Terminal", "Activity Monitor", "Editor", "Settings"
 };
 static const int app_actions[FINDER_APP_COUNT] = {
     DESKTOP_ACTION_FILES, DESKTOP_ACTION_TERMINAL, DESKTOP_ACTION_BROWSER,
-    DESKTOP_ACTION_EDITOR, DESKTOP_ACTION_SETTINGS, DESKTOP_ACTION_MONITOR
+    DESKTOP_ACTION_EDITOR, DESKTOP_ACTION_SETTINGS
 };
 
 /* Search state */
