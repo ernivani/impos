@@ -25,12 +25,31 @@
 #include <kernel/arp.h>
 #include <kernel/task.h>
 #include <kernel/sched.h>
+#include <kernel/pipe.h>
+#include <kernel/signal.h>
+#include <kernel/shm.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 
 int shell_exit_requested = 0;
+
+/* ── Shell pipe infrastructure ── */
+#define SHELL_PIPE_BUF_SIZE 4096
+static char  shell_pipe_buf[SHELL_PIPE_BUF_SIZE];
+static int   shell_pipe_len;
+static int   shell_pipe_mode;  /* 1 = capturing output into pipe_buf */
+
+/* Hook for printf redirection: called from putchar when pipe mode active */
+void shell_pipe_putchar(char c) {
+    if (shell_pipe_mode && shell_pipe_len < SHELL_PIPE_BUF_SIZE - 1)
+        shell_pipe_buf[shell_pipe_len++] = c;
+}
+
+int shell_is_pipe_mode(void) {
+    return shell_pipe_mode;
+}
 
 /* Foreground app (non-blocking command like top) */
 static shell_fg_app_t *active_fg_app = NULL;
@@ -99,6 +118,7 @@ static void cmd_display(int argc, char* argv[]);
 static void cmd_gfxbench(int argc, char* argv[]);
 static void cmd_fps(int argc, char* argv[]);
 static void cmd_spawn(int argc, char* argv[]);
+static void cmd_shm(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -789,17 +809,24 @@ static command_t commands[] = {
     },
     {
         "kill", cmd_kill,
-        "Terminate a process by PID",
-        "kill: kill PID\n"
-        "    Send a termination signal to the process with the given PID.\n",
+        "Send a signal to a process",
+        "kill: kill [-9|-INT|-TERM|-KILL|-USR1|-USR2|-PIPE] PID\n"
+        "    Send a signal to the process with the given PID.\n",
         "NAME\n"
-        "    kill - terminate a process by PID\n\n"
+        "    kill - send a signal to a process\n\n"
         "SYNOPSIS\n"
-        "    kill PID\n\n"
+        "    kill [-9|-INT|-TERM|-KILL|-USR1|-USR2|-PIPE] PID\n\n"
         "DESCRIPTION\n"
-        "    Terminates the process identified by PID. System processes\n"
-        "    (idle, kernel, wm, shell) cannot be killed. Use 'top' to\n"
-        "    see running processes and their PIDs.\n"
+        "    Sends a signal to the process identified by PID.\n"
+        "    Without a signal flag, sends SIGTERM (15). System\n"
+        "    processes (idle, kernel, wm, shell) cannot be signaled.\n\n"
+        "OPTIONS\n"
+        "    -9, -KILL    Forcefully kill (uncatchable)\n"
+        "    -INT         Send interrupt signal (2)\n"
+        "    -TERM        Send termination signal (15, default)\n"
+        "    -USR1        Send user-defined signal 1 (10)\n"
+        "    -USR2        Send user-defined signal 2 (12)\n"
+        "    -PIPE        Send broken pipe signal (13)\n"
     },
     {
         "display", cmd_display,
@@ -851,21 +878,40 @@ static command_t commands[] = {
     {
         "spawn", cmd_spawn,
         "Spawn a background thread",
-        "spawn: spawn [counter|hog]\n"
+        "spawn: spawn [counter|hog|user-counter]\n"
         "    Spawn a background thread for testing preemptive multitasking.\n"
-        "    counter — prints a number every second\n"
-        "    hog     — CPU-intensive loop (watchdog will kill it)\n",
+        "    counter      — prints a number every second (ring 0)\n"
+        "    hog          — CPU-intensive loop (watchdog will kill it)\n"
+        "    user-counter — prints a number every second (ring 3)\n",
         "NAME\n"
         "    spawn - spawn a background thread\n\n"
         "SYNOPSIS\n"
-        "    spawn [counter|hog]\n\n"
+        "    spawn [counter|hog|user-counter]\n\n"
         "DESCRIPTION\n"
-        "    Creates a new kernel thread running in the background.\n"
+        "    Creates a new thread running in the background.\n"
         "    The thread runs preemptively alongside the shell.\n"
         "    Use 'kill PID' to terminate a spawned thread.\n"
         "    Types:\n"
-        "      counter - increments and prints a counter every second\n"
-        "      hog     - infinite CPU loop (watchdog kills after 5s)\n"
+        "      counter      - increments and prints a counter every second (ring 0)\n"
+        "      hog          - infinite CPU loop (watchdog kills after 5s)\n"
+        "      user-counter - like counter but runs in ring 3 (user mode)\n"
+    },
+    {
+        "shm", cmd_shm,
+        "Manage shared memory regions",
+        "shm: shm [list|create NAME SIZE]\n"
+        "    Manage shared memory regions for inter-process communication.\n",
+        "NAME\n"
+        "    shm - manage shared memory regions\n\n"
+        "SYNOPSIS\n"
+        "    shm list\n"
+        "    shm create NAME SIZE\n\n"
+        "DESCRIPTION\n"
+        "    Manages named shared memory regions. Regions can be\n"
+        "    created from the shell and attached by user-mode tasks\n"
+        "    via the SYS_SHM_ATTACH syscall.\n\n"
+        "    list               Show all active shared memory regions.\n"
+        "    create NAME SIZE   Create a region with given name and size in bytes.\n"
     },
 };
 
@@ -1468,7 +1514,119 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
     return buffer_pos;
 }
 
+/* ── Pipe right-side commands ── */
+
+static void pipe_cmd_grep(const char *buf, int len, const char *pattern) {
+    if (!pattern) {
+        printf("grep: missing pattern\n");
+        return;
+    }
+    const char *p = buf;
+    const char *end = buf + len;
+    while (p < end) {
+        const char *nl = p;
+        while (nl < end && *nl != '\n') nl++;
+        int line_len = nl - p;
+        /* Check if line contains pattern */
+        for (int i = 0; i <= line_len - (int)strlen(pattern); i++) {
+            if (memcmp(p + i, pattern, strlen(pattern)) == 0) {
+                /* Print matching line */
+                for (int j = 0; j < line_len; j++)
+                    putchar(p[j]);
+                putchar('\n');
+                break;
+            }
+        }
+        p = (nl < end) ? nl + 1 : nl;
+    }
+}
+
+static void pipe_cmd_cat(const char *buf, int len) {
+    for (int i = 0; i < len; i++)
+        putchar(buf[i]);
+}
+
+static void pipe_cmd_wc(const char *buf, int len) {
+    int lines = 0, words = 0, chars = len;
+    int in_word = 0;
+    for (int i = 0; i < len; i++) {
+        if (buf[i] == '\n') lines++;
+        if (buf[i] == ' ' || buf[i] == '\n' || buf[i] == '\t') {
+            in_word = 0;
+        } else {
+            if (!in_word) words++;
+            in_word = 1;
+        }
+    }
+    /* Count final line if not newline-terminated */
+    if (len > 0 && buf[len - 1] != '\n') lines++;
+    printf("  %d  %d  %d\n", lines, words, chars);
+}
+
 void shell_process_command(char* command) {
+    /* Check for pipe operator */
+    char *pipe_pos = strchr(command, '|');
+    if (pipe_pos) {
+        /* Split into left and right commands */
+        *pipe_pos = '\0';
+        char *left_cmd = command;
+        char *right_cmd = pipe_pos + 1;
+
+        /* Trim leading spaces on right command */
+        while (*right_cmd == ' ') right_cmd++;
+
+        /* Trim trailing spaces on left command */
+        char *lend = pipe_pos - 1;
+        while (lend > left_cmd && *lend == ' ') { *lend = '\0'; lend--; }
+
+        /* Run left command with output captured */
+        shell_pipe_mode = 1;
+        shell_pipe_len = 0;
+        shell_pipe_buf[0] = '\0';
+
+        /* Parse and execute left command */
+        char *argv[MAX_ARGS];
+        int argc = 0;
+        char *token = strtok(left_cmd, " ");
+        while (token != NULL && argc < MAX_ARGS) {
+            argv[argc++] = token;
+            token = strtok(NULL, " ");
+        }
+
+        if (argc > 0) {
+            for (size_t i = 0; i < NUM_COMMANDS; i++) {
+                if (strcmp(argv[0], commands[i].name) == 0) {
+                    commands[i].func(argc, argv);
+                    break;
+                }
+            }
+        }
+
+        shell_pipe_mode = 0;
+        shell_pipe_buf[shell_pipe_len] = '\0';
+
+        /* Parse right command */
+        char *rargv[MAX_ARGS];
+        int rargc = 0;
+        token = strtok(right_cmd, " ");
+        while (token != NULL && rargc < MAX_ARGS) {
+            rargv[rargc++] = token;
+            token = strtok(NULL, " ");
+        }
+
+        if (rargc > 0) {
+            if (strcmp(rargv[0], "grep") == 0)
+                pipe_cmd_grep(shell_pipe_buf, shell_pipe_len, rargc > 1 ? rargv[1] : NULL);
+            else if (strcmp(rargv[0], "cat") == 0)
+                pipe_cmd_cat(shell_pipe_buf, shell_pipe_len);
+            else if (strcmp(rargv[0], "wc") == 0)
+                pipe_cmd_wc(shell_pipe_buf, shell_pipe_len);
+            else
+                printf("%s: pipe command not supported\n", rargv[0]);
+        }
+        return;
+    }
+
     char* argv[MAX_ARGS];
     int argc = 0;
 
@@ -3040,15 +3198,45 @@ static void cmd_firewall(int argc, char* argv[]) {
 
 static void cmd_kill(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Usage: kill PID\n");
+        printf("Usage: kill [-9|-INT|-TERM|-KILL|-USR1|-USR2|-PIPE] PID\n");
         return;
     }
-    int pid = atoi(argv[1]);
-    int rc = task_kill_by_pid(pid);
+
+    int pid;
+    int signum = SIGTERM;  /* default */
+
+    if (argv[1][0] == '-') {
+        if (argc < 3) {
+            printf("Usage: kill [-9|-INT|-TERM|-KILL|-USR1|-USR2|-PIPE] PID\n");
+            return;
+        }
+        const char *s = argv[1] + 1;
+        if (strcmp(s, "9") == 0 || strcmp(s, "KILL") == 0)
+            signum = SIGKILL;
+        else if (strcmp(s, "INT") == 0)
+            signum = SIGINT;
+        else if (strcmp(s, "TERM") == 0)
+            signum = SIGTERM;
+        else if (strcmp(s, "USR1") == 0)
+            signum = SIGUSR1;
+        else if (strcmp(s, "USR2") == 0)
+            signum = SIGUSR2;
+        else if (strcmp(s, "PIPE") == 0)
+            signum = SIGPIPE;
+        else {
+            printf("kill: unknown signal '%s'\n", s);
+            return;
+        }
+        pid = atoi(argv[2]);
+    } else {
+        pid = atoi(argv[1]);
+    }
+
+    int rc = sig_send_pid(pid, signum);
     if (rc == 0)
-        printf("Killed process %d\n", pid);
+        printf("Sent signal %d to process %d\n", signum, pid);
     else if (rc == -2)
-        printf("kill: cannot kill system process (PID %d)\n", pid);
+        printf("kill: cannot signal system process (PID %d)\n", pid);
     else
         printf("kill: no such process (PID %d)\n", pid);
 }
@@ -3705,9 +3893,42 @@ static void thread_hog(void) {
     while (1) x++;
 }
 
+/* Ring 3 user-mode counter thread.
+ * Uses INT 0x80 syscalls instead of kernel functions for sleep/getpid. */
+static void user_thread_counter(void) {
+    int pid;
+    __asm__ volatile (
+        "mov $3, %%eax\n\t"    /* SYS_GETPID */
+        "int $0x80\n\t"
+        "mov %%eax, %0"
+        : "=r"(pid) : : "eax"
+    );
+
+    for (int i = 0; ; i++) {
+        printf("[user %d] count = %d\n", pid, i);
+        __asm__ volatile (
+            "mov $2, %%eax\n\t"    /* SYS_SLEEP */
+            "mov $1000, %%ebx\n\t" /* 1000ms */
+            "int $0x80\n\t"
+            : : : "eax", "ebx"
+        );
+    }
+}
+
 static void cmd_spawn(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Usage: spawn [counter|hog]\n");
+        printf("Usage: spawn [counter|hog|user-counter]\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "user-counter") == 0) {
+        int tid = task_create_user_thread("user-counter", user_thread_counter, 1);
+        if (tid < 0) {
+            printf("spawn: failed to create user thread (no free slots)\n");
+            return;
+        }
+        int pid = task_get_pid(tid);
+        printf("[User Thread %d] user-counter started (PID %d, ring 3)\n", tid, pid);
         return;
     }
 
@@ -3720,7 +3941,7 @@ static void cmd_spawn(int argc, char* argv[]) {
         entry = thread_hog;
     else {
         printf("spawn: unknown thread type '%s'\n", argv[1]);
-        printf("  Available: counter, hog\n");
+        printf("  Available: counter, hog, user-counter\n");
         return;
     }
 
@@ -3731,4 +3952,45 @@ static void cmd_spawn(int argc, char* argv[]) {
     }
     int pid = task_get_pid(tid);
     printf("[Thread %d] %s started (PID %d)\n", tid, name, pid);
+}
+
+/* ═══ shm: shared memory management ═══════════════════════════ */
+
+static void cmd_shm(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: shm [list|create NAME SIZE]\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "list") == 0) {
+        printf("ID  Name                 Pages  Refs\n");
+        printf("--  -------------------  -----  ----\n");
+        int found = 0;
+        shm_region_t *regions = shm_get_regions();
+        for (int i = 0; i < SHM_MAX_REGIONS; i++) {
+            if (regions[i].active) {
+                printf("%-3d %-20s %-6d %d\n",
+                       i, regions[i].name, regions[i].num_pages, regions[i].ref_count);
+                found++;
+            }
+        }
+        if (!found)
+            printf("(no shared memory regions)\n");
+
+    } else if (strcmp(argv[1], "create") == 0) {
+        if (argc < 4) {
+            printf("Usage: shm create NAME SIZE\n");
+            return;
+        }
+        uint32_t size = (uint32_t)atoi(argv[3]);
+        int id = shm_create(argv[2], size);
+        if (id >= 0)
+            printf("Created shared memory '%s' (id=%d, %d bytes, %d pages)\n",
+                   argv[2], id, (int)size, (int)((size + 4095) / 4096));
+        else
+            printf("shm: failed to create region '%s'\n", argv[2]);
+
+    } else {
+        printf("Usage: shm [list|create NAME SIZE]\n");
+    }
 }

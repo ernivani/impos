@@ -35,6 +35,14 @@ typedef struct __attribute__((packed)) {
     uint8_t  framebuffer_type;
 } multiboot_info_t;
 
+/* Multiboot memory map entry (used by PMM) */
+typedef struct __attribute__((packed)) {
+    uint32_t size;   /* size of this entry (excluding this field) */
+    uint64_t addr;   /* base address */
+    uint64_t len;    /* length in bytes */
+    uint32_t type;   /* 1 = available, other = reserved */
+} multiboot_mmap_entry_t;
+
 typedef struct __attribute__((packed)) {
     uint16_t attributes;
     uint8_t  win_a;

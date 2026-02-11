@@ -6,6 +6,7 @@
 #include <kernel/io.h>
 #include <kernel/idt.h>
 #include <kernel/task.h>
+#include <kernel/signal.h>
 
 #define CAPSLOCK_SCANCODE    0x3A
 #define NUMLOCK_SCANCODE     0x45
@@ -452,8 +453,17 @@ char getchar(void) {
             if (c == 0) continue;
         } else if (ctrl_pressed) {
             c = lay->normal[scancode];
-            if (c >= 'a' && c <= 'z')
-                return c - 'a' + 1;  /* Ctrl+A=1 .. Ctrl+C=3 etc. */
+            if (c >= 'a' && c <= 'z') {
+                if (c == 'c') {
+                    /* Ctrl+C: send SIGINT to all killable user tasks */
+                    for (int i = 4; i < TASK_MAX; i++) {
+                        task_info_t *ti = task_get(i);
+                        if (ti && ti->killable && ti->is_user)
+                            sig_send(i, SIGINT);
+                    }
+                }
+                return c - 'a' + 1;
+            }
             continue;
         } else if (shift_pressed) {
             c = lay->shift[scancode];
