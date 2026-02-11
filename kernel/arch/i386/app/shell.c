@@ -3400,6 +3400,22 @@ static void top_render(void) {
     terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
     printf(" pkts (%dKB)\n", (int)(rx_b / 1024));
 
+    /* ═══ GPU / Display ═════════════════════════════════════ */
+    terminal_setcolor(TOP_C_HEADER, TOP_C_BG);
+    printf("GPU  ");
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("%dx%dx%d  ", (int)gfx_width(), (int)gfx_height(), (int)gfx_bpp());
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("VRAM:");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%dKB", (int)(gfx_width() * gfx_height() * (gfx_bpp() / 8) / 1024));
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("  FPS:");
+    terminal_setcolor(TOP_C_VALUE, TOP_C_BG);
+    printf("%d", (int)wm_get_fps());
+    terminal_setcolor(TOP_C_LABEL, TOP_C_BG);
+    printf("  (software rendering)\n");
+
     /* ═══ Task counts ═══════════════════════════════════════ */
     int n_total = 0, n_running = 0, n_sleeping = 0, n_idle = 0;
     for (int i = 0; i < TASK_MAX; i++) {

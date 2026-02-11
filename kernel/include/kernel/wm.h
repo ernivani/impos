@@ -126,4 +126,7 @@ int wm_hit_test(int mx, int my);
 void wm_toggle_fps(void);
 int  wm_fps_enabled(void);
 
+/* Get current composites-per-second (always tracked, even without overlay) */
+uint32_t wm_get_fps(void);
+
 #endif

@@ -1,7 +1,7 @@
 # ImposOS — Progress & Future Roadmap
 
 > Last updated: February 2026
-> Status: **Core OS complete + ring 3 + full IPC + compositing WM + TTF/vector rendering** | ~30,500 lines of code | ~190 regression tests | 43+ shell commands
+> Status: **Core OS complete + ring 3 + full IPC + compositing WM + TTF/vector + GPU monitoring** | ~30,700 lines of code | ~190 regression tests | 43+ shell commands
 
 ---
 
@@ -174,7 +174,7 @@ make run    # Build + boot in QEMU
 
 ### GUI Applications — 100%
 - [x] **File Manager**: browsing, navigation, create/delete/rename, list + icon view modes
-- [x] **Task Manager**: CPU usage bars, task list with sorting, kill support
+- [x] **Activity Monitor**: CPU/Mem bars, Disk/Net/GPU stats, task list with state/TIME+, kill support
 - [x] **Settings**: 5 tabs (network, user prefs, system info, etc.)
 - [x] **Resource Monitor**: CPU trending, memory stats, I/O stats, network throughput
 - [x] **Finder**: fuzzy file search, quick launch (Alt+Space)
@@ -277,7 +277,7 @@ make run    # Build + boot in QEMU
 | **Security** | ~~Syscall interface~~ | ✅ Done — INT 0x80 with 15 syscalls |
 | **Hardware** | USB support | PS/2 keyboard/mouse only |
 | **Hardware** | Audio / sound | No audio driver |
-| **Hardware** | GPU acceleration | Software rendering only (but compositing WM with shadow atlas, dirty rects) |
+| **Hardware** | GPU acceleration | Software rendering only — VirtIO GPU + SSE2 planned (see 0.3 roadmap) |
 | **Hardware** | Real-time clock (RTC) | Time doesn't persist across reboots |
 | **Platform** | 64-bit (x86_64) | i386 only |
 | **Platform** | SMP / multi-core | Single-core only |
@@ -365,7 +365,20 @@ make run    # Build + boot in QEMU
 
 > Compositing WM with soft shadows, rounded corners, per-window alpha, dirty-rect optimization, DPI scaling, TrueType font engine, and resolution-independent vector path rasterizer are all done.
 
-#### 0.3 — Clipboard & Core Desktop Integration
+#### 0.3 — GPU Acceleration & Rendering Performance
+- [ ] **VirtIO GPU driver** — PCI detection (vendor 0x1AF4, device 0x1050), virtqueue init, RESOURCE_CREATE_2D / TRANSFER_TO_HOST_2D / SET_SCANOUT commands for hardware-assisted compositing
+- [ ] **Bochs VGA BGA registers** — Direct VBE dispi port access (0x01CE/0x01CF) for fast VRAM mode switching, banked/linear mode toggle
+- [ ] **Hardware blit offload** — Offload window canvas → backbuffer copies to GPU command queue instead of CPU memcpy (~8MB per full composite)
+- [ ] **Scanout surface per window** — Each window as a GPU resource, compositor sends per-window blit commands with source rect + dest rect
+- [ ] **SSE2 memory operations** — Use `movdqa`/`movntdq` 128-bit SIMD for backbuffer→framebuffer copy (4x throughput vs `rep movsd`)
+- [ ] **Dirty region coalescing** — Merge overlapping dirty rects, skip fully-occluded windows, only composite visible changed regions
+- [ ] **Cursor plane** — Hardware cursor overlay (VBE/BGA cursor register) to avoid save/restore MMIO reads on every mouse move
+- [ ] **GPU info in top/taskmgr** — ✅ Done — resolution, VRAM size, FPS displayed in both `top` command and Activity Monitor
+- [ ] **Frame budget limiter** — Cap composites to 60fps max, skip intermediate composites during rapid mouse movement
+
+> **Current bottleneck**: Everything is CPU-rendered into an MMIO framebuffer. A full 1920x1080x32 composite copies ~8MB. During window drag, the 30fps throttle still causes ~240MB/s of memory bandwidth. The GPU plan starts with VirtIO GPU (QEMU `-device virtio-gpu-pci`) which supports 2D command queues, then falls back to software with SSE2 acceleration on non-VirtIO setups.
+
+#### 0.4 — Clipboard & Core Desktop Integration
 - [ ] **Clipboard system** — Copy/paste with MIME types between all apps
 - [ ] **Virtual workspaces** — Multiple desktops with keyboard shortcut switching + animated transitions
 - [ ] **Alt-Tab task switcher** — With live window previews
@@ -376,14 +389,14 @@ make run    # Build + boot in QEMU
 
 > These are features every desktop user expects on day one.
 
-#### 0.4 — Audio
+#### 0.5 — Audio
 - [ ] **Audio driver** — AC97 or Intel HDA (QEMU supports both)
 - [ ] **Mixer / volume control** — Per-app volume, master volume, mute
 - [ ] **System sounds** — Startup, notification, error beeps at minimum
 
 > An OS without sound feels dead. Basic audio is a minimum shipping requirement.
 
-#### 0.5 — Filesystem & Storage (Ship-blocking)
+#### 0.6 — Filesystem & Storage (Ship-blocking)
 - [ ] **VFS layer** — Mountpoints, support multiple filesystem types
 - [ ] **Expand capacity** — 256+ inodes, 4096+ blocks, larger disk
 - [ ] **Double/triple indirect blocks** — Files up to several MB (not 69 KB)
@@ -393,7 +406,7 @@ make run    # Build + boot in QEMU
 
 > A 69 KB file size limit and 64 files total makes the OS unusable for real work.
 
-#### 0.6 — Widget Toolkit (Ship-blocking)
+#### 0.7 — Widget Toolkit (Ship-blocking)
 - [ ] **Layout engine** — Box/grid/flow layouts that auto-resize with window
 - [ ] **CSS-like theming** — Stylesheets instead of hardcoded color values
 - [ ] **Rich widgets** — Tree views, tab bars, combo boxes, date/color pickers, file dialogs, tooltips, popovers
@@ -474,7 +487,7 @@ make run    # Build + boot in QEMU
 - [ ] **SMP** — Multi-core support, per-CPU data, spinlocks
 - [ ] **EFI boot** — UEFI bootloader alongside legacy GRUB
 - [ ] **Framebuffer modes** — Runtime resolution switching via VBE
-- [ ] **GPU acceleration** — Basic OpenGL/Vulkan (Mesa-style, massive effort)
+- [ ] **GPU acceleration** — VirtIO GPU 2D + SSE2 blit (see Priority 0.3 roadmap)
 
 ### Priority 8 — Stretch Goals / Experimental
 
@@ -502,7 +515,7 @@ make run    # Build + boot in QEMU
 |  | File Mgr |  | Shell |  | vi     |  | Settings|  | Finder   | |
 |  +----------+  +-------+  +--------+  +---------+  +----------+ |
 |  +----------+  +---------+  +----------+                         |
-|  | Task Mgr |  | Monitor |  | Login    |                         |
+|  | Activity |  | Monitor |  | Login    |                         |
 |  +----------+  +---------+  +----------+                         |
 |                                                                  |
 |  * Cooperative tasks in ring 0, spawned threads in ring 3         |
@@ -628,7 +641,7 @@ impos/
 │       │   ├── ui_widget.c     # Widget toolkit (12 types)
 │       │   ├── login.c         # Login GUI + setup wizard
 │       │   ├── filemgr.c       # File manager app
-│       │   ├── taskmgr.c       # Task manager app
+│       │   ├── taskmgr.c       # Activity Monitor (CPU/Mem/Disk/Net/GPU)
 │       │   ├── settings.c      # Settings app
 │       │   ├── monitor.c       # Resource monitor app
 │       │   └── finder.c        # Finder app (fuzzy search)
@@ -676,7 +689,7 @@ impos/
 | Header files | 61 |
 | Shell commands | 43+ |
 | Regression tests | ~190 |
-| GUI applications | 6 (filemgr, taskmgr, settings, monitor, finder, login) |
+| GUI applications | 6 (filemgr, activity monitor, settings, monitor, finder, login) |
 | Widget types | 12 |
 | Max windows | 32 |
 | Max tasks | 32 |
