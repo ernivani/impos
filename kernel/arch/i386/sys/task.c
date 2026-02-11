@@ -3,6 +3,7 @@
 #include <kernel/sched.h>
 #include <kernel/syscall.h>
 #include <kernel/pmm.h>
+#include <kernel/vmm.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -13,30 +14,36 @@ static int next_pid = 1;
 void task_init(void) {
     memset(tasks, 0, sizeof(tasks));
 
+    uint32_t kpd = vmm_get_kernel_pagedir();
+
     /* Fixed tasks */
     tasks[TASK_IDLE].active = 1;
     strcpy(tasks[TASK_IDLE].name, "idle");
     tasks[TASK_IDLE].killable = 0;
     tasks[TASK_IDLE].wm_id = -1;
     tasks[TASK_IDLE].pid = next_pid++;
+    tasks[TASK_IDLE].page_dir = kpd;
 
     tasks[TASK_KERNEL].active = 1;
     strcpy(tasks[TASK_KERNEL].name, "kernel");
     tasks[TASK_KERNEL].killable = 0;
     tasks[TASK_KERNEL].wm_id = -1;
     tasks[TASK_KERNEL].pid = next_pid++;
+    tasks[TASK_KERNEL].page_dir = kpd;
 
     tasks[TASK_WM].active = 1;
     strcpy(tasks[TASK_WM].name, "wm");
     tasks[TASK_WM].killable = 0;
     tasks[TASK_WM].wm_id = -1;
     tasks[TASK_WM].pid = next_pid++;
+    tasks[TASK_WM].page_dir = kpd;
 
     tasks[TASK_SHELL].active = 1;
     strcpy(tasks[TASK_SHELL].name, "shell");
     tasks[TASK_SHELL].killable = 0;
     tasks[TASK_SHELL].wm_id = -1;
     tasks[TASK_SHELL].pid = next_pid++;
+    tasks[TASK_SHELL].page_dir = kpd;
 }
 
 int task_register(const char *name, int killable, int wm_id) {
@@ -188,6 +195,14 @@ int task_kill_by_pid(int pid) {
             pmm_free_frame(tasks[tid].user_stack);
             tasks[tid].user_stack = 0;
         }
+        if (tasks[tid].user_page_table) {
+            pmm_free_frame(tasks[tid].user_page_table);
+            tasks[tid].user_page_table = 0;
+        }
+        if (tasks[tid].page_dir && tasks[tid].page_dir != vmm_get_kernel_pagedir()) {
+            vmm_destroy_user_pagedir(tasks[tid].page_dir);
+            tasks[tid].page_dir = 0;
+        }
     } else if (tasks[tid].stack_base) {
         tasks[tid].state = TASK_STATE_ZOMBIE;
         tasks[tid].active = 0;
@@ -304,6 +319,7 @@ int task_create_thread(const char *name, void (*entry)(void), int killable) {
     *(--sp) = 0x10;            /* GS */
 
     tasks[tid].esp = (uint32_t)sp;
+    tasks[tid].page_dir = vmm_get_kernel_pagedir();
     tasks[tid].state = TASK_STATE_READY;
 
     irq_restore(flags);
@@ -362,15 +378,15 @@ static void user_exit_trampoline(void) {
 }
 
 /*
- * Ring 3 user thread stack layout:
+ * Ring 3 user thread stack layout (with per-process page directory):
  *
- * KERNEL STACK (4KB, PMM):             USER STACK (4KB, PMM):
- *   kern+4096 → (kernel_esp/TSS.esp0)   user+4096 →
- *     SS       = 0x23                      &user_exit_trampoline
- *     UserESP  ──────────────────────→   usp (user+4096-4)
+ * KERNEL STACK (4KB, PMM):             USER STACK (4KB, PMM @ phys ustack):
+ *   kern+4096 → (kernel_esp/TSS.esp0)   Mapped at VA 0x40000000 in per-process PD
+ *     SS       = 0x23                      ustack+4092: &user_exit_trampoline
+ *     UserESP  = 0x40000FFC  ─────────→  0x40000FFC (virtual address!)
  *     EFLAGS   = 0x202
  *     CS       = 0x1B
- *     EIP      = entry
+ *     EIP      = entry (kernel VA, shared via PDEs 0-63)
  *     err_code = 0
  *     int_no   = 0
  *     pusha    (all 0)
@@ -412,19 +428,42 @@ int task_create_user_thread(const char *name, void (*entry)(void), int killable)
     memset((void *)kstack, 0, 4096);
     memset((void *)ustack, 0, 4096);
 
+    /* Create per-process page directory */
+    uint32_t pd = vmm_create_user_pagedir();
+    if (!pd) {
+        pmm_free_frame(kstack);
+        pmm_free_frame(ustack);
+        tasks[tid].active = 0;
+        tasks[tid].state = TASK_STATE_UNUSED;
+        return -1;
+    }
+
+    /* Map user stack at USER_SPACE_BASE in the per-process page directory */
+    uint32_t pt = vmm_map_user_page(pd, USER_SPACE_BASE, ustack,
+                                     PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+    if (!pt) {
+        vmm_destroy_user_pagedir(pd);
+        pmm_free_frame(kstack);
+        pmm_free_frame(ustack);
+        tasks[tid].active = 0;
+        tasks[tid].state = TASK_STATE_UNUSED;
+        return -1;
+    }
+
     flags = irq_save();
 
-    /* Set up user stack: push exit trampoline as return address */
+    /* Write user stack content via identity-mapped physical address */
     uint32_t *usp = (uint32_t *)(ustack + 4096);
     *(--usp) = (uint32_t)user_exit_trampoline;
-    uint32_t user_esp = (uint32_t)usp;
+    /* UserESP is now a virtual address in the per-process address space */
+    uint32_t user_esp = USER_SPACE_BASE + PAGE_SIZE - 4;
 
     /* Set up kernel stack with ring 3 iret frame */
     uint32_t *ksp = (uint32_t *)(kstack + 4096);
 
     /* Ring 3 iret frame: SS, UserESP, EFLAGS, CS, EIP */
     *(--ksp) = 0x23;            /* SS: user data segment */
-    *(--ksp) = user_esp;        /* UserESP */
+    *(--ksp) = user_esp;        /* UserESP: virtual address */
     *(--ksp) = 0x202;           /* EFLAGS: IF=1 */
     *(--ksp) = 0x1B;            /* CS: user code segment */
     *(--ksp) = (uint32_t)entry; /* EIP: thread entry point */
@@ -460,6 +499,8 @@ int task_create_user_thread(const char *name, void (*entry)(void), int killable)
     tasks[tid].user_stack = ustack;
     tasks[tid].kernel_esp = kstack + 4096;  /* top of kernel stack → TSS.esp0 */
     tasks[tid].esp = (uint32_t)ksp;
+    tasks[tid].page_dir = pd;
+    tasks[tid].user_page_table = pt;
     tasks[tid].state = TASK_STATE_READY;
 
     irq_restore(flags);

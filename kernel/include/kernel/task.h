@@ -47,6 +47,10 @@ typedef struct {
     uint32_t     kernel_esp;    /* top of kernel stack (→ TSS.esp0) */
     uint32_t     kernel_stack;  /* PMM-allocated kernel stack phys addr */
     uint32_t     user_stack;    /* PMM-allocated user stack phys addr */
+
+    /* Per-process page directory */
+    uint32_t     page_dir;        /* page directory phys addr (kernel PD for ring 0) */
+    uint32_t     user_page_table; /* PMM page table for user space (for cleanup) */
 } task_info_t;
 
 void        task_init(void);
