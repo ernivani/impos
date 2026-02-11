@@ -506,6 +506,7 @@ static void draw_toggle(ui_window_t *win, ui_widget_t *wg, int focused) {
 }
 
 static void draw_icon_grid(ui_window_t *win, ui_widget_t *wg, int focused) {
+    (void)focused;
     int cols = wg->icon_grid.cols > 0 ? wg->icon_grid.cols : 4;
     int cw2 = wg->icon_grid.cell_w;
     int ch2 = wg->icon_grid.cell_h;
