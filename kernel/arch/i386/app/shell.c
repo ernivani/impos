@@ -24,6 +24,7 @@
 #include <kernel/idt.h>
 #include <kernel/arp.h>
 #include <kernel/task.h>
+#include <kernel/sched.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,6 +98,7 @@ static void cmd_kill(int argc, char* argv[]);
 static void cmd_display(int argc, char* argv[]);
 static void cmd_gfxbench(int argc, char* argv[]);
 static void cmd_fps(int argc, char* argv[]);
+static void cmd_spawn(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -845,6 +847,25 @@ static command_t commands[] = {
         "    corner of the desktop. The counter updates every second and\n"
         "    shows the number of WM composites per second. Run 'fps'\n"
         "    again to turn it off.\n"
+    },
+    {
+        "spawn", cmd_spawn,
+        "Spawn a background thread",
+        "spawn: spawn [counter|hog]\n"
+        "    Spawn a background thread for testing preemptive multitasking.\n"
+        "    counter — prints a number every second\n"
+        "    hog     — CPU-intensive loop (watchdog will kill it)\n",
+        "NAME\n"
+        "    spawn - spawn a background thread\n\n"
+        "SYNOPSIS\n"
+        "    spawn [counter|hog]\n\n"
+        "DESCRIPTION\n"
+        "    Creates a new kernel thread running in the background.\n"
+        "    The thread runs preemptively alongside the shell.\n"
+        "    Use 'kill PID' to terminate a spawned thread.\n"
+        "    Types:\n"
+        "      counter - increments and prints a counter every second\n"
+        "      hog     - infinite CPU loop (watchdog kills after 5s)\n"
     },
 };
 
@@ -3662,4 +3683,48 @@ static void cmd_fps(int argc, char* argv[]) {
     wm_toggle_fps();
     printf("FPS overlay: %s\n", wm_fps_enabled() ? "ON" : "OFF");
     wm_composite();
+}
+
+/* ═══ Spawn: background thread test commands ═══════════════════ */
+
+static void thread_counter(void) {
+    int tid = task_get_current();
+    int pid = task_get_pid(tid);
+    for (int i = 0; ; i++) {
+        printf("[thread %d] count = %d\n", pid, i);
+        pit_sleep_ms(1000);
+    }
+}
+
+static void thread_hog(void) {
+    volatile uint32_t x = 0;
+    while (1) x++;
+}
+
+static void cmd_spawn(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: spawn [counter|hog]\n");
+        return;
+    }
+
+    void (*entry)(void) = 0;
+    const char *name = argv[1];
+
+    if (strcmp(argv[1], "counter") == 0)
+        entry = thread_counter;
+    else if (strcmp(argv[1], "hog") == 0)
+        entry = thread_hog;
+    else {
+        printf("spawn: unknown thread type '%s'\n", argv[1]);
+        printf("  Available: counter, hog\n");
+        return;
+    }
+
+    int tid = task_create_thread(name, entry, 1);
+    if (tid < 0) {
+        printf("spawn: failed to create thread (no free slots)\n");
+        return;
+    }
+    int pid = task_get_pid(tid);
+    printf("[Thread %d] %s started (PID %d)\n", tid, name, pid);
 }

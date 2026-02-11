@@ -2,6 +2,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(__is_libk)
+#include <kernel/io.h>
+#endif
+
 #define HEAP_MAGIC 0xBEEF
 #define HEAP_MAX   (512 * 1024 * 1024)  /* 512 MB */
 #define ALIGN(x)   (((x) + 7) & ~7)
@@ -54,6 +58,10 @@ void* malloc(size_t size) {
 
     size = ALIGN(size);
 
+#if defined(__is_libk)
+    uint32_t flags = irq_save();
+#endif
+
     if (!free_list) {
         heap_init();
     }
@@ -65,6 +73,9 @@ void* malloc(size_t size) {
     while (current) {
         if (current->free && current->size >= size) {
             current->free = 0;
+#if defined(__is_libk)
+            irq_restore(flags);
+#endif
             return (void*)(current + 1);
         }
         last = current;
@@ -73,6 +84,9 @@ void* malloc(size_t size) {
 
     /* No free block found, request more space */
     block_header_t* block = request_space(last, size);
+#if defined(__is_libk)
+    irq_restore(flags);
+#endif
     if (!block) return NULL;
 
     return (void*)(block + 1);
@@ -93,6 +107,10 @@ void free(void* ptr) {
     block_header_t* header = (block_header_t*)ptr - 1;
     if (header->magic != HEAP_MAGIC) return;
 
+#if defined(__is_libk)
+    uint32_t flags = irq_save();
+#endif
+
     header->free = 1;
 
     /* Coalesce adjacent free blocks */
@@ -105,4 +123,8 @@ void free(void* ptr) {
             current = current->next;
         }
     }
+
+#if defined(__is_libk)
+    irq_restore(flags);
+#endif
 }
