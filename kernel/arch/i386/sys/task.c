@@ -1,6 +1,8 @@
 #include <kernel/task.h>
 #include <kernel/io.h>
 #include <kernel/sched.h>
+#include <kernel/syscall.h>
+#include <kernel/pmm.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -108,7 +110,7 @@ void task_sample(void) {
                 if (tasks[i].hog_count >= 5) {
                     tasks[i].killed = 1;
                     /* For preemptive threads, mark as zombie so scheduler stops them */
-                    if (tasks[i].stack_base) {
+                    if (tasks[i].stack_base || tasks[i].is_user) {
                         tasks[i].state = TASK_STATE_ZOMBIE;
                         tasks[i].active = 0;
                     }
@@ -175,7 +177,18 @@ int task_kill_by_pid(int pid) {
     tasks[tid].killed = 1;
 
     /* If this is a preemptive thread (has its own stack), kill it immediately */
-    if (tasks[tid].stack_base) {
+    if (tasks[tid].is_user) {
+        tasks[tid].state = TASK_STATE_ZOMBIE;
+        tasks[tid].active = 0;
+        if (tasks[tid].kernel_stack) {
+            pmm_free_frame(tasks[tid].kernel_stack);
+            tasks[tid].kernel_stack = 0;
+        }
+        if (tasks[tid].user_stack) {
+            pmm_free_frame(tasks[tid].user_stack);
+            tasks[tid].user_stack = 0;
+        }
+    } else if (tasks[tid].stack_base) {
         tasks[tid].state = TASK_STATE_ZOMBIE;
         tasks[tid].active = 0;
         free(tasks[tid].stack_base);
@@ -298,8 +311,8 @@ int task_create_thread(const char *name, void (*entry)(void), int killable) {
 }
 
 void task_yield(void) {
-    /* INT 0x80: dedicated yield interrupt — calls schedule() without PIT side effects */
-    __asm__ volatile("int $0x80");
+    /* INT 0x80 with EAX=SYS_YIELD: syscall gate triggers scheduler */
+    __asm__ volatile("mov %0, %%eax\n\tint $0x80" : : "i"(SYS_YIELD) : "eax");
 }
 
 void task_exit(void) {
@@ -333,4 +346,122 @@ void task_unblock(int tid) {
     if (tid >= 0 && tid < TASK_MAX && tasks[tid].active)
         tasks[tid].state = TASK_STATE_READY;
     irq_restore(flags);
+}
+
+/* ═══ Ring 3 user threads ═══════════════════════════════════════ */
+
+/* Trampoline placed as return address on user stack.
+ * When user entry() returns, this fires SYS_EXIT. */
+static void user_exit_trampoline(void) {
+    __asm__ volatile (
+        "mov %0, %%eax\n\t"
+        "int $0x80\n\t"
+        : : "i"(SYS_EXIT) : "eax"
+    );
+    while (1);  /* never reached */
+}
+
+/*
+ * Ring 3 user thread stack layout:
+ *
+ * KERNEL STACK (4KB, PMM):             USER STACK (4KB, PMM):
+ *   kern+4096 → (kernel_esp/TSS.esp0)   user+4096 →
+ *     SS       = 0x23                      &user_exit_trampoline
+ *     UserESP  ──────────────────────→   usp (user+4096-4)
+ *     EFLAGS   = 0x202
+ *     CS       = 0x1B
+ *     EIP      = entry
+ *     err_code = 0
+ *     int_no   = 0
+ *     pusha    (all 0)
+ *     DS=0x23, ES=0x23, FS=0x23
+ *   task->esp → GS=0x23
+ */
+int task_create_user_thread(const char *name, void (*entry)(void), int killable) {
+    uint32_t flags = irq_save();
+
+    int tid = -1;
+    for (int i = 4; i < TASK_MAX; i++) {
+        if (!tasks[i].active) {
+            tid = i;
+            break;
+        }
+    }
+    if (tid < 0) {
+        irq_restore(flags);
+        return -1;
+    }
+
+    /* Reserve the slot */
+    memset(&tasks[tid], 0, sizeof(task_info_t));
+    tasks[tid].active = 1;
+    tasks[tid].state = TASK_STATE_BLOCKED;
+
+    irq_restore(flags);
+
+    /* Allocate kernel stack (4KB) and user stack (4KB) from PMM */
+    uint32_t kstack = pmm_alloc_frame();
+    uint32_t ustack = pmm_alloc_frame();
+    if (!kstack || !ustack) {
+        if (kstack) pmm_free_frame(kstack);
+        if (ustack) pmm_free_frame(ustack);
+        tasks[tid].active = 0;
+        tasks[tid].state = TASK_STATE_UNUSED;
+        return -1;
+    }
+    memset((void *)kstack, 0, 4096);
+    memset((void *)ustack, 0, 4096);
+
+    flags = irq_save();
+
+    /* Set up user stack: push exit trampoline as return address */
+    uint32_t *usp = (uint32_t *)(ustack + 4096);
+    *(--usp) = (uint32_t)user_exit_trampoline;
+    uint32_t user_esp = (uint32_t)usp;
+
+    /* Set up kernel stack with ring 3 iret frame */
+    uint32_t *ksp = (uint32_t *)(kstack + 4096);
+
+    /* Ring 3 iret frame: SS, UserESP, EFLAGS, CS, EIP */
+    *(--ksp) = 0x23;            /* SS: user data segment */
+    *(--ksp) = user_esp;        /* UserESP */
+    *(--ksp) = 0x202;           /* EFLAGS: IF=1 */
+    *(--ksp) = 0x1B;            /* CS: user code segment */
+    *(--ksp) = (uint32_t)entry; /* EIP: thread entry point */
+
+    /* ISR stub pushes */
+    *(--ksp) = 0;               /* err_code */
+    *(--ksp) = 0;               /* int_no */
+
+    /* pusha block */
+    *(--ksp) = 0;               /* EAX */
+    *(--ksp) = 0;               /* ECX */
+    *(--ksp) = 0;               /* EDX */
+    *(--ksp) = 0;               /* EBX */
+    *(--ksp) = 0;               /* ESP (ignored by popa) */
+    *(--ksp) = 0;               /* EBP */
+    *(--ksp) = 0;               /* ESI */
+    *(--ksp) = 0;               /* EDI */
+
+    /* Segment registers: user data selector */
+    *(--ksp) = 0x23;            /* DS */
+    *(--ksp) = 0x23;            /* ES */
+    *(--ksp) = 0x23;            /* FS */
+    *(--ksp) = 0x23;            /* GS */
+
+    /* Initialize task */
+    strncpy(tasks[tid].name, name, 31);
+    tasks[tid].name[31] = '\0';
+    tasks[tid].killable = killable;
+    tasks[tid].wm_id = -1;
+    tasks[tid].pid = next_pid++;
+    tasks[tid].is_user = 1;
+    tasks[tid].kernel_stack = kstack;
+    tasks[tid].user_stack = ustack;
+    tasks[tid].kernel_esp = kstack + 4096;  /* top of kernel stack → TSS.esp0 */
+    tasks[tid].esp = (uint32_t)ksp;
+    tasks[tid].state = TASK_STATE_READY;
+
+    irq_restore(flags);
+    return tid;
 }

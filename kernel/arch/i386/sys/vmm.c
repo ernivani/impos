@@ -28,10 +28,10 @@ void vmm_init(multiboot_info_t *mbi) {
         uint32_t base = (uint32_t)i * 1024 * PAGE_SIZE;  /* i * 4MB */
         for (int j = 0; j < 1024; j++) {
             kernel_page_tables[i][j] = (base + j * PAGE_SIZE)
-                                       | PTE_PRESENT | PTE_WRITABLE;
+                                       | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
         }
         kernel_page_directory[i] = (uint32_t)&kernel_page_tables[i]
-                                   | PTE_PRESENT | PTE_WRITABLE;
+                                   | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
     }
 
     /* Identity-map 256MB..4GB with 4MB PSE pages.
@@ -44,7 +44,7 @@ void vmm_init(multiboot_info_t *mbi) {
 
     for (int i = IDENTITY_TABLES; i < 1024; i++) {
         uint32_t phys = (uint32_t)i * 4 * 1024 * 1024;
-        uint32_t flags = PTE_PRESENT | PTE_WRITABLE | PTE_4MB;
+        uint32_t flags = PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_4MB;
 
         /* Disable caching for framebuffer region */
         if (fb_phys != 0 && (uint32_t)i >= fb_pde_start && (uint32_t)i < fb_pde_end)

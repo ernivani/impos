@@ -41,6 +41,12 @@ typedef struct {
     uint32_t*    stack_base;  /* malloc'd stack (NULL for boot task) */
     uint32_t     stack_size;  /* stack size in bytes */
     uint32_t     sleep_until; /* PIT tick to wake at (for SLEEPING) */
+
+    /* Ring 3 user thread fields */
+    int          is_user;       /* 1 if ring 3 thread */
+    uint32_t     kernel_esp;    /* top of kernel stack (→ TSS.esp0) */
+    uint32_t     kernel_stack;  /* PMM-allocated kernel stack phys addr */
+    uint32_t     user_stack;    /* PMM-allocated user stack phys addr */
 } task_info_t;
 
 void        task_init(void);
@@ -62,6 +68,7 @@ void        task_set_name(int tid, const char *name);
 
 /* Preemptive multitasking API */
 int         task_create_thread(const char *name, void (*entry)(void), int killable);
+int         task_create_user_thread(const char *name, void (*entry)(void), int killable);
 void        task_yield(void);
 void        task_exit(void);
 void        task_block(int tid);

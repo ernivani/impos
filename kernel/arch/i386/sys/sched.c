@@ -1,6 +1,8 @@
 #include <kernel/sched.h>
 #include <kernel/task.h>
+#include <kernel/idt.h>
 #include <kernel/io.h>
+#include <kernel/pmm.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -48,15 +50,25 @@ registers_t* schedule(registers_t* regs) {
     task_info_t *cur = task_get(current);
 
     /* Determine if current task is a preemptive thread (has own stack) */
-    int cur_is_preemptive = (cur && cur->stack_base != NULL);
+    int cur_is_preemptive = (cur && (cur->stack_base != NULL || cur->is_user));
 
     /* Clean up zombie threads (free their stacks safely) */
     for (int i = 4; i < TASK_MAX; i++) {
-        /* task_get returns NULL for inactive tasks, so access directly */
         task_info_t *t = task_get_raw(i);
-        if (t && t->state == TASK_STATE_ZOMBIE && t->stack_base) {
-            free(t->stack_base);
-            t->stack_base = 0;
+        if (t && t->state == TASK_STATE_ZOMBIE) {
+            if (t->is_user) {
+                if (t->kernel_stack) {
+                    pmm_free_frame(t->kernel_stack);
+                    t->kernel_stack = 0;
+                }
+                if (t->user_stack) {
+                    pmm_free_frame(t->user_stack);
+                    t->user_stack = 0;
+                }
+            } else if (t->stack_base) {
+                free(t->stack_base);
+                t->stack_base = 0;
+            }
         }
     }
 
@@ -76,7 +88,7 @@ registers_t* schedule(registers_t* regs) {
         int candidate = (search_start + i) % TASK_MAX;
         if (candidate < 4) continue;  /* Skip cooperative task slots */
         task_info_t *t = task_get(candidate);
-        if (t && t->state == TASK_STATE_READY && t->stack_base) {
+        if (t && t->state == TASK_STATE_READY && (t->stack_base || t->is_user)) {
             next_thread = candidate;
             break;
         }
@@ -92,6 +104,8 @@ registers_t* schedule(registers_t* regs) {
             task_info_t *nxt = task_get(next_thread);
             nxt->state = TASK_STATE_RUNNING;
             task_set_current(next_thread);
+            if (nxt->is_user)
+                tss_set_esp0(nxt->kernel_esp);
             return (registers_t*)nxt->esp;
         }
         /* No preemptive threads ready — cooperative code continues unchanged */
@@ -107,6 +121,8 @@ registers_t* schedule(registers_t* regs) {
             task_info_t *nxt = task_get(next_thread);
             nxt->state = TASK_STATE_RUNNING;
             task_set_current(next_thread);
+            if (nxt->is_user)
+                tss_set_esp0(nxt->kernel_esp);
             return (registers_t*)nxt->esp;
         }
 
