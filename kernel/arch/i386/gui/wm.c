@@ -43,19 +43,29 @@ static void (*post_composite_fn)(void) = 0;
 
 /* Cached background (gradient + menubar + dock) */
 static uint32_t *bg_cache = 0;
+static uint32_t *bg_cache_raw = 0;  /* raw malloc pointer (bg_cache is 16-byte aligned) */
 static int bg_cache_valid = 0;
 
 /* Dirty flag: set when something visual changed, cleared after composite */
 static volatile int composite_needed = 0;
 
-/* Throttle compositing during drag/resize to ~30fps */
+/* Throttle compositing during drag/resize */
 static uint32_t last_drag_composite_tick = 0;
+
+/* Frame budget: 60fps cap (120Hz PIT / 2 = 60fps) */
+#define WM_FRAME_INTERVAL 2
+static uint32_t last_composite_tick = 0;
+static int composite_pending = 0;
 
 /* FPS overlay */
 static int fps_overlay_enabled = 0;
 static uint32_t fps_frame_count = 0;
 static uint32_t fps_last_tick = 0;
 static uint32_t fps_display_value = 0;
+
+/* GPU usage tracking (ticks spent in composite per second) */
+static uint32_t gpu_ticks_accum = 0;
+static uint32_t gpu_usage_pct = 0;
 
 /* ═══ Shadow atlas (9-patch pre-computed blurred shadow) ══════ */
 
@@ -206,23 +216,66 @@ static void init_corner_mask(int r) {
 
 /* ═══ Dirty rectangle tracking ═══════════════════════════════ */
 
-#define WM_MAX_DIRTY_RECTS 16
+#define WM_MAX_DIRTY_RECTS 32
 
 static gfx_rect_t dirty_rects[WM_MAX_DIRTY_RECTS];
 static int dirty_rect_count = 0;
 static int full_composite_needed = 1;
 
+static int rects_overlap(gfx_rect_t *a, gfx_rect_t *b) {
+    /* Returns 1 if rects overlap or are adjacent (within 8px gap) */
+    return !(a->x + a->w + 8 < b->x || b->x + b->w + 8 < a->x ||
+             a->y + a->h + 8 < b->y || b->y + b->h + 8 < a->y);
+}
+
+static gfx_rect_t rect_merge(gfx_rect_t *a, gfx_rect_t *b) {
+    gfx_rect_t r;
+    int ax1 = a->x + a->w, ay1 = a->y + a->h;
+    int bx1 = b->x + b->w, by1 = b->y + b->h;
+    r.x = a->x < b->x ? a->x : b->x;
+    r.y = a->y < b->y ? a->y : b->y;
+    int rx1 = ax1 > bx1 ? ax1 : bx1;
+    int ry1 = ay1 > by1 ? ay1 : by1;
+    r.w = rx1 - r.x;
+    r.h = ry1 - r.y;
+    return r;
+}
+
 static void add_dirty_rect(int x, int y, int w, int h) {
     if (full_composite_needed) return;
+
+    gfx_rect_t nr = { x, y, w, h };
+
+    /* Try to merge with an existing rect */
+    for (int i = 0; i < dirty_rect_count; i++) {
+        if (rects_overlap(&dirty_rects[i], &nr)) {
+            dirty_rects[i] = rect_merge(&dirty_rects[i], &nr);
+            /* Cascade: check if enlarged rect now overlaps others */
+            int merged = 1;
+            while (merged) {
+                merged = 0;
+                for (int j = 0; j < dirty_rect_count; j++) {
+                    if (j == i) continue;
+                    if (rects_overlap(&dirty_rects[i], &dirty_rects[j])) {
+                        dirty_rects[i] = rect_merge(&dirty_rects[i], &dirty_rects[j]);
+                        /* Remove j */
+                        dirty_rects[j] = dirty_rects[dirty_rect_count - 1];
+                        dirty_rect_count--;
+                        if (j < i) i--; /* adjust i if needed */
+                        merged = 1;
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+    }
+
     if (dirty_rect_count >= WM_MAX_DIRTY_RECTS) {
         full_composite_needed = 1;
         return;
     }
-    dirty_rects[dirty_rect_count].x = x;
-    dirty_rects[dirty_rect_count].y = y;
-    dirty_rects[dirty_rect_count].w = w;
-    dirty_rects[dirty_rect_count].h = h;
-    dirty_rect_count++;
+    dirty_rects[dirty_rect_count++] = nr;
 }
 
 void wm_initialize(void) {
@@ -243,7 +296,10 @@ void wm_initialize(void) {
     full_composite_needed = 1;
     dirty_rect_count = 0;
     if (!bg_cache) {
-        bg_cache = malloc(gfx_height() * gfx_pitch());
+        size_t sz = gfx_height() * gfx_pitch();
+        bg_cache_raw = malloc(sz + 15);
+        if (bg_cache_raw)
+            bg_cache = (uint32_t*)(((uintptr_t)bg_cache_raw + 15) & ~(uintptr_t)15);
     }
     /* Pre-compute shadow atlas */
     wm_init_shadow_atlas();
@@ -723,8 +779,26 @@ static void draw_window(wm_window_t *w) {
     w->dirty = 0;
 }
 
+void wm_flush_pending(void) {
+    if (!composite_pending && !composite_needed) return;
+    uint32_t now = pit_get_ticks();
+    if (now - last_composite_tick >= WM_FRAME_INTERVAL)
+        wm_composite();
+}
+
 void wm_composite(void) {
+    /* Rate-limit to ~60fps */
+    uint32_t now = pit_get_ticks();
+    if (now - last_composite_tick < WM_FRAME_INTERVAL) {
+        composite_pending = 1;
+        return;
+    }
+    composite_pending = 0;
+    last_composite_tick = now;
+
     composite_needed = 0;
+    uint32_t composite_start = pit_get_ticks();
+
     uint32_t *bb = gfx_backbuffer();
     uint32_t total = gfx_height() * gfx_pitch();
 
@@ -742,7 +816,40 @@ void wm_composite(void) {
         bg_cache_valid = 1;
         full_composite_needed = 1;
     } else if (bg_cache) {
-        memcpy(bb, bg_cache, total);
+        /* Collect dirty rects from windows BEFORE restoring bg */
+        dirty_rect_count = 0;
+        if (!full_composite_needed && any_dirty) {
+            for (int i = 0; i < win_count; i++) {
+                if (windows[i].dirty && (windows[i].flags & WM_WIN_VISIBLE)) {
+                    add_dirty_rect(
+                        windows[i].x - SHADOW_PAD + WM_SHADOW_OX,
+                        windows[i].y - SHADOW_PAD + WM_SHADOW_OY,
+                        windows[i].w + 2 * SHADOW_PAD,
+                        windows[i].h + 2 * SHADOW_PAD
+                    );
+                }
+            }
+        }
+        /* Partial bg_cache restore when only dirty rects are active */
+        if (!full_composite_needed && dirty_rect_count > 0) {
+            uint32_t pitch4 = gfx_pitch() / 4;
+            for (int i = 0; i < dirty_rect_count; i++) {
+                int rx = dirty_rects[i].x, ry = dirty_rects[i].y;
+                int rw = dirty_rects[i].w, rh = dirty_rects[i].h;
+                /* Clip to screen */
+                if (rx < 0) { rw += rx; rx = 0; }
+                if (ry < 0) { rh += ry; ry = 0; }
+                if (rx + rw > (int)gfx_width()) rw = (int)gfx_width() - rx;
+                if (ry + rh > (int)gfx_height()) rh = (int)gfx_height() - ry;
+                if (rw <= 0 || rh <= 0) continue;
+                for (int row = ry; row < ry + rh; row++)
+                    memcpy(bb + row * pitch4 + rx,
+                           bg_cache + row * pitch4 + rx,
+                           (size_t)rw * 4);
+            }
+        } else {
+            memcpy(bb, bg_cache, total);
+        }
     } else {
         gfx_clear(0);
         if (bg_draw_fn)
@@ -750,25 +857,32 @@ void wm_composite(void) {
         full_composite_needed = 1;
     }
 
-    /* Collect dirty rects from windows */
-    dirty_rect_count = 0;
-    if (!full_composite_needed && any_dirty) {
-        for (int i = 0; i < win_count; i++) {
-            if (windows[i].dirty && (windows[i].flags & WM_WIN_VISIBLE)) {
-                /* Include shadow spread in dirty rect */
-                add_dirty_rect(
-                    windows[i].x - SHADOW_PAD + WM_SHADOW_OX,
-                    windows[i].y - SHADOW_PAD + WM_SHADOW_OY,
-                    windows[i].w + 2 * SHADOW_PAD,
-                    windows[i].h + 2 * SHADOW_PAD
-                );
+    /* Draw windows back-to-front, skipping fully occluded ones */
+    for (int i = win_count - 1; i >= 0; i--) {
+        /* Check if any single opaque window above fully covers this one */
+        wm_window_t *w = &windows[win_order[i]];
+        if (!(w->flags & WM_WIN_VISIBLE) || (w->flags & WM_WIN_MINIMIZED))
+            continue;
+        int occluded = 0;
+        for (int j = 0; j < i; j++) {
+            wm_window_t *above = &windows[win_order[j]];
+            if (!(above->flags & WM_WIN_VISIBLE) || (above->flags & WM_WIN_MINIMIZED))
+                continue;
+            if (above->opacity < 255) continue;  /* transparent windows don't occlude */
+            if (above->x <= w->x && above->y <= w->y &&
+                above->x + above->w >= w->x + w->w &&
+                above->y + above->h >= w->y + w->h) {
+                occluded = 1;
+                break;
             }
         }
-    }
-
-    /* Draw windows back-to-front */
-    for (int i = win_count - 1; i >= 0; i--) {
-        draw_window(&windows[win_order[i]]);
+        if (occluded) continue;
+        uint32_t draw_start = pit_get_ticks();
+        draw_window(w);
+        uint32_t draw_elapsed = pit_get_ticks() - draw_start;
+        if (draw_elapsed == 0) draw_elapsed = 1; /* minimum 1 tick attribution */
+        if (w->task_id >= 0)
+            task_add_gpu_ticks(w->task_id, draw_elapsed);
     }
 
     /* Dock always on top of windows */
@@ -778,13 +892,29 @@ void wm_composite(void) {
     if (post_composite_fn)
         post_composite_fn();
 
-    /* FPS tracking (always on so top/taskmgr can read it) */
+    /* Attribute WM overhead (bg restore, dock, flip) to WM task */
+    {
+        uint32_t wm_elapsed = pit_get_ticks() - composite_start;
+        /* Subtract per-window draw ticks (already attributed above) */
+        /* Just attribute total composite time to WM as a baseline */
+        task_add_gpu_ticks(TASK_WM, wm_elapsed > 0 ? 1 : 0);
+    }
+
+    /* FPS + GPU usage tracking (always on so top/taskmgr can read it) */
     fps_frame_count++;
     {
         uint32_t now = pit_get_ticks();
+        uint32_t elapsed = now - composite_start;
+        if (elapsed == 0 && composite_start != now) elapsed = 1;
+        gpu_ticks_accum += elapsed;
+
         if (fps_last_tick == 0) fps_last_tick = now;
         if (now - fps_last_tick >= 120) {  /* every second at 120Hz PIT */
-            fps_display_value = fps_frame_count * 120 / (now - fps_last_tick);
+            uint32_t window = now - fps_last_tick;
+            fps_display_value = fps_frame_count * 120 / window;
+            gpu_usage_pct = gpu_ticks_accum * 100 / window;
+            if (gpu_usage_pct > 100) gpu_usage_pct = 100;
+            gpu_ticks_accum = 0;
             fps_frame_count = 0;
             fps_last_tick = now;
         }
@@ -911,7 +1041,7 @@ void wm_mouse_idle(void) {
 
             if (new_w >= w->min_w && new_h >= w->min_h) {
                 uint32_t now = pit_get_ticks();
-                if (now - last_drag_composite_tick >= 3) {
+                if (now - last_drag_composite_tick >= WM_FRAME_INTERVAL) {
                     w->x = new_x; w->y = new_y;
                     wm_resize_window(w->id, new_w, new_h);
                     wm_composite();
@@ -938,7 +1068,7 @@ void wm_mouse_idle(void) {
             if (w->y > (int)gfx_height() - WM_TITLEBAR_H)
                 w->y = (int)gfx_height() - WM_TITLEBAR_H;
             uint32_t now = pit_get_ticks();
-            if (now - last_drag_composite_tick >= 3) {
+            if (now - last_drag_composite_tick >= WM_FRAME_INTERVAL) {
                 wm_composite();
                 last_drag_composite_tick = now;
             } else {
@@ -1131,4 +1261,8 @@ int wm_fps_enabled(void) {
 
 uint32_t wm_get_fps(void) {
     return fps_display_value;
+}
+
+uint32_t wm_get_gpu_usage(void) {
+    return gpu_usage_pct;
 }

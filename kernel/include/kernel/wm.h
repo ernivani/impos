@@ -71,6 +71,9 @@ int  wm_is_maximized(int id);
    Mouse cursor is drawn on top to framebuffer. */
 void wm_composite(void);
 
+/* Flush any pending composite that was deferred by the 60fps rate limiter */
+void wm_flush_pending(void);
+
 /* Invalidate cached background (call after menubar/dock/wallpaper changes) */
 void wm_invalidate_bg(void);
 
@@ -128,5 +131,8 @@ int  wm_fps_enabled(void);
 
 /* Get current composites-per-second (always tracked, even without overlay) */
 uint32_t wm_get_fps(void);
+
+/* Get GPU usage percentage (time spent compositing / total time) */
+uint32_t wm_get_gpu_usage(void);
 
 #endif

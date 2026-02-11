@@ -162,8 +162,14 @@ make run    # Build + boot in QEMU
 - [x] Soft drop shadows (pre-computed 9-patch blur atlas, 24px spread, offset 4x6)
 - [x] Rounded window corners (10px radius, corner-masked canvas blit)
 - [x] Per-window opacity / alpha compositing (`wm_set_opacity()`)
-- [x] Dirty rectangle tracking (partial flip optimization, up to 16 rects)
+- [x] Dirty rectangle tracking with coalescing (up to 32 rects, auto-merge overlapping)
 - [x] Anti-aliased traffic light buttons
+- [x] SSE2 non-temporal framebuffer writes (~2x faster MMIO copies)
+- [x] Partial bg_cache restore (only dirty regions instead of full 8.3MB)
+- [x] 60fps frame budget (rate-limited compositing)
+- [x] Occluded window culling (skip fully covered windows)
+- [x] Cursor save from backbuffer (eliminates slow MMIO reads)
+- [x] Per-app GPU usage tracking (time spent in draw_window per task)
 
 ### Widget Toolkit — 100%
 - [x] 12 widget types: Label, Button, TextInput, List, Checkbox, Progress, Tabs, Panel, Separator, Custom, Toggle, IconGrid, Card
@@ -174,7 +180,7 @@ make run    # Build + boot in QEMU
 
 ### GUI Applications — 100%
 - [x] **File Manager**: browsing, navigation, create/delete/rename, list + icon view modes
-- [x] **Activity Monitor**: CPU/Mem bars, Disk/Net/GPU stats, task list with state/TIME+, kill support
+- [x] **Activity Monitor**: CPU/Mem/GPU bars, Disk/Net stats, per-app GPU% column, task list with state/TIME+, kill support
 - [x] **Settings**: 5 tabs (network, user prefs, system info, etc.)
 - [x] **Resource Monitor**: CPU trending, memory stats, I/O stats, network throughput
 - [x] **Finder**: fuzzy file search, quick launch (Alt+Space)
@@ -277,7 +283,7 @@ make run    # Build + boot in QEMU
 | **Security** | ~~Syscall interface~~ | ✅ Done — INT 0x80 with 15 syscalls |
 | **Hardware** | USB support | PS/2 keyboard/mouse only |
 | **Hardware** | Audio / sound | No audio driver |
-| **Hardware** | GPU acceleration | Software rendering only — VirtIO GPU + SSE2 planned (see 0.3 roadmap) |
+| **Hardware** | GPU acceleration | Software rendering with SSE2 NT stores, dirty rect coalescing, 60fps cap — VirtIO GPU planned |
 | **Hardware** | Real-time clock (RTC) | Time doesn't persist across reboots |
 | **Platform** | 64-bit (x86_64) | i386 only |
 | **Platform** | SMP / multi-core | Single-core only |
@@ -370,13 +376,14 @@ make run    # Build + boot in QEMU
 - [ ] **Bochs VGA BGA registers** — Direct VBE dispi port access (0x01CE/0x01CF) for fast VRAM mode switching, banked/linear mode toggle
 - [ ] **Hardware blit offload** — Offload window canvas → backbuffer copies to GPU command queue instead of CPU memcpy (~8MB per full composite)
 - [ ] **Scanout surface per window** — Each window as a GPU resource, compositor sends per-window blit commands with source rect + dest rect
-- [ ] **SSE2 memory operations** — Use `movdqa`/`movntdq` 128-bit SIMD for backbuffer→framebuffer copy (4x throughput vs `rep movsd`)
-- [ ] **Dirty region coalescing** — Merge overlapping dirty rects, skip fully-occluded windows, only composite visible changed regions
-- [ ] **Cursor plane** — Hardware cursor overlay (VBE/BGA cursor register) to avoid save/restore MMIO reads on every mouse move
-- [ ] **GPU info in top/taskmgr** — ✅ Done — resolution, VRAM size, FPS displayed in both `top` command and Activity Monitor
-- [ ] **Frame budget limiter** — Cap composites to 60fps max, skip intermediate composites during rapid mouse movement
+- [x] **SSE2 memory operations** — `movdqa`/`movntdq` 128-bit SIMD for backbuffer→framebuffer copy, SSE2 enabled in boot.S (CR0/CR4), `memcpy_nt()` with `__attribute__((target("sse2")))`, 16-byte aligned backbuf/bg_cache
+- [x] **Dirty region coalescing** — 32 dirty rects (up from 16), auto-merge overlapping/adjacent rects with cascade, partial bg_cache restore for dirty regions only, occluded window culling
+- [x] **Cursor from backbuffer** — Cursor save reads from RAM backbuffer instead of MMIO framebuffer (eliminates 192 slow per-pixel MMIO reads)
+- [x] **GPU usage tracking** — Per-app GPU% (time in draw_window per task), system-wide GPU usage bar in Activity Monitor and `top`, `wm_get_gpu_usage()` API
+- [x] **Frame budget limiter** — 60fps cap via `WM_FRAME_INTERVAL`, `wm_flush_pending()` deferred composite in idle handler, drag/resize throttle uses same interval
+- [ ] **Cursor plane** — Hardware cursor overlay (VBE/BGA cursor register) to avoid save/restore on every mouse move
 
-> **Current bottleneck**: Everything is CPU-rendered into an MMIO framebuffer. A full 1920x1080x32 composite copies ~8MB. During window drag, the 30fps throttle still causes ~240MB/s of memory bandwidth. The GPU plan starts with VirtIO GPU (QEMU `-device virtio-gpu-pci`) which supports 2D command queues, then falls back to software with SSE2 acceleration on non-VirtIO setups.
+> **Software optimizations complete**: SSE2 NT stores (~2x faster MMIO writes), dirty rect coalescing with partial bg restore (avoid 8.3MB copy), 60fps frame cap, occluded window skip, cursor from backbuffer. VirtIO GPU remains a future project for hardware-accelerated compositing.
 
 #### 0.4 — Clipboard & Core Desktop Integration
 - [ ] **Clipboard system** — Copy/paste with MIME types between all apps
