@@ -1,4 +1,5 @@
 #include <kernel/vmm.h>
+#include <kernel/pmm.h>
 #include <kernel/gfx.h>
 #include <string.h>
 #include <stdio.h>
@@ -108,4 +109,43 @@ void vmm_invlpg(uint32_t virt) {
 
 uint32_t vmm_get_kernel_pagedir(void) {
     return (uint32_t)&kernel_page_directory;
+}
+
+uint32_t vmm_create_user_pagedir(void) {
+    uint32_t pd_phys = pmm_alloc_frame();
+    if (!pd_phys) return 0;
+
+    /* Copy all 1024 PDEs from the kernel page directory.
+     * Since pd_phys is identity-mapped (< 256MB), we can write directly. */
+    uint32_t *pd = (uint32_t *)pd_phys;
+    memcpy(pd, kernel_page_directory, 4096);
+
+    return pd_phys;
+}
+
+uint32_t vmm_map_user_page(uint32_t pd_phys, uint32_t virt, uint32_t phys, uint32_t flags) {
+    uint32_t *pd = (uint32_t *)pd_phys;
+    uint32_t pde_idx = virt >> 22;
+    uint32_t pte_idx = (virt >> 12) & 0x3FF;
+
+    uint32_t pt_phys;
+
+    if (!(pd[pde_idx] & PTE_PRESENT) || (pd[pde_idx] & PTE_4MB)) {
+        /* No page table here (or it's a 4MB PSE page) — allocate a fresh one */
+        pt_phys = pmm_alloc_frame();
+        if (!pt_phys) return 0;
+        memset((void *)pt_phys, 0, 4096);
+        pd[pde_idx] = pt_phys | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+    } else {
+        pt_phys = pd[pde_idx] & PAGE_MASK;
+    }
+
+    uint32_t *pt = (uint32_t *)pt_phys;
+    pt[pte_idx] = (phys & PAGE_MASK) | (flags & 0xFFF);
+
+    return pt_phys;
+}
+
+void vmm_destroy_user_pagedir(uint32_t pd_phys) {
+    pmm_free_frame(pd_phys);
 }

@@ -18,6 +18,9 @@
 #define PAGE_SIZE       4096
 #define PAGE_MASK       (~0xFFF)
 
+/* User-space virtual base for per-process mappings (PDE[256] = 1GB) */
+#define USER_SPACE_BASE 0x40000000
+
 /* Initialize VMM: build identity-mapped page tables and enable paging */
 void vmm_init(multiboot_info_t *mbi);
 
@@ -32,5 +35,15 @@ void vmm_invlpg(uint32_t virt);
 
 /* Get the kernel page directory physical address */
 uint32_t vmm_get_kernel_pagedir(void);
+
+/* Create a per-process page directory (copy of kernel PD). Returns phys addr. */
+uint32_t vmm_create_user_pagedir(void);
+
+/* Map a 4KB page in a specific page directory.
+ * Returns the page table phys addr (caller tracks for cleanup), or 0 on failure. */
+uint32_t vmm_map_user_page(uint32_t pd_phys, uint32_t virt, uint32_t phys, uint32_t flags);
+
+/* Free a per-process page directory frame */
+void vmm_destroy_user_pagedir(uint32_t pd_phys);
 
 #endif
