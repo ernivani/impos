@@ -778,9 +778,9 @@ void wm_composite(void) {
     if (post_composite_fn)
         post_composite_fn();
 
-    /* FPS overlay (top-right corner) */
-    if (fps_overlay_enabled) {
-        fps_frame_count++;
+    /* FPS tracking (always on so top/taskmgr can read it) */
+    fps_frame_count++;
+    {
         uint32_t now = pit_get_ticks();
         if (fps_last_tick == 0) fps_last_tick = now;
         if (now - fps_last_tick >= 120) {  /* every second at 120Hz PIT */
@@ -788,6 +788,10 @@ void wm_composite(void) {
             fps_frame_count = 0;
             fps_last_tick = now;
         }
+    }
+
+    /* FPS overlay (top-right corner) */
+    if (fps_overlay_enabled) {
         char fps_buf[16];
         snprintf(fps_buf, sizeof(fps_buf), "FPS:%u", (unsigned)fps_display_value);
         int fw = (int)strlen(fps_buf) * FONT_W + 12;
@@ -1123,4 +1127,8 @@ void wm_toggle_fps(void) {
 
 int wm_fps_enabled(void) {
     return fps_overlay_enabled;
+}
+
+uint32_t wm_get_fps(void) {
+    return fps_display_value;
 }

@@ -8,25 +8,35 @@
 #include <kernel/mouse.h>
 #include <kernel/idt.h>
 #include <kernel/task.h>
+#include <kernel/fs.h>
+#include <kernel/net.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 /* ═══ Layout constants ════════════════════════════════════════ */
 
-#define TM_HEADER_H    60    /* Summary bar height */
+#define TM_HEADER_H    140   /* Summary bar height (expanded for stats) */
 #define TM_COL_NAME    10    /* X offset for Name column */
-#define TM_COL_CPU    280    /* X offset for CPU% column */
-#define TM_COL_MEM    370    /* X offset for Memory column */
-#define TM_COL_PID    450    /* X offset for PID column */
-#define TM_COL_KILL   510    /* X offset for Kill column */
+#define TM_COL_STATE  220    /* X offset for State column */
+#define TM_COL_CPU    240    /* X offset for CPU% column */
+#define TM_COL_MEM    360    /* X offset for Memory column */
+#define TM_COL_TIME   440    /* X offset for TIME+ column */
+#define TM_COL_PID    540    /* X offset for PID column */
+#define TM_COL_KILL   600    /* X offset for Kill column */
 #define TM_ROW_H       22   /* Row height */
 #define TM_TABLE_HDR_H 24   /* Table header row height */
 
 /* Widget indices */
 static int w_task_count_label;
-static int w_mem_bar;
+static int w_cpu_bar;
+static int w_cpu_label;
 static int w_uptime_label;
+static int w_mem_bar;
+static int w_mem_label;
+static int w_disk_label;
+static int w_net_label;
+static int w_gpu_label;
 static int w_task_table;
 
 /* Task snapshot */
@@ -34,10 +44,13 @@ static int w_task_table;
 typedef struct {
     char name[32];
     int pid;
-    int cpu_pct;     /* 0-100 */
+    int cpu_pct;        /* 0-100 */
+    int cpu_pct_x10;    /* 0-1000 for decimal display */
     int mem_kb;
     int killable;
     int active;
+    char state;         /* R=running, S=sleeping, I=idle */
+    uint32_t total_ticks;  /* cumulative for TIME+ */
 } tm_row_t;
 
 static tm_row_t rows[TM_MAX_ROWS];
@@ -47,8 +60,13 @@ static int selected_pid = -1;  /* track selection by PID across sort changes */
 static int sort_col;     /* 0=name, 1=cpu, 2=mem, 3=pid */
 
 /* Dynamic strings */
-static char task_count_str[48];
+static char task_count_str[64];
 static char uptime_str[48];
+static char cpu_label_str[64];
+static char mem_label_str[64];
+static char disk_label_str[80];
+static char net_label_str[80];
+static char gpu_label_str[80];
 
 /* ═══ Snapshot ════════════════════════════════════════════════ */
 
@@ -65,11 +83,17 @@ static void tm_snapshot(void) {
         r->pid = t->pid;
         r->mem_kb = t->mem_kb;
         r->killable = t->killable;
+        r->total_ticks = t->total_ticks;
         /* CPU%: prev_ticks / sample_total * 100 */
-        if (t->sample_total > 0)
+        if (t->sample_total > 0) {
             r->cpu_pct = (int)((uint64_t)t->prev_ticks * 100 / t->sample_total);
-        else
+            r->cpu_pct_x10 = (int)((uint64_t)t->prev_ticks * 1000 / t->sample_total);
+        } else {
             r->cpu_pct = 0;
+            r->cpu_pct_x10 = 0;
+        }
+        /* State */
+        r->state = (r->cpu_pct_x10 > 0) ? 'R' : 'S';
         row_count++;
     }
 
@@ -121,10 +145,14 @@ static void tm_draw_table(ui_window_t *win, int widget_idx,
     gfx_buf_fill_rect(canvas, cw, ch, x0, y0, w, TM_TABLE_HDR_H, hdr_bg);
     gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_NAME, y0 + 4,
                          "NAME", ui_theme.text_secondary, hdr_bg);
+    gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_STATE, y0 + 4,
+                         "S", ui_theme.text_secondary, hdr_bg);
     gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_CPU, y0 + 4,
                          "CPU%", ui_theme.text_secondary, hdr_bg);
     gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_MEM, y0 + 4,
                          "MEM", ui_theme.text_secondary, hdr_bg);
+    gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_TIME, y0 + 4,
+                         "TIME+", ui_theme.text_secondary, hdr_bg);
     gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_PID, y0 + 4,
                          "PID", ui_theme.text_secondary, hdr_bg);
     /* Separator under header */
@@ -162,6 +190,16 @@ static void tm_draw_table(ui_window_t *win, int widget_idx,
                              ry + (TM_ROW_H - FONT_H) / 2,
                              r->name, ui_theme.text_primary, row_bg);
 
+        /* State */
+        {
+            char st[2] = { r->state, '\0' };
+            uint32_t sc = (r->state == 'R') ? ui_theme.success :
+                          (r->state == 'I') ? GFX_RGB(100, 140, 255) :
+                          ui_theme.text_dim;
+            gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_STATE,
+                                 ry + (TM_ROW_H - FONT_H) / 2, st, sc, row_bg);
+        }
+
         /* CPU% with colored bar */
         int bar_w = 60;
         int bar_h = 10;
@@ -192,6 +230,18 @@ static void tm_draw_table(ui_window_t *win, int widget_idx,
         gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_MEM,
                              ry + (TM_ROW_H - FONT_H) / 2,
                              mem_str2, ui_theme.text_sub, row_bg);
+
+        /* TIME+ */
+        {
+            uint32_t tsecs = r->total_ticks / 120;
+            uint32_t tcs = (r->total_ticks % 120) * 100 / 120;
+            char time_str[16];
+            snprintf(time_str, sizeof(time_str), "%d:%02d.%02d",
+                     (int)(tsecs / 60), (int)(tsecs % 60), (int)tcs);
+            gfx_buf_draw_string(canvas, cw, ch, x0 + TM_COL_TIME,
+                                 ry + (TM_ROW_H - FONT_H) / 2,
+                                 time_str, ui_theme.text_sub, row_bg);
+        }
 
         /* PID */
         char pid_str[8];
@@ -244,26 +294,111 @@ static int tm_table_event(ui_window_t *win, int widget_idx, ui_event_t *ev) {
 
 static void tm_refresh(ui_window_t *win) {
     tm_snapshot();
+    ui_widget_t *wg;
 
-    /* Task count */
-    snprintf(task_count_str, sizeof(task_count_str), "Tasks: %d", row_count);
-    ui_widget_t *wg = ui_get_widget(win, w_task_count_label);
+    /* Task count with state breakdown */
+    int n_running = 0, n_sleeping = 0;
+    for (int i = 0; i < row_count; i++) {
+        if (rows[i].state == 'R') n_running++;
+        else n_sleeping++;
+    }
+    snprintf(task_count_str, sizeof(task_count_str),
+             "Tasks: %d (%d run, %d slp)", row_count, n_running, n_sleeping);
+    wg = ui_get_widget(win, w_task_count_label);
     if (wg) strncpy(wg->label.text, task_count_str, UI_TEXT_MAX - 1);
 
-    /* Memory */
+    /* CPU bar + label */
+    task_info_t *idle_t = task_get(TASK_IDLE);
+    int idle_x10 = 0, user_x10 = 0, sys_x10 = 0;
+    if (idle_t && idle_t->sample_total > 0)
+        idle_x10 = (int)(idle_t->prev_ticks * 1000 / idle_t->sample_total);
+    for (int i = 1; i < TASK_MAX; i++) {
+        task_info_t *t = task_get(i);
+        if (!t || !t->active) continue;
+        int pct_x10 = t->sample_total > 0
+            ? (int)(t->prev_ticks * 1000 / t->sample_total) : 0;
+        if (t->killable) user_x10 += pct_x10;
+        else sys_x10 += pct_x10;
+    }
+    int cpu_pct = (1000 - idle_x10) / 10;
+    if (cpu_pct < 0) cpu_pct = 0;
+    if (cpu_pct > 100) cpu_pct = 100;
+
+    wg = ui_get_widget(win, w_cpu_bar);
+    if (wg) wg->progress.value = cpu_pct;
+
+    snprintf(cpu_label_str, sizeof(cpu_label_str),
+             "%d%% (%d.%d us, %d.%d sy, %d.%d id)",
+             cpu_pct, user_x10 / 10, user_x10 % 10,
+             sys_x10 / 10, sys_x10 % 10,
+             idle_x10 / 10, idle_x10 % 10);
+    wg = ui_get_widget(win, w_cpu_label);
+    if (wg) strncpy(wg->label.text, cpu_label_str, UI_TEXT_MAX - 1);
+
+    /* Memory bar + label */
     size_t used = heap_used();
     size_t total = heap_total();
-    int pct = total > 0 ? (int)((uint64_t)used * 100 / total) : 0;
+    int mem_pct = total > 0 ? (int)((uint64_t)used * 100 / total) : 0;
     wg = ui_get_widget(win, w_mem_bar);
-    if (wg) wg->progress.value = pct;
+    if (wg) wg->progress.value = mem_pct;
+
+    uint32_t ram_mb = gfx_get_system_ram_mb();
+    int used_x10 = (int)(used / (1024 * 1024 / 10));
+    size_t free_mem = total > used ? total - used : 0;
+    int free_x10 = (int)(free_mem / (1024 * 1024 / 10));
+    snprintf(mem_label_str, sizeof(mem_label_str),
+             "%d.%dMiB / %dMiB (%d.%dMiB free)",
+             used_x10 / 10, used_x10 % 10, (int)ram_mb,
+             free_x10 / 10, free_x10 % 10);
+    wg = ui_get_widget(win, w_mem_label);
+    if (wg) strncpy(wg->label.text, mem_label_str, UI_TEXT_MAX - 1);
 
     /* Uptime */
     uint32_t ticks = pit_get_ticks();
-    uint32_t secs = ticks / 100;
+    uint32_t secs = ticks / 120;
     snprintf(uptime_str, sizeof(uptime_str), "Up %dh%dm%ds",
              (int)(secs / 3600), (int)((secs % 3600) / 60), (int)(secs % 60));
     wg = ui_get_widget(win, w_uptime_label);
     if (wg) strncpy(wg->label.text, uptime_str, UI_TEXT_MAX - 1);
+
+    /* Disk stats */
+    int used_inodes = 0, used_blocks = 0;
+    for (int i = 0; i < NUM_INODES; i++) {
+        inode_t tmp;
+        if (fs_read_inode(i, &tmp) == 0 && tmp.type != INODE_FREE) {
+            used_inodes++;
+            used_blocks += tmp.num_blocks;
+            if (tmp.indirect_block) used_blocks++;
+        }
+    }
+    uint32_t rd_ops = 0, rd_bytes = 0, wr_ops = 0, wr_bytes = 0;
+    fs_get_io_stats(&rd_ops, &rd_bytes, &wr_ops, &wr_bytes);
+    snprintf(disk_label_str, sizeof(disk_label_str),
+             "Disk: %d/%d inodes  %d/%d blk (%dKB)  R:%d W:%d",
+             used_inodes, NUM_INODES, used_blocks, NUM_BLOCKS,
+             (int)(used_blocks * BLOCK_SIZE / 1024),
+             (int)rd_ops, (int)wr_ops);
+    wg = ui_get_widget(win, w_disk_label);
+    if (wg) strncpy(wg->label.text, disk_label_str, UI_TEXT_MAX - 1);
+
+    /* Net stats */
+    uint32_t tx_p = 0, tx_b = 0, rx_p = 0, rx_b = 0;
+    net_get_stats(&tx_p, &tx_b, &rx_p, &rx_b);
+    snprintf(net_label_str, sizeof(net_label_str),
+             "Net: TX %d pkts (%dKB)  RX %d pkts (%dKB)",
+             (int)tx_p, (int)(tx_b / 1024),
+             (int)rx_p, (int)(rx_b / 1024));
+    wg = ui_get_widget(win, w_net_label);
+    if (wg) strncpy(wg->label.text, net_label_str, UI_TEXT_MAX - 1);
+
+    /* GPU / Display stats */
+    snprintf(gpu_label_str, sizeof(gpu_label_str),
+             "GPU: %dx%dx%d  VRAM:%dKB  FPS:%d",
+             (int)gfx_width(), (int)gfx_height(), (int)gfx_bpp(),
+             (int)(gfx_width() * gfx_height() * (gfx_bpp() / 8) / 1024),
+             (int)wm_get_fps());
+    wg = ui_get_widget(win, w_gpu_label);
+    if (wg) strncpy(wg->label.text, gpu_label_str, UI_TEXT_MAX - 1);
 
     win->dirty = 1;
 }
@@ -311,11 +446,11 @@ void app_taskmgr_on_event(ui_window_t *win, ui_event_t *ev) {
 
 ui_window_t *app_taskmgr_create(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
-    int win_w = 700, win_h = 500;
+    int win_w = 750, win_h = 550;
 
     ui_window_t *win = ui_window_create(fb_w / 2 - win_w / 2,
                                          fb_h / 2 - win_h / 2 - 20,
-                                         win_w, win_h, "Task Manager");
+                                         win_w, win_h, "Activity Monitor");
     if (!win) return 0;
 
     int cw, ch;
@@ -325,14 +460,34 @@ ui_window_t *app_taskmgr_create(void) {
     sort_col = 1;  /* Default sort by CPU */
     selected_row = 0;
 
-    /* Summary bar */
+    /* Summary card background */
     ui_add_card(win, 0, 0, cw, TM_HEADER_H, NULL, ui_theme.surface, 0);
-    w_task_count_label = ui_add_label(win, pad, 8, 120, 20, "Tasks: 0", 0);
-    w_mem_bar = ui_add_progress(win, pad + 130, 10, 200, 12, 0, NULL);
-    w_uptime_label = ui_add_label(win, cw - 200, 8, 190, 20, "", ui_theme.text_sub);
+
+    /* Row 1 (y=6): Tasks count | Uptime (right-aligned) */
+    w_task_count_label = ui_add_label(win, pad, 6, 300, 16, "Tasks: 0", 0);
+    w_uptime_label = ui_add_label(win, cw - 160, 6, 150, 16, "", ui_theme.text_sub);
+
+    /* Row 2 (y=26): CPU bar + breakdown */
+    ui_add_label(win, pad, 26, 32, 12, "CPU", ui_theme.text_secondary);
+    w_cpu_bar = ui_add_progress(win, pad + 36, 28, 160, 10, 0, NULL);
+    w_cpu_label = ui_add_label(win, pad + 204, 26, cw - pad - 210, 16, "", ui_theme.text_sub);
+
+    /* Row 3 (y=44): Memory bar + info */
+    ui_add_label(win, pad, 44, 32, 12, "Mem", ui_theme.text_secondary);
+    w_mem_bar = ui_add_progress(win, pad + 36, 46, 160, 10, 0, NULL);
+    w_mem_label = ui_add_label(win, pad + 204, 44, cw - pad - 210, 16, "", ui_theme.text_sub);
+
+    /* Row 4 (y=64): Disk stats */
+    w_disk_label = ui_add_label(win, pad, 64, cw - 2 * pad, 16, "Disk: ...", ui_theme.text_sub);
+
+    /* Row 5 (y=82): Net stats */
+    w_net_label = ui_add_label(win, pad, 82, cw - 2 * pad, 16, "Net: ...", ui_theme.text_sub);
+
+    /* Row 6 (y=100): GPU stats */
+    w_gpu_label = ui_add_label(win, pad, 100, cw - 2 * pad, 16, "GPU: ...", ui_theme.text_sub);
 
     /* Sort hint */
-    ui_add_label(win, pad, TM_HEADER_H - 20, cw - 2 * pad, 16,
+    ui_add_label(win, pad, TM_HEADER_H - 18, cw - 2 * pad, 16,
                  "Sort: n=name c=cpu m=mem p=pid | k=kill | Up/Down=select",
                  ui_theme.text_dim);
 
