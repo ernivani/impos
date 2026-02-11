@@ -3,6 +3,7 @@
 #include <kernel/multiboot.h>
 #include <kernel/idt.h>
 #include <kernel/mouse.h>
+#include <kernel/virtio_gpu.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -18,6 +19,7 @@ static uint32_t fb_pitch;   /* bytes per scanline */
 static uint32_t fb_bpp;
 static int gfx_active;
 static int have_backbuffer;
+static int use_virtio_gpu;  /* 1 = VirtIO GPU handles display output */
 static uint32_t system_ram_mb;
 
 /* Cursor state */
@@ -131,6 +133,30 @@ int gfx_init(multiboot_info_t* mbi) {
 
 int gfx_is_active(void) {
     return gfx_active;
+}
+
+void gfx_init_gpu_accel(void) {
+    if (!gfx_active || !have_backbuffer) return;
+
+    /* Try to detect and initialize VirtIO GPU */
+    if (virtio_gpu_init()) {
+        if (virtio_gpu_setup_scanout(backbuf, (int)fb_width, (int)fb_height,
+                                     (int)fb_pitch)) {
+            use_virtio_gpu = 1;
+        }
+    }
+
+    /* Always detect BGA registers (works with -vga std) */
+    if (bga_detect()) {
+        uint16_t bga_id = bga_read(BGA_REG_ID);
+        uint16_t vram = bga_get_vram_64k();
+        printf("[bga] Bochs VGA v%d.%d detected, VRAM: %u KB\n",
+               (bga_id >> 8) & 0xF, bga_id & 0xF, (unsigned)vram * 64);
+    }
+}
+
+int gfx_using_virtio_gpu(void) {
+    return use_virtio_gpu;
 }
 
 uint32_t gfx_width(void)  { return fb_width; }
@@ -905,9 +931,25 @@ static const cursor_shape_t cursor_shapes[] = {
 };
 
 static int current_cursor_type = 0;
+static int hw_cursor_type_sent = -1;  /* last cursor type sent to VirtIO GPU */
 static uint32_t cursor_save[CURSOR_W * CURSOR_H];
 static int cursor_saved_x = -1, cursor_saved_y = -1;
 static int cursor_visible = 0;
+
+/* Render 1-bit cursor bitmap into ARGB pixels for hardware cursor */
+static void render_cursor_argb(uint32_t *out, const cursor_shape_t *cs) {
+    memset(out, 0, 32 * 32 * 4);
+    for (int row = 0; row < CURSOR_H && row < 32; row++) {
+        uint8_t mask_bits = cs->mask[row];
+        uint8_t bmp_bits  = cs->bitmap[row];
+        for (int col = 0; col < 8 && col < 32; col++) {
+            if (mask_bits & (0x80 >> col)) {
+                uint32_t c = (bmp_bits & (0x80 >> col)) ? 0xFFFFFFFF : 0xFF000000;
+                out[row * 32 + col] = c;
+            }
+        }
+    }
+}
 
 void gfx_set_cursor_type(int type) {
     if (type >= 0 && type <= 2)
@@ -920,9 +962,25 @@ int gfx_get_cursor_type(void) {
 
 void gfx_draw_mouse_cursor(int x, int y) {
     if (!gfx_active) return;
+
+    /* VirtIO GPU hardware cursor path */
+    if (use_virtio_gpu) {
+        const cursor_shape_t *cs = &cursor_shapes[current_cursor_type];
+        /* Upload cursor image if type changed */
+        if (hw_cursor_type_sent != current_cursor_type) {
+            static uint32_t hw_cursor_argb[32 * 32];
+            render_cursor_argb(hw_cursor_argb, cs);
+            virtio_gpu_set_cursor(hw_cursor_argb, 32, 32,
+                                  cs->hotspot_x, cs->hotspot_y);
+            hw_cursor_type_sent = current_cursor_type;
+        }
+        virtio_gpu_move_cursor(x, y);
+        return;
+    }
+
+    /* Software cursor path */
     uint32_t pitch4 = fb_pitch / 4;
 
-    /* Restore previous position first */
     if (cursor_visible)
         gfx_restore_mouse_cursor();
 
@@ -930,7 +988,7 @@ void gfx_draw_mouse_cursor(int x, int y) {
     int draw_x = x - cs->hotspot_x;
     int draw_y = y - cs->hotspot_y;
 
-    /* Save pixels under cursor */
+    /* Save pixels under cursor from backbuffer */
     for (int row = 0; row < CURSOR_H; row++) {
         int yy = draw_y + row;
         if (yy < 0 || (uint32_t)yy >= fb_height) {
@@ -968,6 +1026,7 @@ void gfx_draw_mouse_cursor(int x, int y) {
 }
 
 void gfx_restore_mouse_cursor(void) {
+    if (use_virtio_gpu) return;  /* hardware cursor — nothing to restore */
     if (!cursor_visible || cursor_saved_x < 0) return;
     uint32_t pitch4 = fb_pitch / 4;
     for (int row = 0; row < CURSOR_H; row++) {
@@ -1063,11 +1122,16 @@ void gfx_set_cursor(int col, int row) {
 
 void gfx_flip(void) {
     if (!have_backbuffer) return;
-    /* Remove cursor before overwriting framebuffer so cursor_save stays valid */
+
+    /* VirtIO GPU path: transfer entire backbuffer to GPU, no MMIO writes */
+    if (use_virtio_gpu) {
+        virtio_gpu_transfer_2d(0, 0, (int)fb_width, (int)fb_height);
+        virtio_gpu_flush(0, 0, (int)fb_width, (int)fb_height);
+        return;
+    }
+
+    /* Software path: scanline-diff with non-temporal MMIO writes */
     gfx_restore_mouse_cursor();
-    /* Scanline-diff: only copy lines that actually changed.
-       Writes to MMIO framebuffer are slow; skipping unchanged lines is a big win.
-       Uses non-temporal stores to bypass cache on MMIO writes (~2x faster). */
     uint32_t pitch4 = fb_pitch / 4;
     size_t row_bytes = fb_width * 4;
     for (uint32_t y = 0; y < fb_height; y++) {
@@ -1075,7 +1139,6 @@ void gfx_flip(void) {
         if (memcmp(backbuf + off, framebuffer + off, row_bytes) != 0)
             memcpy_nt(framebuffer + off, backbuf + off, row_bytes);
     }
-    /* Re-save pixels under cursor from fresh framebuffer content and redraw */
     gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
 }
 
@@ -1089,22 +1152,35 @@ void gfx_flip_rect(int x, int y, int w, int h) {
     if (y + h > (int)fb_height) h = (int)fb_height - y;
     if (w <= 0 || h <= 0) return;
 
-    /* Remove cursor before overwriting framebuffer so cursor_save stays valid */
-    gfx_restore_mouse_cursor();
+    if (use_virtio_gpu) {
+        virtio_gpu_transfer_2d(x, y, w, h);
+        virtio_gpu_flush(x, y, w, h);
+        return;
+    }
 
+    gfx_restore_mouse_cursor();
     uint32_t pitch4 = fb_pitch / 4;
     for (int row = y; row < y + h; row++) {
         memcpy(&framebuffer[row * pitch4 + x],
                &backbuf[row * pitch4 + x],
                (size_t)w * 4);
     }
-
-    /* Re-save pixels under cursor from fresh framebuffer content and redraw */
     gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
 }
 
 void gfx_flip_rects(gfx_rect_t *rects, int count) {
     if (!have_backbuffer || !rects || count <= 0) return;
+
+    if (use_virtio_gpu) {
+        for (int i = 0; i < count; i++) {
+            int x = rects[i].x, y = rects[i].y;
+            int w = rects[i].w, h = rects[i].h;
+            virtio_gpu_transfer_2d(x, y, w, h);
+            virtio_gpu_flush(x, y, w, h);
+        }
+        return;
+    }
+
     gfx_restore_mouse_cursor();
     uint32_t pitch4 = fb_pitch / 4;
     for (int i = 0; i < count; i++) {

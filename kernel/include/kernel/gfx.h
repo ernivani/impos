@@ -20,6 +20,8 @@ gfx_surface_t gfx_get_surface(void);
 
 int  gfx_init(multiboot_info_t* mbi);
 void gfx_init_font_sdf(void);
+void gfx_init_gpu_accel(void);  /* detect VirtIO GPU + BGA, set up hw accel */
+int  gfx_using_virtio_gpu(void);
 int  gfx_is_active(void);
 
 uint32_t gfx_width(void);

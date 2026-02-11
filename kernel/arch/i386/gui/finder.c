@@ -45,6 +45,10 @@ static int file_result_count;
 static int result_sel;
 static int total_results;
 
+/* Mouse click action (set in idle callback, consumed in main loop) */
+static int finder_click_action;  /* 0 = none, >0 = desktop action, -1 = dismiss */
+static uint8_t finder_prev_btns;
+
 /* Finder layout */
 #define FINDER_W      500
 #define FINDER_BAR_H   36
@@ -324,8 +328,100 @@ static void finder_draw(void) {
 }
 
 static void finder_idle(void) {
-    if (mouse_poll()) {
-        gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+    if (!mouse_poll()) return;
+
+    int mx = mouse_get_x(), my = mouse_get_y();
+    gfx_draw_mouse_cursor(mx, my);
+
+    uint8_t btns = mouse_get_buttons();
+    int left_click = (btns & MOUSE_BTN_LEFT) && !(finder_prev_btns & MOUSE_BTN_LEFT);
+    finder_prev_btns = btns;
+
+    /* Update hover selection based on mouse position */
+    {
+        int ry = finder_y + FINDER_BAR_H + 2;
+        int has_a = result_count > 0;
+        int has_f = file_result_count > 0;
+        int hover = -1;
+
+        if (has_a || has_f) {
+            int sel_idx = 0;
+            if (has_a) {
+                ry += FINDER_CAT_H;
+                for (int i = 0; i < result_count; i++) {
+                    int row_y = ry + i * FINDER_ROW_H;
+                    if (my >= row_y && my < row_y + FINDER_ROW_H &&
+                        mx >= finder_x && mx < finder_x + FINDER_W)
+                        hover = sel_idx;
+                    sel_idx++;
+                }
+                ry += result_count * FINDER_ROW_H;
+            }
+            if (has_f) {
+                ry += FINDER_CAT_H;
+                for (int i = 0; i < file_result_count; i++) {
+                    int row_y = ry + i * FINDER_ROW_H;
+                    if (my >= row_y && my < row_y + FINDER_ROW_H &&
+                        mx >= finder_x && mx < finder_x + FINDER_W)
+                        hover = sel_idx;
+                    sel_idx++;
+                }
+            }
+        }
+        if (hover >= 0) result_sel = hover;
+    }
+
+    if (!left_click) return;
+
+    /* Click outside the finder popup → dismiss */
+    int total_h = FINDER_BAR_H;
+    int has_apps = result_count > 0;
+    int has_files = file_result_count > 0;
+    if (has_apps || has_files) total_h += 2;
+    if (has_apps)  total_h += FINDER_CAT_H + result_count * FINDER_ROW_H;
+    if (has_files) total_h += FINDER_CAT_H + file_result_count * FINDER_ROW_H;
+    if (has_apps || has_files) total_h += 4;
+
+    if (mx < finder_x || mx >= finder_x + FINDER_W ||
+        my < finder_y || my >= finder_y + total_h) {
+        finder_click_action = -1;  /* dismiss */
+        keyboard_request_force_exit();
+        return;
+    }
+
+    /* Hit-test result rows */
+    if (has_apps || has_files) {
+        int ry = finder_y + FINDER_BAR_H + 2;
+        int sel_idx = 0;
+
+        if (has_apps) {
+            ry += FINDER_CAT_H;
+            for (int i = 0; i < result_count; i++) {
+                int row_y = ry + i * FINDER_ROW_H;
+                if (my >= row_y && my < row_y + FINDER_ROW_H &&
+                    mx >= finder_x + 6 && mx < finder_x + FINDER_W - 6) {
+                    finder_click_action = result_actions[i];
+                    keyboard_request_force_exit();
+                    return;
+                }
+                sel_idx++;
+            }
+            ry += result_count * FINDER_ROW_H;
+        }
+
+        if (has_files) {
+            ry += FINDER_CAT_H;
+            for (int i = 0; i < file_result_count; i++) {
+                int row_y = ry + i * FINDER_ROW_H;
+                if (my >= row_y && my < row_y + FINDER_ROW_H &&
+                    mx >= finder_x + 6 && mx < finder_x + FINDER_W - 6) {
+                    finder_click_action = DESKTOP_ACTION_FILES;
+                    keyboard_request_force_exit();
+                    return;
+                }
+                sel_idx++;
+            }
+        }
     }
 }
 
@@ -348,12 +444,25 @@ int finder_show(void) {
     /* Register Finder as a tracked process */
     int finder_tid = task_register("Finder", 1, -1);
 
+    finder_click_action = 0;
+    finder_prev_btns = mouse_get_buttons();
+
     keyboard_set_idle_callback(finder_idle);
 
     while (1) {
         finder_draw();
 
         char c = getchar();
+
+        /* Handle mouse click action from idle callback */
+        if (finder_click_action != 0) {
+            int action = finder_click_action;
+            finder_click_action = 0;
+            if (finder_tid >= 0) task_unregister(finder_tid);
+            keyboard_set_idle_callback(0);
+            if (finder_saved_bb) { free(finder_saved_bb); finder_saved_bb = 0; }
+            return action > 0 ? action : 0;
+        }
 
         /* Check double-ctrl to dismiss */
         if (keyboard_check_double_ctrl()) {
