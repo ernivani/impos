@@ -4,6 +4,7 @@
 #include <kernel/syscall.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
+#include <kernel/pipe.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -182,6 +183,9 @@ int task_kill_by_pid(int pid) {
 
     uint32_t flags = irq_save();
     tasks[tid].killed = 1;
+
+    /* Clean up any open pipe FDs */
+    pipe_cleanup_task(tid);
 
     /* If this is a preemptive thread (has its own stack), kill it immediately */
     if (tasks[tid].is_user) {
