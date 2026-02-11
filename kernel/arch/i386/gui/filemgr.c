@@ -61,6 +61,17 @@ static int w_status;
 static const char *sidebar_labels[] = { "Home", "Desktop", "Documents", "Trash", "/" };
 static int sidebar_hover = -1;
 
+/* View mode: 0 = list, 1 = icon grid */
+static int fm_view_mode = 0;
+
+/* Icon grid constants */
+#define FM_GRID_CELL_W  80
+#define FM_GRID_CELL_H  80
+
+/* Double-click timer state */
+static int fm_last_click_idx = -1;
+static uint32_t fm_last_click_tick = 0;
+
 /* Status string */
 static char fm_status_str[64];
 
@@ -206,6 +217,12 @@ static const char *fm_sidebar_path(int idx) {
     return "/";
 }
 
+/* Forward declarations for widget callbacks */
+static void fm_draw_filelist(ui_window_t *, int, uint32_t *, int, int);
+static int  fm_filelist_event(ui_window_t *, int, ui_event_t *);
+static void fm_draw_grid(ui_window_t *, int, uint32_t *, int, int);
+static int  fm_grid_event(ui_window_t *, int, ui_event_t *);
+
 /* ═══ Custom draw: navigation bar ═════════════════════════════ */
 
 static void fm_draw_nav(ui_window_t *win, int widget_idx,
@@ -237,9 +254,23 @@ static void fm_draw_nav(ui_window_t *win, int widget_idx,
     gfx_buf_fill_rect(canvas, cw, ch, bx, by, up_w, bh, ui_theme.btn_bg);
     gfx_buf_draw_string(canvas, cw, ch, bx + 8, by + 4, "Up", ui_theme.text_primary, ui_theme.btn_bg);
 
+    /* View toggle buttons (right side) */
+    int toggle_w = 36, toggle_h = 24;
+    int toggle_gap = 2;
+    int toggle_x2 = x0 + w - 8 - toggle_w;                  /* Grid button */
+    int toggle_x1 = toggle_x2 - toggle_w - toggle_gap;        /* List button */
+    uint32_t list_bg = (fm_view_mode == 0) ? ui_theme.accent : ui_theme.btn_bg;
+    uint32_t grid_bg = (fm_view_mode == 1) ? ui_theme.accent : ui_theme.btn_bg;
+    uint32_t list_fg = (fm_view_mode == 0) ? GFX_RGB(255,255,255) : ui_theme.text_primary;
+    uint32_t grid_fg = (fm_view_mode == 1) ? GFX_RGB(255,255,255) : ui_theme.text_primary;
+    gfx_buf_fill_rect(canvas, cw, ch, toggle_x1, by, toggle_w, toggle_h, list_bg);
+    gfx_buf_draw_string(canvas, cw, ch, toggle_x1 + 4, by + 4, "List", list_fg, list_bg);
+    gfx_buf_fill_rect(canvas, cw, ch, toggle_x2, by, toggle_w, toggle_h, grid_bg);
+    gfx_buf_draw_string(canvas, cw, ch, toggle_x2 + 4, by + 4, "Grid", grid_fg, grid_bg);
+
     /* Path display */
     int path_x = bx + up_w + 12;
-    int path_w = w - (path_x - x0) - 8;
+    int path_w = (toggle_x1 - 8) - path_x;
     if (path_w > 0) {
         gfx_buf_fill_rect(canvas, cw, ch, path_x, by, path_w, bh, ui_theme.input_bg);
         gfx_buf_draw_rect(canvas, cw, ch, path_x, by, path_w, bh, ui_theme.input_border);
@@ -283,6 +314,36 @@ static int fm_nav_event(ui_window_t *win, int widget_idx, ui_event_t *ev) {
     bx += 54;
     /* Up */
     if (wx >= bx && wx < bx + 30) { fm_navigate_up(win); return 1; }
+
+    /* View toggle buttons */
+    int toggle_w2 = 36, toggle_gap2 = 2;
+    int toggle_x2b = wg->x + wg->w - 8 - toggle_w2;
+    int toggle_x1b = toggle_x2b - toggle_w2 - toggle_gap2;
+    if (wx >= toggle_x1b && wx < toggle_x1b + toggle_w2) {
+        fm_view_mode = 0;
+        fm_scroll = 0;
+        fm_last_click_idx = -1;
+        /* Switch widget callbacks */
+        ui_widget_t *flw = ui_get_widget(win, w_filelist);
+        if (flw) {
+            flw->custom.draw = fm_draw_filelist;
+            flw->custom.event = fm_filelist_event;
+        }
+        win->dirty = 1;
+        return 1;
+    }
+    if (wx >= toggle_x2b && wx < toggle_x2b + toggle_w2) {
+        fm_view_mode = 1;
+        fm_scroll = 0;
+        fm_last_click_idx = -1;
+        ui_widget_t *flw = ui_get_widget(win, w_filelist);
+        if (flw) {
+            flw->custom.draw = fm_draw_grid;
+            flw->custom.event = fm_grid_event;
+        }
+        win->dirty = 1;
+        return 1;
+    }
 
     return 0;
 }
@@ -430,6 +491,12 @@ static void fm_draw_col_hdr(ui_window_t *win, int widget_idx,
     ui_widget_t *wg = ui_get_widget(win, widget_idx);
     if (!wg) return;
     int x0 = wg->x, y0 = wg->y, w = wg->w, h = wg->h;
+
+    /* Hide column headers in grid view */
+    if (fm_view_mode == 1) {
+        gfx_buf_fill_rect(canvas, cw, ch, x0, y0, w, h, ui_theme.win_bg);
+        return;
+    }
 
     gfx_buf_fill_rect(canvas, cw, ch, x0, y0, w, h, ui_theme.surface);
 
@@ -604,11 +671,155 @@ static int fm_filelist_event(ui_window_t *win, int widget_idx, ui_event_t *ev) {
         if (wy >= 0) {
             int clicked = fm_scroll + wy / FM_ROW_H;
             if (clicked >= 0 && clicked < fm_count) {
-                if (clicked == fm_selected) {
-                    /* Double-click: open */
+                uint32_t now = pit_get_ticks();
+                if (clicked == fm_last_click_idx &&
+                    (now - fm_last_click_tick) <= 20) {
+                    /* Double-click within 200ms: open */
+                    fm_last_click_idx = -1;
                     fm_open_selected(win);
                     return 1;
                 }
+                fm_last_click_idx = clicked;
+                fm_last_click_tick = now;
+                fm_selected = clicked;
+                win->dirty = 1;
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+/* ═══ Custom draw: icon grid view ═════════════════════════════ */
+
+static void fm_draw_file_icon(uint32_t *canvas, int cw, int ch,
+                                int x, int y, uint8_t type, int selected) {
+    if (type == INODE_DIR) {
+        uint32_t body = selected ? GFX_RGB(255, 200, 80) : GFX_RGB(220, 170, 55);
+        uint32_t tab  = selected ? GFX_RGB(240, 180, 50) : GFX_RGB(190, 140, 40);
+        uint32_t dark = GFX_RGB(160, 110, 30);
+        gfx_buf_fill_rect(canvas, cw, ch, x + 2, y + 2, 14, 4, tab);
+        gfx_buf_fill_rect(canvas, cw, ch, x + 1, y + 6, 30, 20, body);
+        gfx_buf_fill_rect(canvas, cw, ch, x + 2, y + 12, 28, 1, dark);
+    } else if (type == INODE_SYMLINK) {
+        uint32_t body = selected ? GFX_RGB(120, 220, 220) : GFX_RGB(80, 180, 180);
+        uint32_t dark = selected ? GFX_RGB(80, 180, 180) : GFX_RGB(60, 140, 140);
+        gfx_buf_fill_rect(canvas, cw, ch, x + 4, y + 2, 24, 24, body);
+        gfx_buf_draw_rect(canvas, cw, ch, x + 4, y + 2, 24, 24, dark);
+        gfx_buf_draw_char(canvas, cw, ch, x + 12, y + 10, 'L', dark, body);
+    } else {
+        uint32_t body = selected ? GFX_RGB(200, 200, 220) : GFX_RGB(170, 170, 190);
+        uint32_t dark = selected ? GFX_RGB(160, 160, 180) : GFX_RGB(130, 130, 150);
+        gfx_buf_fill_rect(canvas, cw, ch, x + 4, y + 2, 24, 24, body);
+        gfx_buf_draw_rect(canvas, cw, ch, x + 4, y + 2, 24, 24, dark);
+        gfx_buf_fill_rect(canvas, cw, ch, x + 20, y + 2, 8, 8, dark);
+        gfx_buf_fill_rect(canvas, cw, ch, x + 8, y + 12, 16, 1, dark);
+        gfx_buf_fill_rect(canvas, cw, ch, x + 8, y + 16, 12, 1, dark);
+    }
+}
+
+static void fm_draw_grid(ui_window_t *win, int widget_idx,
+                           uint32_t *canvas, int cw, int ch) {
+    ui_widget_t *wg = ui_get_widget(win, widget_idx);
+    if (!wg) return;
+    int x0 = wg->x, y0 = wg->y, w = wg->w, h = wg->h;
+
+    gfx_buf_fill_rect(canvas, cw, ch, x0, y0, w, h, ui_theme.win_bg);
+
+    int cols = (w - 8) / FM_GRID_CELL_W;
+    if (cols < 1) cols = 1;
+    int visible_rows = (h - 8) / FM_GRID_CELL_H;
+    if (visible_rows < 1) visible_rows = 1;
+    int visible_items = cols * visible_rows;
+
+    /* Scroll */
+    int total_rows = (fm_count + cols - 1) / cols;
+    int scroll_row = fm_selected / cols;
+    int first_row = fm_scroll / cols;
+    if (scroll_row < first_row) fm_scroll = scroll_row * cols;
+    if (scroll_row >= first_row + visible_rows) fm_scroll = (scroll_row - visible_rows + 1) * cols;
+    if (fm_scroll < 0) fm_scroll = 0;
+    first_row = fm_scroll / cols;
+
+    for (int vi = 0; vi < visible_items; vi++) {
+        int i = first_row * cols + vi;
+        if (i >= fm_count) break;
+
+        int col = vi % cols;
+        int row = vi / cols;
+        int cx = x0 + 4 + col * FM_GRID_CELL_W;
+        int cy = y0 + 4 + row * FM_GRID_CELL_H;
+        int selected = (i == fm_selected);
+
+        /* Selection highlight */
+        if (selected) {
+            gfx_buf_fill_rect(canvas, cw, ch, cx, cy,
+                               FM_GRID_CELL_W, FM_GRID_CELL_H, ui_theme.list_sel_bg);
+        }
+
+        /* Icon centered */
+        int icon_x = cx + (FM_GRID_CELL_W - 32) / 2;
+        int icon_y = cy + 8;
+        fm_draw_file_icon(canvas, cw, ch, icon_x, icon_y, fm_entries[i].type, selected);
+
+        /* Label below icon, truncated */
+        char label[12];
+        strncpy(label, fm_entries[i].name, 10);
+        label[10] = '\0';
+        if ((int)strlen(fm_entries[i].name) > 10) {
+            label[8] = '.';
+            label[9] = '.';
+            label[10] = '\0';
+        }
+        int lw = (int)strlen(label) * FONT_W;
+        int lx = cx + (FM_GRID_CELL_W - lw) / 2;
+        if (lx < cx + 2) lx = cx + 2;
+        int ly = cy + FM_GRID_CELL_H - FONT_H - 4;
+        uint32_t tc = selected ? GFX_RGB(255, 255, 255) : ui_theme.text_primary;
+        uint32_t bg = selected ? ui_theme.list_sel_bg : ui_theme.win_bg;
+        gfx_buf_draw_string(canvas, cw, ch, lx, ly, label, tc, bg);
+    }
+
+    /* Scrollbar if needed */
+    if (total_rows > visible_rows && visible_rows > 0) {
+        int sb_x = x0 + w - 6;
+        int thumb_h = (visible_rows * h) / total_rows;
+        if (thumb_h < 16) thumb_h = 16;
+        int thumb_y = y0 + (first_row * (h - thumb_h)) /
+                      (total_rows - visible_rows > 0 ? total_rows - visible_rows : 1);
+        gfx_buf_fill_rect(canvas, cw, ch, sb_x, y0, 4, h, GFX_RGB(30, 30, 45));
+        gfx_buf_fill_rect(canvas, cw, ch, sb_x, thumb_y, 4, thumb_h, ui_theme.text_dim);
+    }
+}
+
+static int fm_grid_event(ui_window_t *win, int widget_idx, ui_event_t *ev) {
+    ui_widget_t *wg = ui_get_widget(win, widget_idx);
+    if (!wg) return 0;
+
+    if (ev->type == UI_EVENT_MOUSE_DOWN) {
+        int wx = ev->mouse.wx - wg->x - 4;
+        int wy = ev->mouse.wy - wg->y - 4;
+        int w = wg->w;
+        int cols = (w - 8) / FM_GRID_CELL_W;
+        if (cols < 1) cols = 1;
+        int first_row = fm_scroll / cols;
+
+        int col = wx / FM_GRID_CELL_W;
+        int row = wy / FM_GRID_CELL_H;
+        if (col >= 0 && col < cols && row >= 0) {
+            int clicked = (first_row + row) * cols + col;
+            if (clicked >= 0 && clicked < fm_count) {
+                uint32_t now = pit_get_ticks();
+                if (clicked == fm_last_click_idx &&
+                    (now - fm_last_click_tick) <= 20) {
+                    fm_last_click_idx = -1;
+                    fm_selected = clicked;
+                    fm_open_selected(win);
+                    return 1;
+                }
+                fm_last_click_idx = clicked;
+                fm_last_click_tick = now;
                 fm_selected = clicked;
                 win->dirty = 1;
                 return 1;
@@ -658,16 +869,38 @@ void app_filemgr_on_event(ui_window_t *win, ui_event_t *ev) {
             return;
         }
 
-        /* Navigate up/down */
-        if (key == KEY_UP && fm_selected > 0) {
-            fm_selected--;
-            win->dirty = 1;
-            return;
-        }
-        if (key == KEY_DOWN && fm_selected < fm_count - 1) {
-            fm_selected++;
-            win->dirty = 1;
-            return;
+        /* Navigate up/down (grid-aware) */
+        if (fm_view_mode == 1) {
+            int cw2, ch2;
+            wm_get_canvas(win->wm_id, &cw2, &ch2);
+            int list_w = cw2 - FM_SIDEBAR_W;
+            int cols = (list_w - 8) / FM_GRID_CELL_W;
+            if (cols < 1) cols = 1;
+            if (key == KEY_UP && fm_selected >= cols) {
+                fm_selected -= cols;
+                win->dirty = 1; return;
+            }
+            if (key == KEY_DOWN && fm_selected + cols < fm_count) {
+                fm_selected += cols;
+                win->dirty = 1; return;
+            }
+            if (key == KEY_LEFT && fm_selected > 0) {
+                fm_selected--;
+                win->dirty = 1; return;
+            }
+            if (key == KEY_RIGHT && fm_selected < fm_count - 1) {
+                fm_selected++;
+                win->dirty = 1; return;
+            }
+        } else {
+            if (key == KEY_UP && fm_selected > 0) {
+                fm_selected--;
+                win->dirty = 1; return;
+            }
+            if (key == KEY_DOWN && fm_selected < fm_count - 1) {
+                fm_selected++;
+                win->dirty = 1; return;
+            }
         }
 
         /* Home / End */

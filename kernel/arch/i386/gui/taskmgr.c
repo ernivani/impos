@@ -43,6 +43,7 @@ typedef struct {
 static tm_row_t rows[TM_MAX_ROWS];
 static int row_count;
 static int selected_row;
+static int selected_pid = -1;  /* track selection by PID across sort changes */
 static int sort_col;     /* 0=name, 1=cpu, 2=mem, 3=pid */
 
 /* Dynamic strings */
@@ -54,6 +55,7 @@ static char uptime_str[48];
 static void tm_snapshot(void) {
     row_count = 0;
     for (int i = 0; i < TASK_MAX && row_count < TM_MAX_ROWS; i++) {
+        if (i == TASK_IDLE) continue;
         task_info_t *t = task_get(i);
         if (!t || !t->active) continue;
         tm_row_t *r = &rows[row_count];
@@ -89,8 +91,17 @@ static void tm_snapshot(void) {
         }
     }
 
+    /* Restore selection by PID */
+    if (selected_pid >= 0) {
+        selected_row = 0;
+        for (int i = 0; i < row_count; i++) {
+            if (rows[i].pid == selected_pid) { selected_row = i; break; }
+        }
+    }
     if (selected_row >= row_count) selected_row = row_count - 1;
     if (selected_row < 0) selected_row = 0;
+    if (selected_row < row_count)
+        selected_pid = rows[selected_row].pid;
 }
 
 /* ═══ Custom draw: task table ═════════════════════════════════ */
@@ -221,6 +232,7 @@ static int tm_table_event(ui_window_t *win, int widget_idx, ui_event_t *ev) {
                     }
                 }
                 selected_row = clicked;
+                selected_pid = rows[clicked].pid;
                 return 1;
             }
         }
@@ -279,11 +291,13 @@ void app_taskmgr_on_event(ui_window_t *win, ui_event_t *ev) {
         /* Navigate */
         if (key == KEY_UP && selected_row > 0) {
             selected_row--;
+            selected_pid = rows[selected_row].pid;
             win->dirty = 1;
             return;
         }
         if (key == KEY_DOWN && selected_row < row_count - 1) {
             selected_row++;
+            selected_pid = rows[selected_row].pid;
             win->dirty = 1;
             return;
         }
