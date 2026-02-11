@@ -12,6 +12,7 @@
 #include <kernel/net.h>
 #include <kernel/idt.h>
 #include <kernel/task.h>
+#include <kernel/rtc.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +44,16 @@ static int tab_end[NUM_TABS];
 static int w_kbd_toggle;
 static int w_hostname_input;
 static int w_24h_toggle;
+static int w_tz_list;
+static int w_dst_toggle;
+static int w_tz_label;
+
+/* Timezone list data */
+#define TZ_MAX 20
+static char tz_list_bufs[TZ_MAX][64];
+static const char *tz_list_items[TZ_MAX];
+static int tz_list_count;
+static char tz_info_str[80];
 
 /* Display tab */
 static int w_res_label;
@@ -299,11 +310,66 @@ static void on_hostname_submit(ui_window_t *win, int idx) {
     hostname_save();
 }
 
+static void update_tz_info(ui_window_t *win) {
+    int tz_count;
+    const tz_entry_t *db = rtc_get_tz_db(&tz_count);
+    const char *cur_tz = config_get_timezone();
+    system_config_t *cfg = config_get();
+
+    for (int i = 0; i < tz_count; i++) {
+        if (strcmp(db[i].name, cur_tz) == 0) {
+            int off_h = db[i].std_offset / 3600;
+            int off_m = (db[i].std_offset % 3600) / 60;
+            if (off_m < 0) off_m = -off_m;
+            if (db[i].has_dst && cfg->auto_dst)
+                snprintf(tz_info_str, sizeof(tz_info_str),
+                         "%s (UTC%+d:%02d, DST auto)", db[i].city, off_h, off_m);
+            else
+                snprintf(tz_info_str, sizeof(tz_info_str),
+                         "%s (UTC%+d:%02d)", db[i].city, off_h, off_m);
+            break;
+        }
+    }
+
+    ui_widget_t *wg = ui_get_widget(win, w_tz_label);
+    if (wg) strncpy(wg->label.text, tz_info_str, UI_TEXT_MAX - 1);
+}
+
+static void on_tz_select(ui_window_t *win, int idx) {
+    ui_widget_t *wg = ui_get_widget(win, w_tz_list);
+    if (!wg) return;
+    int sel = wg->list.selected;
+    if (sel < 0 || sel >= tz_list_count) return;
+
+    int tz_count;
+    const tz_entry_t *db = rtc_get_tz_db(&tz_count);
+    if (sel < tz_count) {
+        config_set_timezone(db[sel].name);
+        /* Re-read CMOS and apply new timezone */
+        rtc_init();
+        update_tz_info(win);
+        win->dirty = 1;
+    }
+    (void)idx;
+}
+
+static void on_dst_toggle(ui_window_t *win, int idx) {
+    ui_widget_t *wg = ui_get_widget(win, idx);
+    if (!wg) return;
+    system_config_t *cfg = config_get();
+    cfg->auto_dst = wg->toggle.on ? 1 : 0;
+    config_save();
+    /* Re-read CMOS with new DST setting */
+    rtc_init();
+    update_tz_info(win);
+    win->dirty = 1;
+}
+
 /* ═══ Create ══════════════════════════════════════════════════ */
 
 ui_window_t *app_settings_create(void) {
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
-    int win_w = 650, win_h = 500;
+    int win_w = 650, win_h = 600;
 
     active_tab = TAB_GENERAL;
 
@@ -352,6 +418,53 @@ ui_window_t *app_settings_create(void) {
                                   "24-hour clock", scfg->use_24h_format);
     ui_widget_t *tt = ui_get_widget(win, w_24h_toggle);
     if (tt) tt->toggle.on_change = on_24h_toggle;
+
+    /* Timezone selection */
+    int y4 = y3 + 54;
+    int tz_card_h = 180;
+    ui_add_card(win, cx, y4, content_w, tz_card_h, "Timezone", 0, 0);
+
+    /* Current timezone info label */
+    w_tz_label = ui_add_label(win, cx + 12, y4 + 26, content_w - 24, 16, "", ui_theme.accent);
+
+    /* Timezone list */
+    {
+        int tz_count;
+        const tz_entry_t *db = rtc_get_tz_db(&tz_count);
+        tz_list_count = 0;
+        const char *cur_tz = config_get_timezone();
+        int cur_sel = 0;
+        for (int i = 0; i < tz_count && tz_list_count < TZ_MAX; i++) {
+            int off_h = db[i].std_offset / 3600;
+            int off_m = (db[i].std_offset % 3600) / 60;
+            if (off_m < 0) off_m = -off_m;
+            snprintf(tz_list_bufs[tz_list_count], 64, "  %s (UTC%+d:%02d)%s",
+                     db[i].city, off_h, off_m, db[i].has_dst ? " *" : "");
+            tz_list_items[tz_list_count] = tz_list_bufs[tz_list_count];
+            if (strcmp(db[i].name, cur_tz) == 0)
+                cur_sel = tz_list_count;
+            tz_list_count++;
+        }
+        w_tz_list = ui_add_list(win, cx + 4, y4 + 46,
+                                 content_w - 8, tz_card_h - 56, tz_list_items, tz_list_count);
+        ui_widget_t *tl = ui_get_widget(win, w_tz_list);
+        if (tl) {
+            tl->list.selected = cur_sel;
+            tl->list.on_select = on_tz_select;
+        }
+    }
+
+    /* Auto DST toggle */
+    int y5 = y4 + tz_card_h + 10;
+    ui_add_card(win, cx, y5, content_w, 44, "Daylight Saving Time", 0, 0);
+    w_dst_toggle = ui_add_toggle(win, cx + 12, y5 + 26, content_w - 24, 14,
+                                  "Automatic (summer/winter)", scfg->auto_dst);
+    {
+        ui_widget_t *dt = ui_get_widget(win, w_dst_toggle);
+        if (dt) dt->toggle.on_change = on_dst_toggle;
+    }
+
+    update_tz_info(win);
 
     tab_end[TAB_GENERAL] = win->widget_count;
 
