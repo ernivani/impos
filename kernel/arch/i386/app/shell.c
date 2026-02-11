@@ -2440,8 +2440,12 @@ static void demo_draw_bg(int W, int H, int frame) {
         int r = 8 + (isin(phase + y) * 8 / 256);
         int g = 10 + (isin(phase + y + 200) * 6 / 256);
         int b = 25 + t * 20 / 255 + (isin(phase + y + 400) * 5 / 256);
-        if (r < 0) r = 0; if (g < 0) g = 0; if (b < 0) b = 0;
-        if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+        if (r < 0) r = 0;
+        if (g < 0) g = 0;
+        if (b < 0) b = 0;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
         gfx_fill_rect(0, y, W, 1, GFX_RGB(r, g, b));
     }
 }

@@ -34,7 +34,6 @@ static int ed_input_mode;        /* 0=none, 1=open, 2=save-as */
 
 /* Widget indices */
 static int w_btn_new, w_btn_open, w_btn_save;
-static int w_filename_label, w_status_label;
 static int w_text_area;
 
 /* ═══ Buffer operations ═══════════════════════════════════════ */
