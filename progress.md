@@ -1,7 +1,7 @@
 # ImposOS — Progress & Future Roadmap
 
 > Last updated: February 2026
-> Status: **Core OS complete + ring 3 + IPC pipes + signals** | ~28,400 lines of code | ~190 regression tests | 42+ shell commands
+> Status: **Core OS complete + ring 3 + full IPC (pipes/signals/shm)** | ~28,600 lines of code | ~190 regression tests | 43+ shell commands
 
 ---
 
@@ -194,7 +194,7 @@ make run    # Build + boot in QEMU
 - [x] Shell `spawn` command for testing (counter, hog)
 - [x] Per-process page directories with CR3 switching on context switch
 - [x] Ring 3 user mode: GDT user segments (0x1B/0x23), TSS, dual stacks
-- [x] INT 0x80 syscall gate (12 syscalls: exit/yield/sleep/getpid/read/write/open/close/pipe/kill/sigaction/sigreturn)
+- [x] INT 0x80 syscall gate (15 syscalls: exit/yield/sleep/getpid/read/write/open/close/pipe/kill/sigaction/sigreturn/shm_create/shm_attach/shm_detach)
 - [x] Per-task file descriptor table (16 FDs)
 - [x] Kernel pipe buffers (4KB circular, blocking read/write, EOF/EPIPE)
 - [x] Shell `|` pipe operator with grep/cat/wc right-side commands
@@ -203,6 +203,9 @@ make run    # Build + boot in QEMU
 - [x] Signal delivery via user stack manipulation + trampoline (SYS_SIGACTION/SYS_SIGRETURN)
 - [x] Ctrl+C sends SIGINT to all killable user tasks
 - [x] SIGPIPE on broken pipe write
+- [x] Shared memory: 16 named regions (64KB max each), mapped at 0x40010000+ in user space
+- [x] 3 shm syscalls: SYS_SHM_CREATE/SYS_SHM_ATTACH/SYS_SHM_DETACH
+- [x] Shell `shm` command (list/create)
 
 ### Build System (Phase 12) — 100%
 - [x] Cross-compiler toolchain (i686-elf-gcc)
@@ -245,7 +248,7 @@ make run    # Build + boot in QEMU
 | **Processes** | ~~Process isolation / ring 3~~ | ✅ Done — ring 3 user mode, per-process page tables |
 | **Processes** | ~~Separate address spaces~~ | ✅ Done — per-process page directories with CR3 switching |
 | **IPC** | ~~Pipes~~ | ✅ Done — kernel pipe buffers, FD table, shell `\|` operator |
-| **IPC** | Shared memory / message passing | Tasks can't communicate safely |
+| **IPC** | ~~Shared memory~~ | ✅ Done — 16 named regions, 64KB max, per-process mapped |
 | **IPC** | ~~Signals (SIGINT, SIGTERM, etc.)~~ | ✅ Done — 6 signals, per-task handlers, Ctrl+C, SIGPIPE |
 | **FS** | Journaling / crash recovery | Power loss = potential corruption |
 | **FS** | File locking | No concurrent access protection |
@@ -255,7 +258,7 @@ make run    # Build + boot in QEMU
 | **Networking** | TLS/SSL | No encrypted connections |
 | **Networking** | HTTPS | HTTP only (no certificates, no crypto) |
 | **Security** | Stack canaries / ASLR | No exploit mitigations |
-| **Security** | ~~Syscall interface~~ | ✅ Done — INT 0x80 with 12 syscalls |
+| **Security** | ~~Syscall interface~~ | ✅ Done — INT 0x80 with 15 syscalls |
 | **Hardware** | USB support | PS/2 keyboard/mouse only |
 | **Hardware** | Audio / sound | No audio driver |
 | **Hardware** | GPU acceleration | Software rendering only |
@@ -329,9 +332,9 @@ make run    # Build + boot in QEMU
 - [x] **Process isolation** — Per-process page tables, CR3 switching on context switch
 - [x] **IPC: Pipes** — 4KB circular kernel pipe buffers, per-task FD table (16 FDs), blocking read/write, shell `|` operator with grep/cat/wc
 - [x] **IPC: Signals** — SIGINT (Ctrl+C kills), SIGTERM, SIGKILL, SIGUSR1/2, SIGPIPE, per-task signal handlers, trampoline delivery
-- [ ] **IPC: Shared memory / message passing** — Safe inter-process data exchange
+- [x] **IPC: Shared memory** — 16 named regions (64KB max), per-process page mapping, ref-counted cleanup
 
-> Preemptive multitasking, paging, ring 3 user mode, per-process page tables, IPC pipes, and signals are done. Threads run with separate address spaces, INT 0x80 syscall gate (12 syscalls), and pipe/signal-based IPC. Remaining: shared memory.
+> Preemptive multitasking, paging, ring 3 user mode, per-process page tables, and full IPC (pipes, signals, shared memory) are done. Threads run with separate address spaces, INT 0x80 syscall gate (15 syscalls), and complete IPC infrastructure.
 
 #### 0.2 — Compositing & Rendering
 - [ ] **Compositing window manager** — Each window renders to off-screen buffer, then composite with alpha/shadows/blur
@@ -619,9 +622,10 @@ impos/
 │       │   ├── quota.c         # Per-user quotas
 │       │   ├── pmm.c           # Physical memory manager (bitmap allocator)
 │       │   ├── vmm.c           # Virtual memory manager (paging, per-process PDs)
-│       │   ├── syscall.c       # INT 0x80 syscall handler (12 syscalls)
+│       │   ├── syscall.c       # INT 0x80 syscall handler (15 syscalls)
 │       │   ├── pipe.c          # IPC pipes (4KB circular buffers, FD table)
-│       │   └── signal.c        # IPC signals (6 signals, handlers, trampoline delivery)
+│       │   ├── signal.c        # IPC signals (6 signals, handlers, trampoline delivery)
+│       │   └── shm.c           # IPC shared memory (16 named regions, 64KB max)
 │       │
 │       └── app/
 │           ├── shell.c         # Shell (41+ commands, history, tab completion)
@@ -646,7 +650,7 @@ impos/
 | Assembly files | 3 (.S) |
 | libc files | 28 |
 | Header files | 59 |
-| Shell commands | 42+ |
+| Shell commands | 43+ |
 | Regression tests | ~190 |
 | GUI applications | 6 (filemgr, taskmgr, settings, monitor, finder, login) |
 | Widget types | 12 |

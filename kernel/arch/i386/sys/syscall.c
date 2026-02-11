@@ -3,6 +3,7 @@
 #include <kernel/sched.h>
 #include <kernel/pipe.h>
 #include <kernel/signal.h>
+#include <kernel/shm.h>
 #include <kernel/vmm.h>
 #include <stdint.h>
 
@@ -16,6 +17,7 @@ registers_t* syscall_handler(registers_t* regs) {
             task_info_t *t = task_get(tid);
             if (t) {
                 pipe_cleanup_task(tid);
+                shm_cleanup_task(tid);
                 t->state = TASK_STATE_ZOMBIE;
                 t->active = 0;
             }
@@ -149,6 +151,27 @@ registers_t* syscall_handler(registers_t* regs) {
             regs->gs      = ctx->gs;
 
             t->sig.in_handler = 0;
+            return regs;
+        }
+
+        case SYS_SHM_CREATE: {
+            const char *name = (const char *)regs->ebx;
+            uint32_t size = regs->ecx;
+            regs->eax = (uint32_t)shm_create(name, size);
+            return regs;
+        }
+
+        case SYS_SHM_ATTACH: {
+            int tid = task_get_current();
+            int region_id = (int)regs->ebx;
+            regs->eax = shm_attach(region_id, tid);
+            return regs;
+        }
+
+        case SYS_SHM_DETACH: {
+            int tid = task_get_current();
+            int region_id = (int)regs->ebx;
+            regs->eax = (uint32_t)shm_detach(region_id, tid);
             return regs;
         }
 

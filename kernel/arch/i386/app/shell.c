@@ -27,6 +27,7 @@
 #include <kernel/sched.h>
 #include <kernel/pipe.h>
 #include <kernel/signal.h>
+#include <kernel/shm.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -117,6 +118,7 @@ static void cmd_display(int argc, char* argv[]);
 static void cmd_gfxbench(int argc, char* argv[]);
 static void cmd_fps(int argc, char* argv[]);
 static void cmd_spawn(int argc, char* argv[]);
+static void cmd_shm(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -893,6 +895,23 @@ static command_t commands[] = {
         "      counter      - increments and prints a counter every second (ring 0)\n"
         "      hog          - infinite CPU loop (watchdog kills after 5s)\n"
         "      user-counter - like counter but runs in ring 3 (user mode)\n"
+    },
+    {
+        "shm", cmd_shm,
+        "Manage shared memory regions",
+        "shm: shm [list|create NAME SIZE]\n"
+        "    Manage shared memory regions for inter-process communication.\n",
+        "NAME\n"
+        "    shm - manage shared memory regions\n\n"
+        "SYNOPSIS\n"
+        "    shm list\n"
+        "    shm create NAME SIZE\n\n"
+        "DESCRIPTION\n"
+        "    Manages named shared memory regions. Regions can be\n"
+        "    created from the shell and attached by user-mode tasks\n"
+        "    via the SYS_SHM_ATTACH syscall.\n\n"
+        "    list               Show all active shared memory regions.\n"
+        "    create NAME SIZE   Create a region with given name and size in bytes.\n"
     },
 };
 
@@ -3929,4 +3948,45 @@ static void cmd_spawn(int argc, char* argv[]) {
     }
     int pid = task_get_pid(tid);
     printf("[Thread %d] %s started (PID %d)\n", tid, name, pid);
+}
+
+/* ═══ shm: shared memory management ═══════════════════════════ */
+
+static void cmd_shm(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: shm [list|create NAME SIZE]\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "list") == 0) {
+        printf("ID  Name                 Pages  Refs\n");
+        printf("--  -------------------  -----  ----\n");
+        int found = 0;
+        shm_region_t *regions = shm_get_regions();
+        for (int i = 0; i < SHM_MAX_REGIONS; i++) {
+            if (regions[i].active) {
+                printf("%-3d %-20s %-6d %d\n",
+                       i, regions[i].name, regions[i].num_pages, regions[i].ref_count);
+                found++;
+            }
+        }
+        if (!found)
+            printf("(no shared memory regions)\n");
+
+    } else if (strcmp(argv[1], "create") == 0) {
+        if (argc < 4) {
+            printf("Usage: shm create NAME SIZE\n");
+            return;
+        }
+        uint32_t size = (uint32_t)atoi(argv[3]);
+        int id = shm_create(argv[2], size);
+        if (id >= 0)
+            printf("Created shared memory '%s' (id=%d, %d bytes, %d pages)\n",
+                   argv[2], id, (int)size, (int)((size + 4095) / 4096));
+        else
+            printf("shm: failed to create region '%s'\n", argv[2]);
+
+    } else {
+        printf("Usage: shm [list|create NAME SIZE]\n");
+    }
 }

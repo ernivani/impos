@@ -16,6 +16,9 @@
 #define SYS_KILL    9   /* EBX=pid, ECX=signal → EAX=0 or -1 */
 #define SYS_SIGACTION  10  /* EBX=signum, ECX=handler → EAX=old_handler */
 #define SYS_SIGRETURN  11  /* restore saved context from signal handler */
+#define SYS_SHM_CREATE 12  /* EBX=name, ECX=size → EAX=region_id */
+#define SYS_SHM_ATTACH 13  /* EBX=region_id → EAX=virt_addr */
+#define SYS_SHM_DETACH 14  /* EBX=region_id → EAX=0 or -1 */
 
 /* Syscall dispatcher — called from isr_handler for INT 0x80.
  * Returns (possibly different) stack pointer after scheduling. */

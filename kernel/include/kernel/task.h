@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <kernel/pipe.h>
 #include <kernel/signal.h>
+#include <kernel/shm.h>
 
 #define TASK_MAX        32
 #define TASK_IDLE        0
@@ -56,6 +57,9 @@ typedef struct {
 
     /* Per-task signal state */
     sig_state_t  sig;
+
+    /* Shared memory attachment bitmask (1 bit per SHM region) */
+    uint16_t     shm_attached;
 
     /* Per-task file descriptor table */
     fd_entry_t   fds[MAX_FDS];
