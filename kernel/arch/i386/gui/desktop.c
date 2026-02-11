@@ -154,17 +154,6 @@ static void icon_gear(int x, int y, int sel) {
     gfx_fill_circle(cx2, cy2, 1, GFX_RGB(40, 40, 40));
 }
 
-static void icon_monitor(int x, int y, int sel) {
-    uint32_t frame = sel ? GFX_RGB(180, 180, 180) : GFX_RGB(130, 130, 130);
-    uint32_t screen = sel ? GFX_RGB(50, 130, 220) : GFX_RGB(35, 100, 180);
-    uint32_t stand = sel ? GFX_RGB(140, 140, 140) : GFX_RGB(100, 100, 100);
-
-    gfx_draw_rect(x + 2, y + 3, 16, 11, frame);
-    gfx_fill_rect(x + 3, y + 4, 14, 9, screen);
-    gfx_fill_rect(x + 4, y + 5, 5, 1, GFX_RGB(80, 160, 240));
-    gfx_fill_rect(x + 8, y + 14, 4, 2, stand);
-    gfx_fill_rect(x + 5, y + 16, 10, 1, stand);
-}
 
 static void icon_power(int x, int y, int sel) {
     uint32_t col = sel ? GFX_RGB(255, 100, 100) : GFX_RGB(200, 70, 70);
