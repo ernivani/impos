@@ -53,7 +53,7 @@ static volatile int composite_needed = 0;
 static uint32_t last_drag_composite_tick = 0;
 
 /* Frame budget: 60fps cap (120Hz PIT / 2 = 60fps) */
-#define WM_FRAME_INTERVAL 2
+#define WM_FRAME_INTERVAL 1  /* 120Hz PIT / 1 = 120fps cap */
 static uint32_t last_composite_tick = 0;
 static int composite_pending = 0;
 

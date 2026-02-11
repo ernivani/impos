@@ -38,7 +38,7 @@ run: iso $(DISK_IMAGE)
 		-device rtl8139,netdev=net0 \
 		-boot d \
 		-m 4G \
-		-vga std \
+		-vga virtio \
 		-display gtk \
 		$(KVM_FLAG)
 
@@ -51,7 +51,7 @@ run-vnc: iso $(DISK_IMAGE)
 		-device rtl8139,netdev=net0 \
 		-boot d \
 		-m 4G \
-		-vga std \
+		-vga virtio \
 		-display vnc=:0 \
 		-k fr \
 		$(KVM_FLAG)
@@ -67,13 +67,13 @@ run-us: iso $(DISK_IMAGE)
 		-device rtl8139,netdev=net0 \
 		-boot d \
 		-m 4G \
-		-vga std \
+		-vga virtio \
 		-display gtk \
 		-k en-us \
 		$(KVM_FLAG)
 
 run-gtk: iso
-	qemu-system-i386 -cdrom myos.iso -vga std -m 4G -display gtk $(KVM_FLAG)
+	qemu-system-i386 -cdrom myos.iso -vga virtio -m 4G -display gtk $(KVM_FLAG)
 
 clean:
 	./clean.sh

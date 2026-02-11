@@ -16,6 +16,6 @@ qemu-system-$(./target-triplet-to-arch.sh $HOST) \
     -device rtl8139,netdev=net0 \
     -boot d \
     -m 4G \
-    -vga std \
+    -vga virtio \
     -display gtk \
     $([ -w /dev/kvm ] && echo "-enable-kvm -cpu host")

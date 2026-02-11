@@ -349,6 +349,9 @@ void kernel_main(multiboot_info_t* mbi) {
     ata_initialize();
     acpi_initialize();
 
+    /* Detect GPU acceleration (VirtIO GPU + Bochs VGA BGA) */
+    gfx_init_gpu_accel();
+
     if (gfx_is_active()) {
         /* Graphical boot: init subsystems, then run state machine */
         shell_initialize_subsystems();
