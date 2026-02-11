@@ -4,6 +4,7 @@
 #include <kernel/task.h>
 #include <kernel/sched.h>
 #include <kernel/syscall.h>
+#include <kernel/signal.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -333,6 +334,13 @@ registers_t* isr_handler(registers_t* regs) {
             printf("System halted.\n");
             __asm__ volatile ("cli; hlt");
         }
+    }
+
+    /* Deliver pending signals before returning to user mode */
+    if ((regs->cs & 0x3) == 3) {
+        int tid = task_get_current();
+        if (sig_deliver(tid, regs))
+            regs = schedule(regs);
     }
 
     return regs;

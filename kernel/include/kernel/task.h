@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <kernel/pipe.h>
+#include <kernel/signal.h>
 
 #define TASK_MAX        32
 #define TASK_IDLE        0
@@ -52,6 +53,9 @@ typedef struct {
     /* Per-process page directory */
     uint32_t     page_dir;        /* page directory phys addr (kernel PD for ring 0) */
     uint32_t     user_page_table; /* PMM page table for user space (for cleanup) */
+
+    /* Per-task signal state */
+    sig_state_t  sig;
 
     /* Per-task file descriptor table */
     fd_entry_t   fds[MAX_FDS];

@@ -14,6 +14,8 @@
 #define SYS_CLOSE   7   /* EBX=fd */
 #define SYS_PIPE    8   /* EBX=&int[2] → fills [read_fd, write_fd] */
 #define SYS_KILL    9   /* EBX=pid, ECX=signal → EAX=0 or -1 */
+#define SYS_SIGACTION  10  /* EBX=signum, ECX=handler → EAX=old_handler */
+#define SYS_SIGRETURN  11  /* restore saved context from signal handler */
 
 /* Syscall dispatcher — called from isr_handler for INT 0x80.
  * Returns (possibly different) stack pointer after scheduling. */

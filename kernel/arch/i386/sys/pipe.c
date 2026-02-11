@@ -1,6 +1,7 @@
 #include <kernel/pipe.h>
 #include <kernel/task.h>
 #include <kernel/idt.h>
+#include <kernel/signal.h>
 #include <string.h>
 
 static pipe_t pipes[MAX_PIPES];
@@ -107,8 +108,10 @@ int pipe_write(int fd, const char *buf, int count, int tid) {
 
     if (count <= 0) return 0;
 
-    if (p->readers == 0)
+    if (p->readers == 0) {
+        sig_send(tid, SIGPIPE);
         return -1;  /* broken pipe — no readers */
+    }
 
     uint32_t space = PIPE_BUF_SIZE - p->count;
     if (space == 0) {
