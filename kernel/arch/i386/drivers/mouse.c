@@ -112,6 +112,16 @@ void mouse_initialize(void) {
     mouse_updated = 0;
     mouse_cycle = 0;
 
+    /* Disable interrupts during PS/2 setup to prevent stale data
+       from IRQ12 corrupting the config byte read */
+    __asm__ volatile("cli");
+
+    /* Flush any stale bytes from the PS/2 data buffer */
+    for (int i = 0; i < 256; i++) {
+        if (!(inb(PS2_STATUS) & 0x01)) break;
+        inb(PS2_DATA);
+    }
+
     /* Enable auxiliary mouse device */
     mouse_wait_write();
     outb(PS2_CMD, 0xA8);
@@ -141,6 +151,8 @@ void mouse_initialize(void) {
 
     /* Register IRQ12 handler */
     irq_register_handler(12, mouse_irq_handler);
+
+    __asm__ volatile("sti");
 }
 
 int mouse_get_x(void) {

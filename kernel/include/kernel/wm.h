@@ -111,4 +111,8 @@ void wm_set_post_composite(void (*fn)(void));
 /* Hit test: returns window id at screen (x,y), or -1 if none */
 int wm_hit_test(int mx, int my);
 
+/* FPS overlay toggle (drawn on top-right of screen during composite) */
+void wm_toggle_fps(void);
+int  wm_fps_enabled(void);
+
 #endif
