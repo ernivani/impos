@@ -9,6 +9,12 @@
 #define WM_BTN_R         6
 #define WM_RESIZE_ZONE   6
 
+/* Shadow configuration */
+#define WM_SHADOW_RADIUS   12
+#define WM_SHADOW_SPREAD   (WM_SHADOW_RADIUS * 2)
+#define WM_SHADOW_OX       4
+#define WM_SHADOW_OY       6
+
 /* Window title bar colors (legacy — prefer ui_theme) */
 #define WM_HEADER_BG       GFX_RGB(48, 48, 48)
 #define WM_HEADER_FOCUSED  GFX_RGB(60, 60, 60)
@@ -38,9 +44,14 @@ typedef struct {
     int min_w, min_h;
     /* Associated task tracker id (-1 if none) */
     int task_id;
+    /* Per-window opacity: 255=fully opaque (default), 0=fully transparent */
+    uint8_t opacity;
+    /* Dirty flag for dirty-rect tracking */
+    uint8_t dirty;
 } wm_window_t;
 
 void wm_initialize(void);
+void wm_set_opacity(int id, uint8_t opacity);
 int  wm_create_window(int x, int y, int w, int h, const char *title);
 void wm_destroy_window(int id);
 void wm_focus_window(int id);
