@@ -664,6 +664,11 @@ static int drag_screen_x, drag_screen_y; /* current drag position */
 static int marquee_active = 0;
 static int marquee_x0, marquee_y0, marquee_x1, marquee_y1;
 
+/* Desktop icon double-click timer */
+static int dclick_icon = -1;
+static uint32_t dclick_tick = 0;
+static int dclick_was_drag = 0;  /* suppress double-click after drag */
+
 /* Refresh flag */
 static int desktop_refresh_pending = 0;
 
@@ -1488,6 +1493,7 @@ static void desktop_unified_idle(void) {
         }
 
         drag_icon = -1;
+        dclick_was_drag = 1;   /* suppress double-click from this release */
         wm_invalidate_bg();
         wm_composite();
     }
@@ -2434,13 +2440,15 @@ int desktop_run(void) {
                     ui_window_redraw(running_apps[ri].ui_win);
                     wm_composite();
                 }
-            } else if (ev.type == UI_EVENT_MOUSE_DOWN && desktop_icon_count > 0) {
-                /* Click on desktop — check icons */
-                int mx = ev.mouse.x, my = ev.mouse.y;
-                int hit = desktop_hit_icon(mx, my);
-                if (hit >= 0) {
-                    if (desktop_icons[hit].selected) {
-                        /* Already selected — double-click: open */
+            } else if (ev.type == UI_EVENT_MOUSE_UP && desktop_icon_count > 0) {
+                /* Mouse-up on desktop — check for double-click on icons */
+                int mx2 = ev.mouse.x, my2 = ev.mouse.y;
+                int hit = desktop_hit_icon(mx2, my2);
+                if (hit >= 0 && !dclick_was_drag) {
+                    uint32_t now = pit_get_ticks();
+                    if (hit == dclick_icon && (now - dclick_tick) <= 20) {
+                        /* Double-click within 200ms: open */
+                        dclick_icon = -1;
                         if (desktop_icons[hit].type == INODE_DIR) {
                             desktop_launch_app(DESKTOP_ACTION_FILES);
                         } else {
@@ -2448,12 +2456,17 @@ int desktop_run(void) {
                         }
                         desktop_deselect_all_icons();
                     } else {
+                        /* First click: select + record for double-click */
+                        dclick_icon = hit;
+                        dclick_tick = now;
                         desktop_deselect_all_icons();
                         desktop_icons[hit].selected = 1;
                     }
-                } else {
+                } else if (hit < 0 && !dclick_was_drag) {
                     desktop_deselect_all_icons();
+                    dclick_icon = -1;
                 }
+                dclick_was_drag = 0;
                 wm_invalidate_bg();
                 wm_composite();
             }
