@@ -3,6 +3,8 @@
 #include <kernel/config.h>
 #include <kernel/task.h>
 #include <kernel/sched.h>
+#include <kernel/syscall.h>
+#include <kernel/signal.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -26,8 +28,32 @@ typedef struct {
     uint32_t base;
 } __attribute__((packed)) gdt_ptr_t;
 
-static gdt_entry_t gdt_entries[3];
+static gdt_entry_t gdt_entries[6];
 static gdt_ptr_t gdt_ptr;
+
+/* ========== TSS ========== */
+
+typedef struct {
+    uint32_t prev_tss;
+    uint32_t esp0;
+    uint32_t ss0;
+    uint32_t esp1, ss1;
+    uint32_t esp2, ss2;
+    uint32_t cr3;
+    uint32_t eip, eflags;
+    uint32_t eax, ecx, edx, ebx;
+    uint32_t esp, ebp, esi, edi;
+    uint32_t es, cs, ss, ds, fs, gs;
+    uint32_t ldt;
+    uint16_t trap;
+    uint16_t iomap_base;
+} __attribute__((packed)) tss_entry_t;
+
+static tss_entry_t tss;
+
+void tss_set_esp0(uint32_t esp0) {
+    tss.esp0 = esp0;
+}
 
 static void gdt_set_entry(int idx, uint32_t base, uint32_t limit,
                            uint8_t access, uint8_t gran) {
@@ -43,6 +69,18 @@ static void gdt_install(void) {
     gdt_set_entry(0, 0, 0, 0, 0);                /* Null segment */
     gdt_set_entry(1, 0, 0xFFFFFFFF, 0x9A, 0xCF); /* Code: ring 0, exec/read */
     gdt_set_entry(2, 0, 0xFFFFFFFF, 0x92, 0xCF); /* Data: ring 0, read/write */
+    gdt_set_entry(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); /* Code: ring 3, exec/read → 0x1B */
+    gdt_set_entry(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); /* Data: ring 3, read/write → 0x23 */
+
+    /* TSS descriptor → selector 0x28 */
+    memset(&tss, 0, sizeof(tss));
+    tss.ss0 = 0x10;          /* Kernel data segment for ring 3→0 */
+    tss.esp0 = 0;            /* Updated by scheduler on context switch */
+    tss.iomap_base = sizeof(tss);  /* No I/O bitmap */
+
+    uint32_t tss_base = (uint32_t)&tss;
+    uint32_t tss_limit = sizeof(tss) - 1;
+    gdt_set_entry(5, tss_base, tss_limit, 0x89, 0x00);
 
     gdt_ptr.limit = sizeof(gdt_entries) - 1;
     gdt_ptr.base  = (uint32_t)&gdt_entries;
@@ -60,6 +98,9 @@ static void gdt_install(void) {
         "1:\n\t"
         : : "r"(&gdt_ptr) : "ax"
     );
+
+    /* Load TSS register */
+    __asm__ volatile ("ltr %%ax" : : "a"(0x28));
 }
 
 /* ========== IDT ========== */
@@ -173,7 +214,7 @@ void pit_sleep_ms(uint32_t ms) {
         /* Preemptive mode: mark task as sleeping and yield */
         int tid = task_get_current();
         task_info_t *t = task_get(tid);
-        if (t && t->stack_base) {
+        if (t && (t->stack_base || t->is_user)) {
             /* Thread with its own stack: use proper sleep */
             t->sleep_until = pit_ticks + (ms * TARGET_HZ / 1000) + 1;
             t->state = TASK_STATE_SLEEPING;
@@ -263,17 +304,43 @@ registers_t* isr_handler(registers_t* regs) {
         if (irq == 0)
             regs = schedule(regs);
     } else if (int_no == 0x80) {
-        /* Software interrupt: yield — just call scheduler, no PIT side effects */
-        regs = schedule(regs);
+        /* Syscall: dispatch based on EAX, may invoke scheduler */
+        regs = syscall_handler(regs);
+    } else if (int_no == 14) {
+        /* Page Fault — detailed handler */
+        uint32_t cr2;
+        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+        uint32_t err = regs->err_code;
+        printf("\n=== PAGE FAULT ===\n");
+        printf("Faulting address: 0x%x\n", cr2);
+        printf("Error code: 0x%x [%s %s %s%s%s]\n", err,
+               (err & 1) ? "protection" : "not-present",
+               (err & 2) ? "write" : "read",
+               (err & 4) ? "user" : "kernel",
+               (err & 8) ? " reserved-bit" : "",
+               (err & 16) ? " instruction-fetch" : "");
+        printf("EIP=0x%x CS=0x%x EFLAGS=0x%x\n", regs->eip, regs->cs, regs->eflags);
+        printf("EAX=0x%x EBX=0x%x ECX=0x%x EDX=0x%x\n",
+               regs->eax, regs->ebx, regs->ecx, regs->edx);
+        printf("ESP=0x%x EBP=0x%x ESI=0x%x EDI=0x%x\n",
+               regs->esp, regs->ebp, regs->esi, regs->edi);
+        printf("System halted.\n");
+        __asm__ volatile ("cli; hlt");
     } else if (int_no < 32) {
         /* CPU Exception */
-        /* For now, just print and halt for fatal exceptions */
-        if (int_no == 13 || int_no == 14 || int_no == 8 || int_no == 6) {
+        if (int_no == 13 || int_no == 8 || int_no == 6) {
             printf("EXCEPTION %d: err=0x%x eip=0x%x\n",
                    int_no, regs->err_code, regs->eip);
             printf("System halted.\n");
             __asm__ volatile ("cli; hlt");
         }
+    }
+
+    /* Deliver pending signals before returning to user mode */
+    if ((regs->cs & 0x3) == 3) {
+        int tid = task_get_current();
+        if (sig_deliver(tid, regs))
+            regs = schedule(regs);
     }
 
     return regs;
@@ -392,8 +459,8 @@ void idt_initialize(void) {
     idt_set_gate(46, (uint32_t)irq14, 0x08, 0x8E);
     idt_set_gate(47, (uint32_t)irq15, 0x08, 0x8E);
 
-    /* INT 0x80: yield/schedule software interrupt */
-    idt_set_gate(0x80, (uint32_t)isr128, 0x08, 0x8E);
+    /* INT 0x80: syscall gate (DPL=3 so ring 3 can invoke) */
+    idt_set_gate(0x80, (uint32_t)isr128, 0x08, 0xEE);
 
     /* Load IDT */
     idt_ptr.limit = sizeof(idt_entries) - 1;

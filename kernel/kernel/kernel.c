@@ -21,6 +21,8 @@
 #include <kernel/config.h>
 #include <kernel/task.h>
 #include <kernel/sched.h>
+#include <kernel/pmm.h>
+#include <kernel/vmm.h>
 
 #define PROMPT      "$ "
 
@@ -326,6 +328,10 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Set up GDT, IDT, PIC, PIT before anything else */
     idt_initialize();
+
+    /* Initialize physical and virtual memory management */
+    pmm_init(mbi);
+    vmm_init(mbi);
 
     /* Initialize task tracking (before any tasks are created) */
     task_init();

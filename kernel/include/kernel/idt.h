@@ -28,4 +28,7 @@ void pit_sleep_ms(uint32_t ms);
 void pit_get_cpu_stats(uint32_t *idle, uint32_t *busy);
 extern volatile int cpu_halting;
 
+/* TSS: update kernel stack pointer for ring 3→0 transitions */
+void tss_set_esp0(uint32_t esp0);
+
 #endif
