@@ -1,7 +1,7 @@
 # ImposOS — Progress & Future Roadmap
 
 > Last updated: February 2026
-> Status: **Core OS complete + ring 3 + full IPC (pipes/signals/shm)** | ~28,600 lines of code | ~190 regression tests | 43+ shell commands
+> Status: **Core OS complete + ring 3 + full IPC + compositing WM + TTF/vector rendering** | ~30,500 lines of code | ~190 regression tests | 43+ shell commands
 
 ---
 
@@ -49,8 +49,16 @@ make run    # Build + boot in QEMU
 - [x] Double buffering (backbuffer in RAM, flip to framebuffer)
 - [x] Graphics primitives: pixels, filled/outlined rects, lines (Bresenham), circles
 - [x] Alpha blending: `gfx_blend_pixel()`, `gfx_fill_rect_alpha()`, `gfx_overlay_darken()`
-- [x] Bitmap font (8x16, 256 glyphs), `gfx_draw_char()` / `gfx_draw_string()`
+- [x] Bitmap font: 8x16 (256 glyphs) + 16x32 large font (2x integer scale)
+- [x] SDF font rendering with improved ±8 texel search radius
+- [x] Box blur: separable 2-pass with running sum, `gfx_box_blur()`
+- [x] Alpha buffer blit: `gfx_blit_buffer_alpha()` for per-window opacity
+- [x] Dirty rect flip: `gfx_flip_rects()` for partial framebuffer updates
 - [x] Animations: crossfade, smooth transitions between screens
+- [x] Vector path rasterizer: 26.6 fixed-point, De Casteljau Bézier flattening, scanline fill (non-zero winding), 4× vertical SSAA anti-aliasing
+- [x] Convenience path shapes: rect, rounded-rect, ellipse, circle, stroke
+- [x] Built-in vector font: auto-traced from font8x16, scalable to any size, AA rendering
+- [x] TrueType font engine: full TTF parser (cmap fmt0/fmt4, loca, glyf simple+compound, hhea/hmtx), 256-entry per-size glyph cache
 
 ### libc (Phase 3) — 100%
 - [x] **string.h**: memcmp, memcpy, memmove, memset, memchr, strlen, strnlen, strcpy, strncpy, strcat, strcmp, strncmp, strtok, strchr, strrchr, strstr, strdup, strndup, strcspn, strspn, strpbrk
@@ -151,6 +159,11 @@ make run    # Build + boot in QEMU
 - [x] Per-window canvas (pixel buffer)
 - [x] Dirty flag tracking, background caching
 - [x] Composite rendering in Z-order
+- [x] Soft drop shadows (pre-computed 9-patch blur atlas, 24px spread, offset 4x6)
+- [x] Rounded window corners (10px radius, corner-masked canvas blit)
+- [x] Per-window opacity / alpha compositing (`wm_set_opacity()`)
+- [x] Dirty rectangle tracking (partial flip optimization, up to 16 rects)
+- [x] Anti-aliased traffic light buttons
 
 ### Widget Toolkit — 100%
 - [x] 12 widget types: Label, Button, TextInput, List, Checkbox, Progress, Tabs, Panel, Separator, Custom, Toggle, IconGrid, Card
@@ -171,6 +184,9 @@ make run    # Build + boot in QEMU
 - [x] Catppuccin-inspired dark theme
 - [x] 40+ color values (semantic: success, danger, accent, warning)
 - [x] Layout parameters: padding, spacing, border radius, heights
+- [x] Window corner radius (`win_corner_radius`, default 10px)
+- [x] DPI scale factor (`dpi_scale`, 1x or 2x) with `DPI()` macro
+- [x] Font size selection (`font_size`, 0=8x16, 1=16x32, 2=vector)
 
 ### ACPI — 100%
 - [x] RSDP discovery (BDA + EBDA scan)
@@ -229,7 +245,7 @@ make run    # Build + boot in QEMU
 
 | Feature | Status | What's Missing |
 |---------|--------|----------------|
-| Alpha transparency (G.6) | Optional | `gfx_blend_pixel()` exists but no full alpha channel API |
+| Alpha transparency (G.6) | Done | Per-window opacity, alpha blit, shadow atlas, rounded corner masking |
 | GUI animations (I.7) | Partial | Basic crossfade works, no per-widget fade/slide animations |
 | Firewall (P.4) | Basic | No stateful inspection, no reverse port forwarding |
 | HTTP server | Basic | No CGI, no POST body handling, no HTTPS/TLS |
@@ -261,7 +277,7 @@ make run    # Build + boot in QEMU
 | **Security** | ~~Syscall interface~~ | ✅ Done — INT 0x80 with 15 syscalls |
 | **Hardware** | USB support | PS/2 keyboard/mouse only |
 | **Hardware** | Audio / sound | No audio driver |
-| **Hardware** | GPU acceleration | Software rendering only |
+| **Hardware** | GPU acceleration | Software rendering only (but compositing WM with shadow atlas, dirty rects) |
 | **Hardware** | Real-time clock (RTC) | Time doesn't persist across reboots |
 | **Platform** | 64-bit (x86_64) | i386 only |
 | **Platform** | SMP / multi-core | Single-core only |
@@ -285,7 +301,6 @@ make run    # Build + boot in QEMU
 | GUI | Drag-and-drop |
 | GUI | Multiple workspaces/virtual desktops |
 | GUI | Notification system |
-| GUI | Scalable fonts (TTF/OTF) |
 | GUI | Screen resolution switching at runtime |
 | Apps | Calculator |
 | Apps | Image viewer |
@@ -337,13 +352,18 @@ make run    # Build + boot in QEMU
 > Preemptive multitasking, paging, ring 3 user mode, per-process page tables, and full IPC (pipes, signals, shared memory) are done. Threads run with separate address spaces, INT 0x80 syscall gate (15 syscalls), and complete IPC infrastructure.
 
 #### 0.2 — Compositing & Rendering
-- [ ] **Compositing window manager** — Each window renders to off-screen buffer, then composite with alpha/shadows/blur
-- [ ] **Double/triple buffering with vsync** — Eliminate all tearing
-- [ ] **TrueType font rendering** — Simplified FreeType-style TTF rasterizer (anti-aliased, hinted)
-- [ ] **Resolution-independent drawing** — Vector primitives (lines, curves, fills) not just pixel pushing
-- [ ] **HiDPI / DPI scaling** — Support for fractional scaling
+- [x] **Compositing window manager** — Per-window off-screen canvas, 9-patch shadow atlas (pre-computed blur), alpha compositing, rounded corners, dirty-rect tracking
+- [x] **Per-window opacity** — `wm_set_opacity()` API, alpha-blended canvas blit, fast path for fully opaque windows
+- [x] **Box blur + shadow atlas** — Separable 2-pass box blur, 3-pass for Gaussian approximation, pre-computed 9-patch shadow tiles (~20KB)
+- [x] **Rounded window corners** — Pre-computed corner mask, top corners on titlebar, bottom corners on body, corner-masked canvas blit
+- [x] **Dirty rectangle tracking** — Per-window dirty flags, up to 16 dirty rects per frame, `gfx_flip_rects()` partial flip, full-composite fallback
+- [x] **Enhanced font system** — 16x32 large bitmap font (2x integer scale of 8x16), improved SDF anti-aliasing (±8 search radius)
+- [x] **HiDPI / DPI scaling** — `DPI()` macro, `ui_theme.dpi_scale` (1x/2x), settings app toggle
+- [x] **TrueType font rendering** — Full TTF parser (table directory, cmap fmt0/fmt4, loca, glyf, hhea/hmtx), simple + compound glyph decoding, 256-entry per-size glyph cache, alpha-blended string rendering
+- [x] **Resolution-independent drawing** — Vector path rasterizer with 26.6 fixed-point, De Casteljau Bézier flattening, scanline fill (non-zero winding), 4× vertical SSAA anti-aliasing, convenience shapes (rect, rounded-rect, ellipse, circle), stroke via outline expansion
+- [x] **Built-in vector font** — Auto-traced from font8x16 bitmap at init (~4096 rectangle outlines for 256 glyphs), scalable to any size via path rasterizer, anti-aliased rendering, toggled via Settings > Display > Vector Font
 
-> The single biggest visual quality jump. Bitmap fonts and raw framebuffer writes are immediately obvious to any user.
+> Compositing WM with soft shadows, rounded corners, per-window alpha, dirty-rect optimization, DPI scaling, TrueType font engine, and resolution-independent vector path rasterizer are all done.
 
 #### 0.3 — Clipboard & Core Desktop Integration
 - [ ] **Clipboard system** — Copy/paste with MIME types between all apps
@@ -426,7 +446,7 @@ make run    # Build + boot in QEMU
 
 ### Priority 5 — GUI & Desktop Enhancements (Months)
 
-- [ ] **Window decorations** — Shadows, rounded corners, transparency
+- [x] **Window decorations** — Soft shadows (9-patch atlas), rounded corners (10px), per-window opacity
 - [ ] **Window animations** — Open/close/minimize transitions
 - [ ] **Widget animations** — Smooth fade/slide for panels and dialogs
 - [ ] **Right-click context menus** — Already partial, expand everywhere
@@ -492,13 +512,15 @@ make run    # Build + boot in QEMU
 |  Tabs, Panel, Separator, Custom, Toggle, IconGrid, Card          |
 +------------------------------------------------------------------+
 |                    WINDOW MANAGER (wm.c)                         |
-|  32 windows, Z-order, drag, resize, min/max/close               |
+|  32 windows, Z-order, drag, resize, min/max/close,              |
+|  shadow atlas, rounded corners, alpha compositing, dirty rects  |
 +------------------------------------------------------------------+
 |                    DESKTOP (desktop.c)                            |
 |  Splash -> Login -> Desktop (dock, clock, wallpaper)             |
 +------------------------------------------------------------------+
-|                    GRAPHICS (gfx.c)                               |
-|  VBE 1920x1080x32, double buffer, primitives, alpha, font 8x16  |
+|                    GRAPHICS (gfx.c + gfx_path.c + gfx_ttf.c)     |
+|  VBE 1920x1080x32, double buffer, alpha compositing, box blur,  |
+|  SDF font, 8x16+16x32+vector fonts, TTF engine, path rasterizer |
 +------------------------------------------------------------------+
 |                        KERNEL SERVICES                           |
 |  +------+ +------+ +-------+ +-------+ +--------+ +-------+ +----+|
@@ -558,7 +580,7 @@ impos/
 │
 ├── kernel/
 │   ├── kernel/kernel.c         # Main entry: init sequence + boot mode dispatch
-│   ├── include/kernel/         # 38 header files
+│   ├── include/kernel/         # 40 header files
 │   │   ├── io.h                # Port I/O (inb, outb)
 │   │   ├── wm.h                # Window manager API
 │   │   ├── ui_theme.h          # Theme colors/sizes
@@ -596,6 +618,8 @@ impos/
 │       │
 │       ├── gui/
 │       │   ├── gfx.c           # Graphics engine (VBE, double buffer, primitives)
+│       │   ├── gfx_path.c      # Vector path rasterizer (26.6 fixed-point, SSAA)
+│       │   ├── gfx_ttf.c       # TTF font engine + built-in vector font
 │       │   ├── font8x16.h      # Bitmap font (256 glyphs)
 │       │   ├── desktop.c       # Desktop environment (splash/login/dock/clock)
 │       │   ├── wm.c            # Window manager (32 windows, Z-order)
@@ -645,11 +669,11 @@ impos/
 
 | Metric | Value |
 |--------|-------|
-| Total lines of code | ~28,200 |
-| Kernel C files | 49 |
+| Total lines of code | ~30,500 |
+| Kernel C files | 51 |
 | Assembly files | 3 (.S) |
 | libc files | 28 |
-| Header files | 59 |
+| Header files | 61 |
 | Shell commands | 43+ |
 | Regression tests | ~190 |
 | GUI applications | 6 (filemgr, taskmgr, settings, monitor, finder, login) |

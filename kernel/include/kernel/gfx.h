@@ -121,6 +121,33 @@ void gfx_restore_mouse_cursor(void);
 
 uint32_t gfx_get_system_ram_mb(void);
 
+/* ═══ Box blur ═════════════════════════════════════════════════ */
+
+void gfx_box_blur(uint32_t *buf, int w, int h, int radius);
+
+/* ═══ Alpha blit ═══════════════════════════════════════════════ */
+
+void gfx_blit_buffer_alpha(int dst_x, int dst_y, uint32_t *src, int sw, int sh, uint8_t alpha);
+
+/* ═══ Large font (16x32) ══════════════════════════════════════ */
+
+#define FONT_LARGE_W 16
+#define FONT_LARGE_H 32
+
+void gfx_draw_char_large(int x, int y, char c, uint32_t fg, uint32_t bg);
+void gfx_draw_string_large(int x, int y, const char *s, uint32_t fg, uint32_t bg);
+void gfx_surf_draw_char_large(gfx_surface_t *s, int x, int y, char c, uint32_t fg, uint32_t bg);
+void gfx_surf_draw_string_large(gfx_surface_t *s, int x, int y, const char *str, uint32_t fg, uint32_t bg);
+void gfx_init_font_large(void);
+
+/* ═══ Dirty rect flip ═════════════════════════════════════════ */
+
+typedef struct {
+    int x, y, w, h;
+} gfx_rect_t;
+
+void gfx_flip_rects(gfx_rect_t *rects, int count);
+
 /* ═══ Color macros ═════════════════════════════════════════════ */
 
 #define GFX_RGB(r,g,b) (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))

@@ -97,4 +97,9 @@ void ui_theme_init(void) {
     ui_theme.titlebar_height   = 28;
     ui_theme.win_border_width  = 1;
     ui_theme.close_btn_radius  = 6;
+
+    /* Compositing */
+    ui_theme.win_corner_radius = 10;
+    ui_theme.font_size         = 0;   /* 0 = 8x16 default */
+    ui_theme.dpi_scale         = 1;
 }

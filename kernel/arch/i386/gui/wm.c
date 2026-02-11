@@ -1,5 +1,6 @@
 #include <kernel/wm.h>
 #include <kernel/gfx.h>
+#include <kernel/gfx_ttf.h>
 #include <kernel/desktop.h>
 #include <kernel/mouse.h>
 #include <kernel/idt.h>
@@ -56,10 +57,181 @@ static uint32_t fps_frame_count = 0;
 static uint32_t fps_last_tick = 0;
 static uint32_t fps_display_value = 0;
 
+/* ═══ Shadow atlas (9-patch pre-computed blurred shadow) ══════ */
+
+#define SHADOW_R   WM_SHADOW_RADIUS
+#define SHADOW_S   WM_SHADOW_SPREAD   /* = SHADOW_R * 2 */
+#define SHADOW_PAD SHADOW_S            /* padding around the shadow rect */
+
+/* Corner tiles: SHADOW_PAD x SHADOW_PAD each (24x24) */
+static uint8_t shadow_corner_tl[SHADOW_PAD * SHADOW_PAD];
+static uint8_t shadow_corner_tr[SHADOW_PAD * SHADOW_PAD];
+static uint8_t shadow_corner_bl[SHADOW_PAD * SHADOW_PAD];
+static uint8_t shadow_corner_br[SHADOW_PAD * SHADOW_PAD];
+
+/* Edge strips: single pixel wide (top/bottom) or single pixel tall (left/right) */
+static uint8_t shadow_edge_top[SHADOW_PAD];    /* alpha values for one column of top edge */
+static uint8_t shadow_edge_bottom[SHADOW_PAD];
+static uint8_t shadow_edge_left[SHADOW_PAD];
+static uint8_t shadow_edge_right[SHADOW_PAD];
+
+/* Shadow color */
+#define SHADOW_COLOR GFX_RGB(0, 0, 0)
+
+static void wm_init_shadow_atlas(void) {
+    /* Generate a filled rect on a larger canvas, blur, extract tiles */
+    int rect_w = SHADOW_PAD * 4;   /* large enough that center tiles are uniform */
+    int rect_h = SHADOW_PAD * 4;
+    int total_w = rect_w + 2 * SHADOW_PAD;
+    int total_h = rect_h + 2 * SHADOW_PAD;
+
+    uint32_t *tmp = (uint32_t *)malloc((size_t)total_w * (size_t)total_h * 4);
+    if (!tmp) return;
+    memset(tmp, 0, (size_t)total_w * (size_t)total_h * 4);
+
+    /* Fill rect region with full alpha */
+    for (int y = SHADOW_PAD; y < SHADOW_PAD + rect_h; y++)
+        for (int x = SHADOW_PAD; x < SHADOW_PAD + rect_w; x++)
+            tmp[y * total_w + x] = 0xFF000000;
+
+    /* Apply 3-pass box blur for approximate Gaussian */
+    gfx_box_blur(tmp, total_w, total_h, SHADOW_R);
+    gfx_box_blur(tmp, total_w, total_h, SHADOW_R);
+    gfx_box_blur(tmp, total_w, total_h, SHADOW_R);
+
+    /* Scale alpha values down (shadow shouldn't be full black) */
+    for (int i = 0; i < total_w * total_h; i++) {
+        uint32_t a = (tmp[i] >> 24) & 0xFF;
+        a = a * 140 / 255;  /* 55% max opacity */
+        tmp[i] = (a << 24);
+    }
+
+    /* Extract corner tiles */
+    for (int y = 0; y < SHADOW_PAD; y++)
+        for (int x = 0; x < SHADOW_PAD; x++) {
+            shadow_corner_tl[y * SHADOW_PAD + x] = (tmp[y * total_w + x] >> 24) & 0xFF;
+            shadow_corner_tr[y * SHADOW_PAD + x] = (tmp[y * total_w + (total_w - SHADOW_PAD + x)] >> 24) & 0xFF;
+            shadow_corner_bl[y * SHADOW_PAD + x] = (tmp[(total_h - SHADOW_PAD + y) * total_w + x] >> 24) & 0xFF;
+            shadow_corner_br[y * SHADOW_PAD + x] = (tmp[(total_h - SHADOW_PAD + y) * total_w + (total_w - SHADOW_PAD + x)] >> 24) & 0xFF;
+        }
+
+    /* Extract edge strips (sample middle of each edge) */
+    int mid_x = total_w / 2;
+    int mid_y = total_h / 2;
+    for (int i = 0; i < SHADOW_PAD; i++) {
+        shadow_edge_top[i]    = (tmp[i * total_w + mid_x] >> 24) & 0xFF;
+        shadow_edge_bottom[i] = (tmp[(total_h - SHADOW_PAD + i) * total_w + mid_x] >> 24) & 0xFF;
+        shadow_edge_left[i]   = (tmp[mid_y * total_w + i] >> 24) & 0xFF;
+        shadow_edge_right[i]  = (tmp[mid_y * total_w + (total_w - SHADOW_PAD + i)] >> 24) & 0xFF;
+    }
+
+    free(tmp);
+}
+
+static void draw_shadow_9patch(int wx, int wy, int ww, int wh) {
+    gfx_surface_t scr = gfx_get_surface();
+    /* Shadow is offset and expanded around the window */
+    int sx = wx - SHADOW_PAD + WM_SHADOW_OX;
+    int sy = wy - SHADOW_PAD + WM_SHADOW_OY;
+    int sw = ww + 2 * SHADOW_PAD;
+    int sh = wh + 2 * SHADOW_PAD;
+
+    /* Top-left corner */
+    for (int y = 0; y < SHADOW_PAD; y++)
+        for (int x = 0; x < SHADOW_PAD; x++) {
+            uint8_t a = shadow_corner_tl[y * SHADOW_PAD + x];
+            if (a > 0) gfx_surf_blend_pixel(&scr, sx + x, sy + y, SHADOW_COLOR, a);
+        }
+    /* Top-right corner */
+    for (int y = 0; y < SHADOW_PAD; y++)
+        for (int x = 0; x < SHADOW_PAD; x++) {
+            uint8_t a = shadow_corner_tr[y * SHADOW_PAD + x];
+            if (a > 0) gfx_surf_blend_pixel(&scr, sx + sw - SHADOW_PAD + x, sy + y, SHADOW_COLOR, a);
+        }
+    /* Bottom-left corner */
+    for (int y = 0; y < SHADOW_PAD; y++)
+        for (int x = 0; x < SHADOW_PAD; x++) {
+            uint8_t a = shadow_corner_bl[y * SHADOW_PAD + x];
+            if (a > 0) gfx_surf_blend_pixel(&scr, sx + x, sy + sh - SHADOW_PAD + y, SHADOW_COLOR, a);
+        }
+    /* Bottom-right corner */
+    for (int y = 0; y < SHADOW_PAD; y++)
+        for (int x = 0; x < SHADOW_PAD; x++) {
+            uint8_t a = shadow_corner_br[y * SHADOW_PAD + x];
+            if (a > 0) gfx_surf_blend_pixel(&scr, sx + sw - SHADOW_PAD + x, sy + sh - SHADOW_PAD + y, SHADOW_COLOR, a);
+        }
+
+    /* Top edge */
+    int edge_w = sw - 2 * SHADOW_PAD;
+    for (int y = 0; y < SHADOW_PAD; y++) {
+        uint8_t a = shadow_edge_top[y];
+        if (a > 0)
+            gfx_surf_fill_rect_alpha(&scr, sx + SHADOW_PAD, sy + y, edge_w, 1, SHADOW_COLOR, a);
+    }
+    /* Bottom edge */
+    for (int y = 0; y < SHADOW_PAD; y++) {
+        uint8_t a = shadow_edge_bottom[y];
+        if (a > 0)
+            gfx_surf_fill_rect_alpha(&scr, sx + SHADOW_PAD, sy + sh - SHADOW_PAD + y, edge_w, 1, SHADOW_COLOR, a);
+    }
+    /* Left edge */
+    int edge_h = sh - 2 * SHADOW_PAD;
+    for (int x = 0; x < SHADOW_PAD; x++) {
+        uint8_t a = shadow_edge_left[x];
+        if (a > 0)
+            gfx_surf_fill_rect_alpha(&scr, sx + x, sy + SHADOW_PAD, 1, edge_h, SHADOW_COLOR, a);
+    }
+    /* Right edge */
+    for (int x = 0; x < SHADOW_PAD; x++) {
+        uint8_t a = shadow_edge_right[x];
+        if (a > 0)
+            gfx_surf_fill_rect_alpha(&scr, sx + sw - SHADOW_PAD + x, sy + SHADOW_PAD, 1, edge_h, SHADOW_COLOR, a);
+    }
+}
+
+/* ═══ Corner mask for rounded windows ════════════════════════ */
+
+static uint8_t corner_mask[16 * 16]; /* boolean: 1 = inside, 0 = outside */
+static int corner_radius = 0;
+
+static void init_corner_mask(int r) {
+    corner_radius = r;
+    for (int y = 0; y < r; y++)
+        for (int x = 0; x < r; x++) {
+            int dx = r - x - 1;
+            int dy = r - y - 1;
+            corner_mask[y * r + x] = (dx * dx + dy * dy <= r * r) ? 1 : 0;
+        }
+}
+
+/* ═══ Dirty rectangle tracking ═══════════════════════════════ */
+
+#define WM_MAX_DIRTY_RECTS 16
+
+static gfx_rect_t dirty_rects[WM_MAX_DIRTY_RECTS];
+static int dirty_rect_count = 0;
+static int full_composite_needed = 1;
+
+static void add_dirty_rect(int x, int y, int w, int h) {
+    if (full_composite_needed) return;
+    if (dirty_rect_count >= WM_MAX_DIRTY_RECTS) {
+        full_composite_needed = 1;
+        return;
+    }
+    dirty_rects[dirty_rect_count].x = x;
+    dirty_rects[dirty_rect_count].y = y;
+    dirty_rects[dirty_rect_count].w = w;
+    dirty_rects[dirty_rect_count].h = h;
+    dirty_rect_count++;
+}
+
 void wm_initialize(void) {
     memset(windows, 0, sizeof(windows));
-    for (int i = 0; i < WM_MAX_WINDOWS; i++)
+    for (int i = 0; i < WM_MAX_WINDOWS; i++) {
         windows[i].task_id = -1;
+        windows[i].opacity = 255;
+        windows[i].dirty = 1;
+    }
     win_count = 0;
     next_id = 1;
     dragging = -1;
@@ -68,9 +240,15 @@ void wm_initialize(void) {
     close_requested = 0;
     dock_action = 0;
     bg_cache_valid = 0;
+    full_composite_needed = 1;
+    dirty_rect_count = 0;
     if (!bg_cache) {
         bg_cache = malloc(gfx_height() * gfx_pitch());
     }
+    /* Pre-compute shadow atlas */
+    wm_init_shadow_atlas();
+    /* Pre-compute corner mask */
+    init_corner_mask(ui_theme.win_corner_radius > 0 ? ui_theme.win_corner_radius : 10);
     /* Track WM's own memory usage (bg_cache + backbuffer) */
     task_set_mem(TASK_WM, (int)(gfx_height() * gfx_pitch() * 2 / 1024));
 }
@@ -78,10 +256,12 @@ void wm_initialize(void) {
 void wm_invalidate_bg(void) {
     bg_cache_valid = 0;
     composite_needed = 1;
+    full_composite_needed = 1;
 }
 
 void wm_mark_dirty(void) {
     composite_needed = 1;
+    full_composite_needed = 1;
 }
 
 int wm_is_dirty(void) {
@@ -104,6 +284,8 @@ int wm_create_window(int x, int y, int w, int h, const char *title) {
     strncpy(win->title, title, 63);
     win->title[63] = '\0';
     win->flags = WM_WIN_VISIBLE | WM_WIN_RESIZABLE;
+    win->opacity = 255;
+    win->dirty = 1;
     win->min_w = 200;
     win->min_h = 100;
 
@@ -146,6 +328,8 @@ void wm_destroy_window(int id) {
     for (int i = 0; i < win_count; i++)
         if (windows[i].id == id) { idx = i; break; }
     if (idx < 0) return;
+
+    full_composite_needed = 1;
 
     /* Auto-unregister tracked process */
     if (windows[idx].task_id >= 0) {
@@ -246,6 +430,15 @@ wm_window_t* wm_get_window_by_index(int idx) {
 int wm_get_task_id(int win_id) {
     wm_window_t *w = find_window(win_id);
     return w ? w->task_id : -1;
+}
+
+void wm_set_opacity(int id, uint8_t opacity) {
+    wm_window_t *w = find_window(id);
+    if (w) {
+        w->opacity = opacity;
+        w->dirty = 1;
+        composite_needed = 1;
+    }
 }
 
 void wm_cycle_focus(void) {
@@ -377,74 +570,168 @@ void wm_resize_window(int id, int new_w, int new_h) {
 static void draw_window(wm_window_t *w) {
     if (!(w->flags & WM_WIN_VISIBLE) || (w->flags & WM_WIN_MINIMIZED)) return;
     int focused = (w->flags & WM_WIN_FOCUSED) != 0;
+    int cr = corner_radius;
+    int maximized = (w->flags & WM_WIN_MAXIMIZED) != 0;
 
-    /* Cheap shadow: thin edge strips (right + bottom) instead of full rect */
-    uint32_t shc = GFX_RGB(8, 8, 12);
-    gfx_fill_rect(w->x + w->w, w->y + 2, 2, w->h, shc);       /* right */
-    gfx_fill_rect(w->x + 2, w->y + w->h, w->w, 2, shc);       /* bottom */
+    /* No rounded corners or shadow for maximized windows */
+    if (maximized) cr = 0;
 
-    /* Window body — skip area covered by canvas */
+    /* Draw soft shadow (9-patch) — skip for maximized windows */
+    if (!maximized)
+        draw_shadow_9patch(w->x, w->y, w->w, w->h);
+
+    gfx_surface_t scr = gfx_get_surface();
+
+    /* Window body background with rounded bottom corners */
     int body_y = w->y + WM_TITLEBAR_H;
     int body_h = w->h - WM_TITLEBAR_H;
-    if (w->canvas && body_h > 0) {
-        /* Only fill left/right border strips beside the canvas */
-        if (WM_BORDER > 0) {
-            gfx_fill_rect(w->x, body_y, WM_BORDER, body_h, ui_theme.win_body_bg);
-            gfx_fill_rect(w->x + w->w - WM_BORDER, body_y, WM_BORDER, body_h, ui_theme.win_body_bg);
-        }
-        /* Bottom border strip below canvas */
-        int canvas_bot = body_y + w->canvas_h;
-        int bottom_strip = w->y + w->h - canvas_bot;
-        if (bottom_strip > 0)
-            gfx_fill_rect(w->x, canvas_bot, w->w, bottom_strip, ui_theme.win_body_bg);
-    } else {
-        gfx_fill_rect(w->x, w->y, w->w, w->h, ui_theme.win_body_bg);
+    if (cr > 0 && body_h > 0) {
+        /* Draw body with rounded bottom corners only */
+        gfx_surf_fill_rect(&scr, w->x, body_y, w->w, body_h - cr, ui_theme.win_body_bg);
+        gfx_surf_fill_rect(&scr, w->x + cr, body_y + body_h - cr, w->w - 2 * cr, cr, ui_theme.win_body_bg);
+        /* Bottom-left corner */
+        for (int cy = 0; cy < cr; cy++)
+            for (int cx = 0; cx < cr; cx++)
+                if (corner_mask[cy * cr + cx])
+                    gfx_surf_put_pixel(&scr, w->x + cx, w->y + w->h - cr + cy, ui_theme.win_body_bg);
+        /* Bottom-right corner */
+        for (int cy = 0; cy < cr; cy++)
+            for (int cx = 0; cx < cr; cx++)
+                if (corner_mask[cy * cr + cx])
+                    gfx_surf_put_pixel(&scr, w->x + w->w - cr + (cr - 1 - cx), w->y + w->h - cr + cy, ui_theme.win_body_bg);
+    } else if (body_h > 0) {
+        gfx_surf_fill_rect(&scr, w->x, body_y, w->w, body_h, ui_theme.win_body_bg);
     }
 
-    /* Title bar */
+    /* Title bar with rounded top corners */
     uint32_t hdr = focused ? ui_theme.win_header_focused : ui_theme.win_header_bg;
-    gfx_fill_rect(w->x, w->y, w->w, WM_TITLEBAR_H, hdr);
+    if (cr > 0) {
+        gfx_surf_fill_rect(&scr, w->x, w->y + cr, w->w, WM_TITLEBAR_H - cr, hdr);
+        gfx_surf_fill_rect(&scr, w->x + cr, w->y, w->w - 2 * cr, cr, hdr);
+        /* Top-left corner */
+        for (int cy = 0; cy < cr; cy++)
+            for (int cx = 0; cx < cr; cx++)
+                if (corner_mask[(cr - 1 - cy) * cr + (cr - 1 - cx)])
+                    gfx_surf_put_pixel(&scr, w->x + cx, w->y + cy, hdr);
+        /* Top-right corner */
+        for (int cy = 0; cy < cr; cy++)
+            for (int cx = 0; cx < cr; cx++)
+                if (corner_mask[(cr - 1 - cy) * cr + cx])
+                    gfx_surf_put_pixel(&scr, w->x + w->w - 1 - cx, w->y + cy, hdr);
+    } else {
+        gfx_surf_fill_rect(&scr, w->x, w->y, w->w, WM_TITLEBAR_H, hdr);
+    }
 
     /* Separator line below titlebar */
     gfx_fill_rect(w->x, w->y + WM_TITLEBAR_H - 1, w->w, 1,
                   focused ? GFX_RGB(60, 60, 80) : ui_theme.win_border);
 
     /* Blit canvas content into body area */
-    if (w->canvas)
-        gfx_blit_buffer(w->x + WM_BORDER, w->y + WM_TITLEBAR_H,
-                         w->canvas, w->canvas_w, w->canvas_h);
+    if (w->canvas) {
+        if (w->opacity < 255) {
+            gfx_blit_buffer_alpha(w->x + WM_BORDER, w->y + WM_TITLEBAR_H,
+                                  w->canvas, w->canvas_w, w->canvas_h, w->opacity);
+        } else {
+            /* Corner-mask the canvas blit for rounded bottom corners */
+            if (cr > 0) {
+                /* Blit main body (non-corner region) */
+                int cx_start = w->x + WM_BORDER;
+                int cy_start = w->y + WM_TITLEBAR_H;
+                int cw = w->canvas_w;
+                int ch = w->canvas_h;
+                /* Blit all rows except the bottom cr rows fully */
+                int safe_rows = ch - cr;
+                if (safe_rows > 0)
+                    gfx_blit_buffer(cx_start, cy_start, w->canvas, cw, safe_rows);
+                /* For bottom cr rows, blit with corner masking */
+                uint32_t pitch4 = gfx_pitch() / 4;
+                uint32_t *bb = gfx_backbuffer();
+                int body_bottom = w->y + w->h;
+                for (int row = (safe_rows > 0 ? safe_rows : 0); row < ch; row++) {
+                    int screen_y = cy_start + row;
+                    if (screen_y < 0 || screen_y >= (int)gfx_height()) continue;
+                    int dist_from_bottom = body_bottom - 1 - screen_y;
+                    for (int col = 0; col < cw; col++) {
+                        int screen_x = cx_start + col;
+                        if (screen_x < 0 || screen_x >= (int)gfx_width()) continue;
+                        /* Check if pixel is in a corner that should be clipped */
+                        int skip = 0;
+                        if (dist_from_bottom < cr) {
+                            int cy_idx = cr - 1 - dist_from_bottom;
+                            /* Left corner */
+                            int dx_left = screen_x - w->x;
+                            if (dx_left < cr && !corner_mask[cy_idx * cr + dx_left])
+                                skip = 1;
+                            /* Right corner */
+                            int dx_right = (w->x + w->w - 1) - screen_x;
+                            if (dx_right < cr && !corner_mask[cy_idx * cr + dx_right])
+                                skip = 1;
+                        }
+                        if (!skip)
+                            bb[screen_y * pitch4 + screen_x] = w->canvas[row * cw + col];
+                    }
+                }
+            } else {
+                gfx_blit_buffer(w->x + WM_BORDER, w->y + WM_TITLEBAR_H,
+                                w->canvas, w->canvas_w, w->canvas_h);
+            }
+        }
+    }
 
-    /* Window border */
-    gfx_draw_rect(w->x, w->y, w->w, w->h,
-                  focused ? GFX_RGB(90, 90, 110) : ui_theme.win_border);
+    /* Window border (rounded) */
+    if (cr > 0) {
+        uint32_t bc = focused ? GFX_RGB(90, 90, 110) : ui_theme.win_border;
+        gfx_rounded_rect_outline(w->x, w->y, w->w, w->h, cr, bc);
+    } else {
+        gfx_draw_rect(w->x, w->y, w->w, w->h,
+                      focused ? GFX_RGB(90, 90, 110) : ui_theme.win_border);
+    }
 
     /* macOS traffic light buttons */
     int btn_y = w->y + WM_TITLEBAR_H / 2;
     int r = WM_BTN_R;
 
     int close_cx = w->x + 8 + r;
-    gfx_fill_circle(close_cx, btn_y, r, focused ? 0xFC615D : GFX_RGB(70, 65, 75));
+    gfx_fill_circle_aa(close_cx, btn_y, r, focused ? 0xFC615D : GFX_RGB(70, 65, 75));
 
     int min_cx = close_cx + 20;
-    gfx_fill_circle(min_cx, btn_y, r, focused ? 0xFDBB2D : GFX_RGB(70, 65, 75));
+    gfx_fill_circle_aa(min_cx, btn_y, r, focused ? 0xFDBB2D : GFX_RGB(70, 65, 75));
 
     int max_cx = min_cx + 20;
-    gfx_fill_circle(max_cx, btn_y, r, focused ? 0x27CA40 : GFX_RGB(70, 65, 75));
+    gfx_fill_circle_aa(max_cx, btn_y, r, focused ? 0x27CA40 : GFX_RGB(70, 65, 75));
 
     /* Title text (centered) */
-    int tw = (int)strlen(w->title) * FONT_W;
-    int tx = w->x + (w->w - tw) / 2;
-    int title_area_left = max_cx + r + 8;
-    if (tx < title_area_left) tx = title_area_left;
-    int ty = w->y + (WM_TITLEBAR_H - FONT_H) / 2;
     uint32_t tc = focused ? ui_theme.win_header_text : ui_theme.text_sub;
-    gfx_draw_string(tx, ty, w->title, tc, hdr);
+    if (ui_theme.font_size == 2) {
+        /* Vector font rendering */
+        int vec_size = WM_TITLEBAR_H - 8;
+        int tw = gfx_string_vec_width(w->title, vec_size);
+        int tx = w->x + (w->w - tw) / 2;
+        int title_area_left = max_cx + r + 8;
+        if (tx < title_area_left) tx = title_area_left;
+        int ty = w->y + (WM_TITLEBAR_H - vec_size) / 2;
+        gfx_draw_string_vec(tx, ty, w->title, tc, vec_size);
+    } else {
+        int tw = (int)strlen(w->title) * FONT_W;
+        int tx = w->x + (w->w - tw) / 2;
+        int title_area_left = max_cx + r + 8;
+        if (tx < title_area_left) tx = title_area_left;
+        int ty = w->y + (WM_TITLEBAR_H - FONT_H) / 2;
+        gfx_draw_string_nobg(tx, ty, w->title, tc);
+    }
+
+    w->dirty = 0;
 }
 
 void wm_composite(void) {
     composite_needed = 0;
     uint32_t *bb = gfx_backbuffer();
     uint32_t total = gfx_height() * gfx_pitch();
+
+    /* Check if any window is dirty */
+    int any_dirty = 0;
+    for (int i = 0; i < win_count; i++)
+        if (windows[i].dirty) { any_dirty = 1; break; }
 
     /* Build or restore cached background (gradient + menubar) */
     if (!bg_cache_valid && bg_cache) {
@@ -453,12 +740,30 @@ void wm_composite(void) {
             bg_draw_fn();
         memcpy(bg_cache, bb, total);
         bg_cache_valid = 1;
+        full_composite_needed = 1;
     } else if (bg_cache) {
         memcpy(bb, bg_cache, total);
     } else {
         gfx_clear(0);
         if (bg_draw_fn)
             bg_draw_fn();
+        full_composite_needed = 1;
+    }
+
+    /* Collect dirty rects from windows */
+    dirty_rect_count = 0;
+    if (!full_composite_needed && any_dirty) {
+        for (int i = 0; i < win_count; i++) {
+            if (windows[i].dirty && (windows[i].flags & WM_WIN_VISIBLE)) {
+                /* Include shadow spread in dirty rect */
+                add_dirty_rect(
+                    windows[i].x - SHADOW_PAD + WM_SHADOW_OX,
+                    windows[i].y - SHADOW_PAD + WM_SHADOW_OY,
+                    windows[i].w + 2 * SHADOW_PAD,
+                    windows[i].h + 2 * SHADOW_PAD
+                );
+            }
+        }
     }
 
     /* Draw windows back-to-front */
@@ -491,8 +796,14 @@ void wm_composite(void) {
         gfx_draw_string(fx + 6, 5, fps_buf, GFX_RGB(0, 255, 80), GFX_RGB(0, 0, 0));
     }
 
-    /* Flip to framebuffer */
-    gfx_flip();
+    /* Flip to framebuffer — use dirty rects when possible */
+    if (!full_composite_needed && dirty_rect_count > 0) {
+        gfx_flip_rects(dirty_rects, dirty_rect_count);
+    } else {
+        gfx_flip();
+    }
+    full_composite_needed = 0;
+    dirty_rect_count = 0;
 
     /* Mouse cursor on top (directly to framebuffer) */
     gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());

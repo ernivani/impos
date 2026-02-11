@@ -1,4 +1,5 @@
 #include <kernel/gfx.h>
+#include <kernel/gfx_ttf.h>
 #include <kernel/multiboot.h>
 #include <kernel/idt.h>
 #include <kernel/mouse.h>
@@ -88,6 +89,8 @@ int gfx_init(multiboot_info_t* mbi) {
 
     gfx_active = 1;
     gfx_init_font_sdf();
+    gfx_init_font_large();
+    gfx_builtin_font_init();
     return 1;
 }
 
@@ -375,10 +378,10 @@ void gfx_init_font_sdf(void) {
                 int inside = font_texel((unsigned char)ch, x, y);
                 int min_d2 = 9999;
 
-                /* Search ±5 texels for nearest opposite-type texel */
-                for (int dy = -5; dy <= 5; dy++) {
+                /* Search ±8 texels for nearest opposite-type texel */
+                for (int dy = -8; dy <= 8; dy++) {
                     int ny = y + dy;
-                    for (int dx = -5; dx <= 5; dx++) {
+                    for (int dx = -8; dx <= 8; dx++) {
                         int nx = x + dx;
                         int other;
                         if (nx < 0 || nx >= FONT_W || ny < 0 || ny >= FONT_H)
@@ -470,6 +473,60 @@ void gfx_surf_draw_string_smooth(gfx_surface_t *s, int px, int py, const char *s
         px += FONT_W * sc;
         str++;
     }
+}
+
+/* ═══ Large font (16x32) — 2x integer scale of 8x16 ══════════ */
+
+static uint16_t font16x32[256][FONT_LARGE_H];
+
+void gfx_init_font_large(void) {
+    /* Generate 16x32 by doubling each row and column of 8x16 */
+    for (int ch = 0; ch < 256; ch++) {
+        const uint8_t *src = font8x16[ch];
+        for (int row = 0; row < FONT_H; row++) {
+            uint8_t bits = src[row];
+            uint16_t wide = 0;
+            for (int col = 0; col < FONT_W; col++) {
+                if (bits & (0x80 >> col)) {
+                    wide |= (3 << ((FONT_W - 1 - col) * 2));  /* two bits per source bit */
+                }
+            }
+            font16x32[ch][row * 2]     = wide;
+            font16x32[ch][row * 2 + 1] = wide;
+        }
+    }
+}
+
+void gfx_surf_draw_char_large(gfx_surface_t *s, int px, int py, char c, uint32_t fg, uint32_t bg) {
+    unsigned char uc = (unsigned char)c;
+    for (int row = 0; row < FONT_LARGE_H; row++) {
+        int yy = py + row;
+        if (yy < 0 || yy >= s->h) continue;
+        uint16_t bits = font16x32[uc][row];
+        for (int col = 0; col < FONT_LARGE_W; col++) {
+            int xx = px + col;
+            if (xx < 0 || xx >= s->w) continue;
+            s->buf[yy * s->pitch + xx] = (bits & (0x8000 >> col)) ? fg : bg;
+        }
+    }
+}
+
+void gfx_surf_draw_string_large(gfx_surface_t *s, int px, int py, const char *str, uint32_t fg, uint32_t bg) {
+    while (*str) {
+        gfx_surf_draw_char_large(s, px, py, *str, fg, bg);
+        px += FONT_LARGE_W;
+        str++;
+    }
+}
+
+void gfx_draw_char_large(int px, int py, char c, uint32_t fg, uint32_t bg) {
+    gfx_surface_t s = gfx_get_surface();
+    gfx_surf_draw_char_large(&s, px, py, c, fg, bg);
+}
+
+void gfx_draw_string_large(int px, int py, const char *str, uint32_t fg, uint32_t bg) {
+    gfx_surface_t s = gfx_get_surface();
+    gfx_surf_draw_string_large(&s, px, py, str, fg, bg);
 }
 
 /* ═══ Backbuffer convenience wrappers (geometry) ══════════════ */
@@ -595,6 +652,96 @@ void gfx_buf_draw_char(uint32_t *buf, int bw, int bh, int px, int py, char c, ui
 void gfx_buf_draw_string(uint32_t *buf, int bw, int bh, int px, int py, const char *str, uint32_t fg, uint32_t bg) {
     gfx_surface_t s = { buf, bw, bh, bw };
     gfx_surf_draw_string(&s, px, py, str, fg, bg);
+}
+
+/* ═══ Box blur (operates on alpha channel of ARGB buffer) ═════ */
+
+void gfx_box_blur(uint32_t *buf, int w, int h, int radius) {
+    if (radius < 1) radius = 1;
+    if (radius > 32) radius = 32;
+    int diam = radius * 2 + 1;
+
+    /* Allocate a single temp row buffer for the horizontal pass */
+    uint8_t *tmp = (uint8_t *)malloc((size_t)w > (size_t)h ? (size_t)w : (size_t)h);
+    if (!tmp) return;
+
+    /* Horizontal pass: blur alpha channel row by row */
+    for (int y = 0; y < h; y++) {
+        uint32_t *row = buf + y * w;
+        /* Running sum */
+        int sum = 0;
+        for (int x = -radius; x <= radius; x++) {
+            int cx = x < 0 ? 0 : (x >= w ? w - 1 : x);
+            sum += (row[cx] >> 24) & 0xFF;
+        }
+        tmp[0] = (uint8_t)(sum / diam);
+        for (int x = 1; x < w; x++) {
+            int add = x + radius;
+            int rem = x - radius - 1;
+            if (add >= w) add = w - 1;
+            if (rem < 0) rem = 0;
+            sum += ((row[add] >> 24) & 0xFF) - ((row[rem] >> 24) & 0xFF);
+            tmp[x] = (uint8_t)(sum / diam);
+        }
+        for (int x = 0; x < w; x++)
+            row[x] = ((uint32_t)tmp[x] << 24) | (row[x] & 0x00FFFFFF);
+    }
+
+    /* Vertical pass: blur alpha channel column by column */
+    for (int x = 0; x < w; x++) {
+        int sum = 0;
+        for (int y = -radius; y <= radius; y++) {
+            int cy = y < 0 ? 0 : (y >= h ? h - 1 : y);
+            sum += (buf[cy * w + x] >> 24) & 0xFF;
+        }
+        tmp[0] = (uint8_t)(sum / diam);
+        for (int y = 1; y < h; y++) {
+            int add = y + radius;
+            int rem = y - radius - 1;
+            if (add >= h) add = h - 1;
+            if (rem < 0) rem = 0;
+            sum += ((buf[add * w + x] >> 24) & 0xFF) - ((buf[rem * w + x] >> 24) & 0xFF);
+            tmp[y] = (uint8_t)(sum / diam);
+        }
+        for (int y = 0; y < h; y++)
+            buf[y * w + x] = ((uint32_t)tmp[y] << 24) | (buf[y * w + x] & 0x00FFFFFF);
+    }
+
+    free(tmp);
+}
+
+/* ═══ Alpha buffer blit (for per-window opacity) ══════════════ */
+
+void gfx_blit_buffer_alpha(int dst_x, int dst_y, uint32_t *src, int sw, int sh, uint8_t alpha) {
+    if (!src || alpha == 0) return;
+    if (alpha == 255) {
+        gfx_blit_buffer(dst_x, dst_y, src, sw, sh);
+        return;
+    }
+    uint32_t pitch4 = fb_pitch / 4;
+    int sx0 = 0, sy0 = 0;
+    int dx = dst_x, dy = dst_y;
+    int w = sw, h = sh;
+    if (dx < 0) { sx0 = -dx; w += dx; dx = 0; }
+    if (dy < 0) { sy0 = -dy; h += dy; dy = 0; }
+    if (dx + w > (int)fb_width) w = (int)fb_width - dx;
+    if (dy + h > (int)fb_height) h = (int)fb_height - dy;
+    if (w <= 0 || h <= 0) return;
+    uint32_t inv_a = 255 - alpha;
+    for (int row = 0; row < h; row++) {
+        uint32_t *d = backbuf + (dy + row) * pitch4 + dx;
+        uint32_t *s = src + (sy0 + row) * sw + sx0;
+        for (int col = 0; col < w; col++) {
+            uint32_t sp = s[col];
+            uint32_t dp = d[col];
+            uint32_t sr = (sp >> 16) & 0xFF, sg = (sp >> 8) & 0xFF, sb = sp & 0xFF;
+            uint32_t dr = (dp >> 16) & 0xFF, dg = (dp >> 8) & 0xFF, db = dp & 0xFF;
+            uint32_t or_ = (sr * alpha + dr * inv_a) / 255;
+            uint32_t og = (sg * alpha + dg * inv_a) / 255;
+            uint32_t ob = (sb * alpha + db * inv_a) / 255;
+            d[col] = (or_ << 16) | (og << 8) | ob;
+        }
+    }
 }
 
 void gfx_blit_buffer(int dst_x, int dst_y, uint32_t *src, int sw, int sh) {
@@ -917,6 +1064,27 @@ void gfx_flip_rect(int x, int y, int w, int h) {
     }
 
     /* Re-save pixels under cursor from fresh framebuffer content and redraw */
+    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+}
+
+void gfx_flip_rects(gfx_rect_t *rects, int count) {
+    if (!have_backbuffer || !rects || count <= 0) return;
+    gfx_restore_mouse_cursor();
+    uint32_t pitch4 = fb_pitch / 4;
+    for (int i = 0; i < count; i++) {
+        int x = rects[i].x, y = rects[i].y;
+        int w = rects[i].w, h = rects[i].h;
+        if (x < 0) { w += x; x = 0; }
+        if (y < 0) { h += y; y = 0; }
+        if (x + w > (int)fb_width) w = (int)fb_width - x;
+        if (y + h > (int)fb_height) h = (int)fb_height - y;
+        if (w <= 0 || h <= 0) continue;
+        for (int row = y; row < y + h; row++) {
+            memcpy(&framebuffer[row * pitch4 + x],
+                   &backbuf[row * pitch4 + x],
+                   (size_t)w * 4);
+        }
+    }
     gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
 }
 
