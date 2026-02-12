@@ -398,10 +398,13 @@ static win32_thread_ctx_t thread_ctxs[32];
 static int thread_ctx_count = 0;
 
 static void win32_thread_wrapper(void) {
-    /* Find our context — it was stored before task_create_thread */
+    /* Find our context — search newest first to avoid stale entries
+     * from reused handle slots */
     int tid = task_get_current();
     win32_thread_ctx_t *ctx = NULL;
-    for (int i = 0; i < thread_ctx_count; i++) {
+    for (int i = thread_ctx_count - 1; i >= 0; i--) {
+        if (thread_ctxs[i].handle == INVALID_HANDLE_VALUE)
+            continue;  /* already consumed */
         win32_handle_t *wh = get_handle(thread_ctxs[i].handle);
         if (wh && wh->tid == tid) {
             ctx = &thread_ctxs[i];
@@ -414,13 +417,14 @@ static void win32_thread_wrapper(void) {
         exit_code = ctx->start(ctx->param);
     }
 
-    /* Mark thread handle as completed */
+    /* Mark thread handle as completed and clear the ctx slot */
     if (ctx) {
         win32_handle_t *wh = get_handle(ctx->handle);
         if (wh) {
             wh->thread_exit = exit_code;
             wh->thread_done = 1;
         }
+        ctx->handle = INVALID_HANDLE_VALUE;  /* mark slot as consumed */
     }
 
     task_exit();
