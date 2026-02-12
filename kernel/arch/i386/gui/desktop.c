@@ -1947,7 +1947,7 @@ int desktop_run(void) {
     if (desktop_first_show) {
         desktop_first_show = 0;
         gfx_crossfade(8, 30);
-        beep_startup();
+
     } else {
         gfx_flip();
     }
