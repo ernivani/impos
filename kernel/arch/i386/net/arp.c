@@ -1,6 +1,7 @@
 #include <kernel/arp.h>
 #include <kernel/net.h>
 #include <kernel/endian.h>
+#include <kernel/io.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -18,18 +19,47 @@ void arp_initialize(void) {
 }
 
 int arp_resolve(const uint8_t ip[4], uint8_t mac[6]) {
+    DBG("arp: resolve %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
     /* Check cache first */
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].valid &&
             memcmp(arp_cache[i].ip, ip, 4) == 0 &&
             (current_time - arp_cache[i].timestamp) < ARP_TIMEOUT) {
             memcpy(mac, arp_cache[i].mac, 6);
+            DBG("arp: cache hit for %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
             return 0;
         }
     }
-    
-    /* Not in cache, send ARP request */
-    return arp_send_request(ip);
+
+    /* Not in cache — send ARP request and poll for reply */
+    for (int attempt = 0; attempt < 3; attempt++) {
+        DBG("arp: cache miss, sending request (attempt %d)", attempt + 1);
+        if (arp_send_request(ip) != 0) {
+            DBG("arp: send_request failed");
+            return -1;
+        }
+
+        /* Poll for reply: ~1 second per attempt */
+        for (int poll = 0; poll < 200; poll++) {
+            /* Busy-wait ~5ms */
+            for (volatile int d = 0; d < 50000; d++);
+
+            /* Process incoming packets (may include ARP reply) */
+            net_process_packets();
+
+            /* Check cache again */
+            for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+                if (arp_cache[i].valid && memcmp(arp_cache[i].ip, ip, 4) == 0) {
+                    memcpy(mac, arp_cache[i].mac, 6);
+                    DBG("arp: resolved %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+                    return 0;
+                }
+            }
+        }
+    }
+
+    DBG("arp: failed to resolve %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+    return -1;
 }
 
 int arp_send_request(const uint8_t target_ip[4]) {

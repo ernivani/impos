@@ -4655,9 +4655,27 @@ static void cmd_winget(int argc, char* argv[]) {
 
         printf("Downloading %s from %s...\n", filename, host);
 
-        uint8_t *body = NULL;
-        size_t body_len = 0;
-        int ret = https_get(host, 443, path, &body, &body_len);
+        /* Run HTTPS in background thread so UI stays responsive */
+        static https_async_t dl_req;
+        strncpy(dl_req.host, host, 255);
+        dl_req.host[255] = '\0';
+        dl_req.port = 443;
+        strncpy(dl_req.path, path, 255);
+        dl_req.path[255] = '\0';
+
+        if (https_get_async(&dl_req) < 0) {
+            printf("winget: failed to start download thread\n");
+            return;
+        }
+
+        while (!dl_req.done) {
+            keyboard_run_idle();   /* keep WM/UI alive */
+            task_yield();
+        }
+
+        uint8_t *body = dl_req.body;
+        size_t body_len = dl_req.body_len;
+        int ret = dl_req.result;
         if (ret < 0 || !body || body_len == 0) {
             printf("winget: download failed\n");
             if (body) free(body);

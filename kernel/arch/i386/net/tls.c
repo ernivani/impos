@@ -5,6 +5,7 @@
 #include <kernel/dns.h>
 #include <kernel/net.h>
 #include <kernel/endian.h>
+#include <kernel/task.h>
 #include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
@@ -129,6 +130,10 @@ static int tls_send_record(tls_conn_t *conn, uint8_t type,
     hdr[0] = type;
     put_be16(hdr + 1, TLS_VERSION_1_2);
     put_be16(hdr + 3, (uint16_t)record_len);
+
+    DBG("tls: enc record type=%d plain_len=%u pad=%u cipher_len=%u rec_len=%u seq=%u",
+        type, (unsigned)len, (unsigned)pad_needed, (unsigned)total,
+        (unsigned)record_len, (unsigned)conn->client_seq);
 
     int ret = 0;
     if (socket_send(conn->sock_fd, hdr, 5) < 0) ret = -1;
@@ -507,6 +512,15 @@ static int tls_send_client_finish(tls_conn_t *conn) {
     aes128_init(&conn->server_aes, conn->server_write_key);
 
     DBG("tls: keys derived");
+    DBG("tls: master[0..3]=%x %x %x %x",
+        conn->master_secret[0], conn->master_secret[1],
+        conn->master_secret[2], conn->master_secret[3]);
+    DBG("tls: client_key[0..3]=%x %x %x %x",
+        conn->client_write_key[0], conn->client_write_key[1],
+        conn->client_write_key[2], conn->client_write_key[3]);
+    DBG("tls: client_mac[0..3]=%x %x %x %x",
+        conn->client_write_mac_key[0], conn->client_write_mac_key[1],
+        conn->client_write_mac_key[2], conn->client_write_mac_key[3]);
 
     /* Send ChangeCipherSpec */
     uint8_t ccs = 1;
@@ -526,6 +540,10 @@ static int tls_send_client_finish(tls_conn_t *conn) {
     tls_prf(conn->master_secret, 48, "client finished",
             hs_digest, SHA256_DIGEST_SIZE, verify_data, 12);
 
+    DBG("tls: verify[0..5]=%x %x %x %x %x %x",
+        verify_data[0], verify_data[1], verify_data[2],
+        verify_data[3], verify_data[4], verify_data[5]);
+
     /* Send Finished (this goes encrypted now) */
     if (tls_send_handshake(conn, TLS_HS_FINISHED, verify_data, 12) < 0)
         return -1;
@@ -543,6 +561,10 @@ static int tls_recv_server_finish(tls_conn_t *conn) {
     /* Expect ChangeCipherSpec */
     if (tls_recv_record(conn, &type, buf, sizeof(buf), &len) < 0)
         return -1;
+    if (type == TLS_ALERT && len >= 2) {
+        DBG("tls: server alert: level=%d desc=%d", buf[0], buf[1]);
+        return -1;
+    }
     if (type != TLS_CHANGE_CIPHER_SPEC) {
         DBG("tls: expected CCS, got type %d", type);
         return -1;
@@ -838,4 +860,30 @@ int https_get(const char *host, uint16_t port, const char *path,
     *out_body = trimmed ? trimmed : resp;
     *out_len = body_len;
     return (int)body_len;
+}
+
+/* ── Async HTTPS GET (runs in a preemptive thread) ─────────── */
+
+static https_async_t *_async_req;   /* pointer for thread entry */
+
+static void _https_thread_entry(void) {
+    https_async_t *req = _async_req;
+    req->result = https_get(req->host, req->port, req->path,
+                            &req->body, &req->body_len);
+    req->done = 1;
+    task_exit();
+}
+
+int https_get_async(https_async_t *req) {
+    req->done = 0;
+    req->body = NULL;
+    req->body_len = 0;
+    req->result = 0;
+
+    _async_req = req;
+    int tid = task_create_thread("https", _https_thread_entry, 1);
+    if (tid < 0)
+        return -1;
+    req->tid = tid;
+    return 0;
 }

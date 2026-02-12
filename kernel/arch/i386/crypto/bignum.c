@@ -138,7 +138,7 @@ void bn_mod(bignum_t *r, const bignum_t *a, const bignum_t *m) {
     memcpy(r, &tmp, sizeof(bignum_t));
 }
 
-/* r = (a * b) mod m — using Montgomery-like approach with modular addition */
+/* r = (a * b) mod m — doubling-and-add with proper carry tracking */
 void bn_mulmod(bignum_t *r, const bignum_t *a, const bignum_t *b, const bignum_t *m) {
     bignum_t result;
     bn_zero(&result);
@@ -146,19 +146,33 @@ void bn_mulmod(bignum_t *r, const bignum_t *a, const bignum_t *b, const bignum_t
     int nbits = bn_num_bits(b);
 
     for (int i = nbits - 1; i >= 0; i--) {
-        /* result = result * 2 mod m */
-        bn_shl1(&result);
-        if (bn_cmp(&result, m) >= 0)
+        /* result = result * 2 mod m — inline shift with carry */
+        uint32_t shl_carry = 0;
+        for (int j = 0; j < BN_WORDS; j++) {
+            uint32_t nc = result.d[j] >> 31;
+            result.d[j] = (result.d[j] << 1) | shl_carry;
+            shl_carry = nc;
+        }
+        /* If carry overflowed or result >= m, subtract m.
+         * When carry is set, actual value = result + 2^2048 > m,
+         * and bn_sub produces correct result via unsigned wrapping. */
+        if (shl_carry || bn_cmp(&result, m) >= 0)
             bn_sub(&result, &result, m);
 
         /* if bit i of b is set: result = (result + a) mod m */
         if (bn_bit(b, i)) {
-            bn_add(&result, &result, a);
-            if (bn_cmp(&result, m) >= 0)
+            uint64_t add_carry = 0;
+            for (int j = 0; j < BN_WORDS; j++) {
+                uint64_t sum = (uint64_t)result.d[j] + a->d[j] + add_carry;
+                result.d[j] = (uint32_t)sum;
+                add_carry = sum >> 32;
+            }
+            if (add_carry || bn_cmp(&result, m) >= 0)
                 bn_sub(&result, &result, m);
         }
     }
 
+    bn_fix_top(&result);
     memcpy(r, &result, sizeof(bignum_t));
 }
 
