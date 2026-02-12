@@ -58,13 +58,14 @@ registers_t* schedule(registers_t* regs) {
         return regs;
 
     int current = task_get_current();
-    task_info_t *cur = task_get(current);
+    task_info_t *cur = task_get_raw(current);  /* use raw: task may be zombie/inactive */
 
     /* Determine if current task is a preemptive thread (has own stack) */
     int cur_is_preemptive = (cur && (cur->stack_base != NULL || cur->is_user));
 
     /* Clean up zombie threads (free their stacks, page dirs, and pipes safely) */
     for (int i = 4; i < TASK_MAX; i++) {
+        if (i == current) continue;  /* never free the stack we're running on */
         task_info_t *t = task_get_raw(i);
         if (t && t->state == TASK_STATE_ZOMBIE) {
             pipe_cleanup_task(i);

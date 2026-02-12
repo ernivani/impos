@@ -316,7 +316,6 @@ void task_exit(void) {
 
     int tid = current_task;
     if (tid >= 0 && tid < TASK_MAX) {
-        /* Mark as zombie — scheduler will free the stack after switching away */
         tasks[tid].state = TASK_STATE_ZOMBIE;
         tasks[tid].active = 0;
     }
