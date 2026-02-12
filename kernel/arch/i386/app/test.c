@@ -1807,6 +1807,182 @@ static void test_unicode_wide(void) {
         "resolve: SHGetFolderPathA found");
 }
 
+/* ---- Security & Crypto Tests ---- */
+
+static void test_security_crypto(void) {
+    printf("== Security & Crypto Tests ==\n");
+
+    /* ── CryptAPI (advapi32) ──────────────────────────────────── */
+
+    typedef BOOL (WINAPI *pfn_CryptAcquireContextA)(
+        HANDLE *, LPCSTR, LPCSTR, DWORD, DWORD);
+    typedef BOOL (WINAPI *pfn_CryptAcquireContextW)(
+        HANDLE *, const WCHAR *, const WCHAR *, DWORD, DWORD);
+    typedef BOOL (WINAPI *pfn_CryptReleaseContext)(HANDLE, DWORD);
+    typedef BOOL (WINAPI *pfn_CryptGenRandom)(HANDLE, DWORD, BYTE *);
+
+    pfn_CryptAcquireContextA pCryptAcquireContextA =
+        (pfn_CryptAcquireContextA)win32_resolve_import("advapi32.dll", "CryptAcquireContextA");
+    pfn_CryptAcquireContextW pCryptAcquireContextW =
+        (pfn_CryptAcquireContextW)win32_resolve_import("advapi32.dll", "CryptAcquireContextW");
+    pfn_CryptReleaseContext pCryptReleaseContext =
+        (pfn_CryptReleaseContext)win32_resolve_import("advapi32.dll", "CryptReleaseContext");
+    pfn_CryptGenRandom pCryptGenRandom =
+        (pfn_CryptGenRandom)win32_resolve_import("advapi32.dll", "CryptGenRandom");
+
+    /* Test 1: CryptAcquireContextA resolves + returns TRUE */
+    TEST_ASSERT(pCryptAcquireContextA != NULL, "crypt: CryptAcquireContextA resolved");
+    HANDLE hProv = 0;
+    if (pCryptAcquireContextA) {
+        BOOL ok = pCryptAcquireContextA(&hProv, NULL, NULL, 0, 0);
+        TEST_ASSERT(ok == TRUE, "crypt: CryptAcquireContextA returns TRUE");
+        TEST_ASSERT(hProv != 0, "crypt: hProv is non-zero");
+    }
+
+    /* Test 2: CryptGenRandom fills buffer with non-zero bytes */
+    TEST_ASSERT(pCryptGenRandom != NULL, "crypt: CryptGenRandom resolved");
+    if (pCryptGenRandom && hProv) {
+        BYTE buf[32];
+        memset(buf, 0, sizeof(buf));
+        BOOL ok = pCryptGenRandom(hProv, sizeof(buf), buf);
+        TEST_ASSERT(ok == TRUE, "crypt: CryptGenRandom returns TRUE");
+        int has_nonzero = 0;
+        for (int i = 0; i < 32; i++) {
+            if (buf[i] != 0) { has_nonzero = 1; break; }
+        }
+        TEST_ASSERT(has_nonzero, "crypt: CryptGenRandom produces non-zero bytes");
+    }
+
+    /* Test 3: CryptReleaseContext returns TRUE */
+    TEST_ASSERT(pCryptReleaseContext != NULL, "crypt: CryptReleaseContext resolved");
+    if (pCryptReleaseContext) {
+        BOOL ok = pCryptReleaseContext(hProv, 0);
+        TEST_ASSERT(ok == TRUE, "crypt: CryptReleaseContext returns TRUE");
+    }
+
+    /* ── BCrypt ───────────────────────────────────────────────── */
+
+    typedef LONG (WINAPI *pfn_BCryptOpenAlgorithmProvider)(
+        HANDLE *, const WCHAR *, const WCHAR *, DWORD);
+    typedef LONG (WINAPI *pfn_BCryptCloseAlgorithmProvider)(HANDLE, DWORD);
+    typedef LONG (WINAPI *pfn_BCryptCreateHash)(
+        HANDLE, HANDLE *, BYTE *, DWORD, BYTE *, DWORD, DWORD);
+    typedef LONG (WINAPI *pfn_BCryptHashData)(HANDLE, const BYTE *, DWORD, DWORD);
+    typedef LONG (WINAPI *pfn_BCryptFinishHash)(HANDLE, BYTE *, DWORD, DWORD);
+    typedef LONG (WINAPI *pfn_BCryptDestroyHash)(HANDLE);
+    typedef LONG (WINAPI *pfn_BCryptGenRandom)(HANDLE, BYTE *, DWORD, DWORD);
+
+    pfn_BCryptOpenAlgorithmProvider pBCryptOpen =
+        (pfn_BCryptOpenAlgorithmProvider)win32_resolve_import("bcrypt.dll", "BCryptOpenAlgorithmProvider");
+    pfn_BCryptCloseAlgorithmProvider pBCryptClose =
+        (pfn_BCryptCloseAlgorithmProvider)win32_resolve_import("bcrypt.dll", "BCryptCloseAlgorithmProvider");
+    pfn_BCryptCreateHash pBCryptCreateHash =
+        (pfn_BCryptCreateHash)win32_resolve_import("bcrypt.dll", "BCryptCreateHash");
+    pfn_BCryptHashData pBCryptHashData =
+        (pfn_BCryptHashData)win32_resolve_import("bcrypt.dll", "BCryptHashData");
+    pfn_BCryptFinishHash pBCryptFinishHash =
+        (pfn_BCryptFinishHash)win32_resolve_import("bcrypt.dll", "BCryptFinishHash");
+    pfn_BCryptDestroyHash pBCryptDestroyHash =
+        (pfn_BCryptDestroyHash)win32_resolve_import("bcrypt.dll", "BCryptDestroyHash");
+    pfn_BCryptGenRandom pBCryptGenRandom =
+        (pfn_BCryptGenRandom)win32_resolve_import("bcrypt.dll", "BCryptGenRandom");
+
+    TEST_ASSERT(pBCryptOpen != NULL, "bcrypt: BCryptOpenAlgorithmProvider resolved");
+    TEST_ASSERT(pBCryptClose != NULL, "bcrypt: BCryptCloseAlgorithmProvider resolved");
+    TEST_ASSERT(pBCryptCreateHash != NULL, "bcrypt: BCryptCreateHash resolved");
+    TEST_ASSERT(pBCryptHashData != NULL, "bcrypt: BCryptHashData resolved");
+    TEST_ASSERT(pBCryptFinishHash != NULL, "bcrypt: BCryptFinishHash resolved");
+    TEST_ASSERT(pBCryptDestroyHash != NULL, "bcrypt: BCryptDestroyHash resolved");
+    TEST_ASSERT(pBCryptGenRandom != NULL, "bcrypt: BCryptGenRandom resolved");
+
+    if (!pBCryptOpen || !pBCryptClose || !pBCryptCreateHash ||
+        !pBCryptHashData || !pBCryptFinishHash || !pBCryptDestroyHash)
+        return;
+
+    /* Test 4: BCryptOpenAlgorithmProvider("SHA256") → STATUS_SUCCESS */
+    HANDLE hAlg = 0;
+    WCHAR sha256_id[] = {'S','H','A','2','5','6',0};
+    LONG status = pBCryptOpen(&hAlg, sha256_id, NULL, 0);
+    TEST_ASSERT(status == 0, "bcrypt: BCryptOpenAlgorithmProvider(SHA256) succeeds");
+    TEST_ASSERT(hAlg != 0, "bcrypt: algorithm handle non-zero");
+
+    /* Test 5: BCryptCreateHash + BCryptHashData("abc") + BCryptFinishHash */
+    if (hAlg) {
+        HANDLE hHash = 0;
+        status = pBCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0);
+        TEST_ASSERT(status == 0, "bcrypt: BCryptCreateHash succeeds");
+        TEST_ASSERT(hHash != 0, "bcrypt: hash handle non-zero");
+
+        if (hHash) {
+            const BYTE abc[] = {'a', 'b', 'c'};
+            status = pBCryptHashData(hHash, abc, 3, 0);
+            TEST_ASSERT(status == 0, "bcrypt: BCryptHashData succeeds");
+
+            BYTE digest[32];
+            status = pBCryptFinishHash(hHash, digest, 32, 0);
+            TEST_ASSERT(status == 0, "bcrypt: BCryptFinishHash succeeds");
+
+            /* SHA-256("abc") = ba7816bf 8f01cfea 414140de 5dae2223
+             *                  b00361a3 96177a9c b410ff61 f20015ad */
+            TEST_ASSERT(digest[0] == 0xba && digest[1] == 0x78 &&
+                        digest[2] == 0x16 && digest[3] == 0xbf,
+                        "bcrypt: SHA-256(abc) first 4 bytes match");
+            TEST_ASSERT(digest[28] == 0xf2 && digest[29] == 0x00 &&
+                        digest[30] == 0x15 && digest[31] == 0xad,
+                        "bcrypt: SHA-256(abc) last 4 bytes match");
+
+            pBCryptDestroyHash(hHash);
+        }
+    }
+
+    /* Test 6: BCryptGenRandom fills buffer */
+    if (pBCryptGenRandom) {
+        BYTE rng_buf[16];
+        memset(rng_buf, 0, sizeof(rng_buf));
+        status = pBCryptGenRandom(hAlg, rng_buf, sizeof(rng_buf), 0);
+        TEST_ASSERT(status == 0, "bcrypt: BCryptGenRandom succeeds");
+        int has_nonzero = 0;
+        for (int i = 0; i < 16; i++) {
+            if (rng_buf[i] != 0) { has_nonzero = 1; break; }
+        }
+        TEST_ASSERT(has_nonzero, "bcrypt: BCryptGenRandom produces non-zero bytes");
+    }
+
+    /* Test 7: BCryptCloseAlgorithmProvider → STATUS_SUCCESS */
+    if (hAlg) {
+        status = pBCryptClose(hAlg, 0);
+        TEST_ASSERT(status == 0, "bcrypt: BCryptCloseAlgorithmProvider succeeds");
+    }
+
+    /* ── Crypt32 (cert store) ─────────────────────────────────── */
+
+    typedef HANDLE (WINAPI *pfn_CertOpenSystemStoreA)(HANDLE, const char *);
+    typedef BOOL   (WINAPI *pfn_CertCloseStore)(HANDLE, DWORD);
+
+    pfn_CertOpenSystemStoreA pCertOpenSystemStoreA =
+        (pfn_CertOpenSystemStoreA)win32_resolve_import("crypt32.dll", "CertOpenSystemStoreA");
+    pfn_CertCloseStore pCertCloseStore =
+        (pfn_CertCloseStore)win32_resolve_import("crypt32.dll", "CertCloseStore");
+
+    /* Test 8: CertOpenSystemStoreA returns valid handle */
+    TEST_ASSERT(pCertOpenSystemStoreA != NULL, "crypt32: CertOpenSystemStoreA resolved");
+    HANDLE hStore = 0;
+    if (pCertOpenSystemStoreA) {
+        hStore = pCertOpenSystemStoreA(0, "ROOT");
+        TEST_ASSERT(hStore != 0, "crypt32: CertOpenSystemStoreA returns non-zero");
+    }
+
+    /* Test 9: CertCloseStore returns TRUE */
+    TEST_ASSERT(pCertCloseStore != NULL, "crypt32: CertCloseStore resolved");
+    if (pCertCloseStore && hStore) {
+        BOOL ok = pCertCloseStore(hStore, 0);
+        TEST_ASSERT(ok == TRUE, "crypt32: CertCloseStore returns TRUE");
+    }
+
+    /* Test 10: W-functions resolve */
+    TEST_ASSERT(pCryptAcquireContextW != NULL, "crypt: CryptAcquireContextW resolved");
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -1837,6 +2013,7 @@ void test_run_all(void) {
     test_gdi_advanced();
     test_com_ole();
     test_unicode_wide();
+    test_security_crypto();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

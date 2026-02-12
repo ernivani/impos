@@ -133,12 +133,12 @@ _Chromium is a Unicode application. Most real calls use W (wide) variants._
 
 ### Phase 11: Security & Crypto APIs
 _Chromium verifies TLS certificates and uses Windows crypto for key storage._
-- [ ] CryptAcquireContextA / CryptReleaseContext
-- [ ] CryptGenRandom — map to prng_random()
-- [ ] CertOpenStore / CertFindCertificateInStore / CertFreeCertificateContext
-- [ ] BCryptOpenAlgorithmProvider / BCryptGenRandom (modern crypto API)
-- [ ] advapi32.dll + crypt32.dll + bcrypt.dll shim tables
-- [ ] Embedded root CA certificates for TLS verification
+- [x] CryptAcquireContextA / CryptReleaseContext
+- [x] CryptGenRandom — map to prng_random()
+- [x] CertOpenStore / CertFindCertificateInStore / CertFreeCertificateContext
+- [x] BCryptOpenAlgorithmProvider / BCryptGenRandom (modern crypto API)
+- [x] advapi32.dll + crypt32.dll + bcrypt.dll shim tables
+- [x] Embedded root CA certificates for TLS verification
 
 ### Phase 12: Structured Exception Handling
 _Chromium uses SEH for crash handling (crashpad). C++ exceptions also need this._

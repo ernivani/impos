@@ -794,7 +794,8 @@ static const win32_dll_shim_t *dll_find_shim(const char *name_lower) {
     static const win32_dll_shim_t *all_shims[] = {
         &win32_kernel32, &win32_user32, &win32_gdi32,
         &win32_msvcrt, &win32_ucrtbase, &win32_advapi32, &win32_ws2_32,
-        &win32_gdiplus, &win32_ole32, &win32_shell32, NULL
+        &win32_gdiplus, &win32_ole32, &win32_shell32,
+        &win32_bcrypt, &win32_crypt32, NULL
     };
 
     for (int i = 0; all_shims[i]; i++) {
