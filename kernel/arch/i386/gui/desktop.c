@@ -19,6 +19,7 @@
 #include <kernel/finder.h>
 #include <kernel/task.h>
 #include <kernel/fs.h>
+#include <kernel/beep.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -1946,6 +1947,7 @@ int desktop_run(void) {
     if (desktop_first_show) {
         desktop_first_show = 0;
         gfx_crossfade(8, 30);
+        beep_startup();
     } else {
         gfx_flip();
     }
