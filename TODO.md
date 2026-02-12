@@ -63,7 +63,7 @@ _Chromium is multi-process: browser, renderer, GPU, utility, crashpad._
 - [x] CreateProcessA — spawn child .exe with inherited handles, command line, environment
 - [x] GetExitCodeProcess / TerminateProcess
 - [x] WaitForSingleObject on process handle
-- [ ] Per-process address spaces — each PE gets its own page directory, COW or full copy
+- [x] Per-process address spaces — each PE gets its own page directory, COW or full copy
 - [x] Inter-process pipe bridging — child stdout/stderr → parent via anonymous pipes
 - [x] DuplicateHandle — share handles between processes
 - [x] GetCurrentProcess / OpenProcess

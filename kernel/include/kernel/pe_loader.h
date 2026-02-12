@@ -168,6 +168,7 @@ typedef struct {
     uint16_t subsystem;        /* PE_SUBSYSTEM_WINDOWS_GUI or _CUI */
     int      num_sections;
     uint32_t preferred_base;   /* original ImageBase from PE header */
+    uint32_t virtual_base;     /* target virtual address (0 = use image_base) */
 
     /* Import info for resolver */
     uint32_t import_dir_rva;

@@ -251,10 +251,12 @@ int pe_apply_relocations(pe_loaded_image_t *img) {
         return 0;
     }
 
-    int32_t delta = (int32_t)(img->image_base - img->preferred_base);
+    uint32_t effective_base = img->virtual_base ? img->virtual_base : img->image_base;
+    int32_t delta = (int32_t)(effective_base - img->preferred_base);
     if (delta == 0) return 0;  /* No fixup needed */
 
-    DBG("pe_apply_relocations: delta=0x%x", delta);
+    DBG("pe_apply_relocations: effective_base=0x%x preferred=0x%x staging=0x%x delta=0x%x",
+        effective_base, img->preferred_base, img->image_base, delta);
 
     uint8_t *reloc = (uint8_t *)(img->image_base + img->reloc_dir_rva);
     uint8_t *reloc_end = reloc + img->reloc_dir_size;

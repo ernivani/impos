@@ -557,6 +557,9 @@ static BOOL WINAPI shim_CancelIo(HANDLE hFile) {
 /* ── Child process context (needed by ExitProcess + CreateProcessA) ──── */
 
 #define MAX_CHILD_PROCS 16
+#define PE_VIRTUAL_BASE 0x10000000   /* per-process PE image base */
+#define PE_MAX_FRAMES   32           /* max 128KB per PE image */
+
 typedef struct {
     int      in_use;
     char     exe_path[64];
@@ -564,21 +567,73 @@ typedef struct {
     HANDLE   thread_handle;
     volatile int ready;   /* set to 1 after tid is assigned */
     int      tid;
+    /* Per-process address space */
+    uint32_t page_dir;              /* child's page directory (phys) */
+    uint32_t phys_frames[PE_MAX_FRAMES]; /* PMM frames for PE image */
+    int      num_frames;
+    uint32_t page_table;            /* page table for PDE 64 (phys) */
 } child_ctx_t;
 
 static child_ctx_t child_ctxs[MAX_CHILD_PROCS];
+
+/* ── Per-process cleanup helper ──────────────────────────────── */
+
+static void pe_child_cleanup(child_ctx_t *ctx) {
+    if (!ctx->page_dir) return;
+
+    int tid = task_get_current();
+    DBG("pe_child_cleanup: tid=%d PD=0x%x frames=%d PT=0x%x",
+        tid, ctx->page_dir, ctx->num_frames, ctx->page_table);
+
+    /* Switch back to kernel page directory before freeing pages */
+    uint32_t kernel_pd = vmm_get_kernel_pagedir();
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(kernel_pd) : "memory");
+    DBG("pe_child_cleanup: switched CR3 back to kernel PD=0x%x", kernel_pd);
+
+    /* Update current task's page_dir */
+    task_info_t *t = task_get(tid);
+    if (t) {
+        t->page_dir = kernel_pd;
+        t->user_page_table = 0;
+    }
+
+    /* Free PE image frames */
+    for (int i = 0; i < ctx->num_frames; i++) {
+        if (ctx->phys_frames[i])
+            pmm_free_frame(ctx->phys_frames[i]);
+    }
+    DBG("pe_child_cleanup: freed %d PMM frames", ctx->num_frames);
+
+    /* Free page table for PDE 64 */
+    if (ctx->page_table)
+        pmm_free_frame(ctx->page_table);
+
+    /* Free the page directory itself */
+    vmm_destroy_user_pagedir(ctx->page_dir);
+    DBG("pe_child_cleanup: freed PT=0x%x + PD=0x%x — cleanup complete",
+        ctx->page_table, ctx->page_dir);
+
+    ctx->page_dir = 0;
+    ctx->page_table = 0;
+    ctx->num_frames = 0;
+}
 
 /* ── Process / Module ────────────────────────────────────────── */
 
 static void WINAPI shim_ExitProcess(UINT uExitCode) {
     DBG("ExitProcess(%u)", uExitCode);
 
-    /* If this is a child process, mark its handles as done
-     * BEFORE calling task_exit(), otherwise the parent's
-     * WaitForSingleObject will spin forever. */
+    /* If this is a child process, clean up its private address space
+     * and mark handles as done BEFORE calling task_exit(), otherwise
+     * the parent's WaitForSingleObject will spin forever. */
     int tid = task_get_current();
     for (int i = 0; i < MAX_CHILD_PROCS; i++) {
         if (child_ctxs[i].in_use && child_ctxs[i].tid == tid) {
+            DBG("ExitProcess: child slot %d, tid=%d, PD=0x%x — cleaning up",
+                i, tid, child_ctxs[i].page_dir);
+            /* Clean up per-process address space first (switches CR3 back) */
+            pe_child_cleanup(&child_ctxs[i]);
+
             win32_handle_t *pwh = get_handle(child_ctxs[i].proc_handle);
             if (pwh && pwh->type == HTYPE_PROCESS) {
                 pwh->proc_exit = uExitCode;
@@ -682,7 +737,6 @@ static void child_process_wrapper(void) {
             DBG("  ctx->in_use=%d ready=%d tid=%d exe_path[0]=0x%x",
                 ctx->in_use, ctx->ready, ctx->tid, (unsigned char)ctx->exe_path[0]);
         }
-        /* Dump all slots */
         for (int d = 0; d < MAX_CHILD_PROCS; d++) {
             if (child_ctxs[d].in_use || child_ctxs[d].tid) {
                 DBG("  slot[%d]: in_use=%d ready=%d tid=%d exe='%s'",
@@ -696,36 +750,105 @@ static void child_process_wrapper(void) {
 
     DBG("child_process_wrapper: found ctx for tid %d, exe='%s' (after %d yields)", tid, ctx->exe_path, attempts);
 
-    /* Load and run the PE */
+    /* ── Stage 1: Load PE into identity-mapped staging area ──── */
     pe_loaded_image_t child_img;
     memset(&child_img, 0, sizeof(child_img));
     int ret = pe_load(ctx->exe_path, &child_img);
-    DBG("child_process_wrapper: pe_load('%s') = %d", ctx->exe_path, ret);
-    if (ret >= 0) ret = pe_apply_relocations(&child_img);
+    DBG("child_process_wrapper: pe_load('%s') = %d, staging at 0x%x size=0x%x",
+        ctx->exe_path, ret, child_img.image_base, child_img.image_size);
+
+    /* ── Stage 2: Set virtual_base and apply relocations + imports ── */
+    if (ret >= 0) {
+        child_img.virtual_base = PE_VIRTUAL_BASE;
+        ret = pe_apply_relocations(&child_img);
+    }
     if (ret >= 0) ret = pe_resolve_imports(&child_img);
 
-    if (ret >= 0) {
-        DBG("child_process_wrapper: calling entry at 0x%x", (unsigned)child_img.entry_point);
-        void (*entry)(void) = (void (*)(void))child_img.entry_point;
-        entry();
-        DBG("child_process_wrapper: entry returned");
-    } else {
-        DBG("child_process_wrapper: pe_load failed for '%s' (%d)",
+    if (ret < 0) {
+        DBG("child_process_wrapper: pe_load/reloc/import failed for '%s' (%d)",
             ctx->exe_path, ret);
+        goto done;
     }
 
+    /* ── Stage 3: Allocate frames and copy staged image ──────── */
+    {
+        uint32_t pages = (child_img.image_size + PAGE_SIZE - 1) / PAGE_SIZE;
+        if (pages > PE_MAX_FRAMES) {
+            DBG("child_process_wrapper: image too large (%u pages > %d)",
+                pages, PE_MAX_FRAMES);
+            goto done;
+        }
+
+        ctx->num_frames = 0;
+        for (uint32_t i = 0; i < pages; i++) {
+            uint32_t frame = pmm_alloc_frame();
+            if (!frame) {
+                DBG("child_process_wrapper: PMM alloc failed at page %u", i);
+                goto done;
+            }
+            /* Copy one page from staging area to frame */
+            uint32_t src = child_img.image_base + i * PAGE_SIZE;
+            memcpy((void *)frame, (void *)src, PAGE_SIZE);
+            ctx->phys_frames[ctx->num_frames++] = frame;
+        }
+
+        DBG("child_process_wrapper: copied %d pages to PMM frames", ctx->num_frames);
+
+        /* ── Stage 4: Map frames at PE_VIRTUAL_BASE in child PD ── */
+        uint32_t pt_phys = 0;
+        for (int i = 0; i < ctx->num_frames; i++) {
+            uint32_t virt = PE_VIRTUAL_BASE + i * PAGE_SIZE;
+            uint32_t ret_pt = vmm_map_user_page(ctx->page_dir, virt,
+                ctx->phys_frames[i],
+                PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+            if (!ret_pt) {
+                DBG("child_process_wrapper: vmm_map_user_page failed at 0x%x", virt);
+                goto done;
+            }
+            if (!pt_phys) pt_phys = ret_pt;
+        }
+        ctx->page_table = pt_phys;
+
+        /* ── Stage 5: Switch to child page directory ───────────── */
+        task_info_t *t = task_get(tid);
+        if (t) {
+            t->page_dir = ctx->page_dir;
+            t->user_page_table = ctx->page_table;
+        }
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(ctx->page_dir) : "memory");
+
+        DBG("child_process_wrapper: switched to child PD=0x%x, calling entry at 0x%x",
+            ctx->page_dir,
+            PE_VIRTUAL_BASE + (child_img.entry_point - child_img.image_base));
+
+        /* ── Stage 6: Call entry point at virtual address ──────── */
+        uint32_t entry_va = PE_VIRTUAL_BASE +
+            (child_img.entry_point - child_img.image_base);
+        void (*entry)(void) = (void (*)(void))entry_va;
+        entry();
+        DBG("child_process_wrapper: entry returned");
+
+        /* Switch back to kernel PD before cleanup */
+        pe_child_cleanup(ctx);
+    }
+
+done:
     /* Mark process handle as done */
-    win32_handle_t *wh = get_handle(ctx->proc_handle);
-    if (wh && wh->type == HTYPE_PROCESS) {
-        wh->proc_exit = 0;
-        wh->proc_done = 1;
+    {
+        win32_handle_t *wh = get_handle(ctx->proc_handle);
+        if (wh && wh->type == HTYPE_PROCESS) {
+            wh->proc_exit = 0;
+            wh->proc_done = 1;
+        }
     }
 
     /* Mark thread handle as done */
-    win32_handle_t *th = get_handle(ctx->thread_handle);
-    if (th && th->type == HTYPE_THREAD) {
-        th->thread_exit = 0;
-        th->thread_done = 1;
+    {
+        win32_handle_t *th = get_handle(ctx->thread_handle);
+        if (th && th->type == HTYPE_THREAD) {
+            th->thread_exit = 0;
+            th->thread_done = 1;
+        }
     }
 
     ctx->in_use = 0;
@@ -798,9 +921,23 @@ static BOOL WINAPI shim_CreateProcessA(
         return FALSE;
     }
 
+    /* Create per-process page directory */
+    uint32_t child_pd = vmm_create_user_pagedir();
+    if (!child_pd) {
+        DBG("CreateProcessA: vmm_create_user_pagedir failed");
+        free_handle(hProc);
+        free_handle(hThread);
+        memset(ctx, 0, sizeof(*ctx));
+        return FALSE;
+    }
+    DBG("CreateProcessA: created child PD=0x%x for '%s'", child_pd, ctx->exe_path);
+
     /* Fill context and handles */
     ctx->proc_handle = hProc;
     ctx->thread_handle = hThread;
+    ctx->page_dir = child_pd;
+    ctx->page_table = 0;
+    ctx->num_frames = 0;
     ctx->ready = 0;
     ctx->in_use = 1;
 
