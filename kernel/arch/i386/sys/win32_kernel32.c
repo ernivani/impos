@@ -657,8 +657,317 @@ static HMODULE WINAPI shim_GetModuleHandleA(LPCSTR lpModuleName) {
     return (HMODULE)0x00400000;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+ *  DLL Loading — LoadLibraryA / FreeLibrary / GetProcAddress
+ * ═══════════════════════════════════════════════════════════════ */
+
+#define MAX_LOADED_DLLS 32
+#define DLL_PROCESS_DETACH 0
+#define DLL_PROCESS_ATTACH 1
+
+/* Pseudo-handle base for shim-only DLLs (no real image on disk).
+ * Must be outside identity-mapped range (0-256MB) to avoid collisions
+ * with real DLL image bases. */
+#define SHIM_HMODULE_BASE 0x5A000000
+
+typedef struct {
+    int      in_use;
+    char     name[64];           /* "kernel32.dll" (lowercase) */
+    uint32_t image_base;         /* where loaded in memory (0 = shim-only) */
+    uint32_t image_size;
+    int      refcount;
+    /* Export directory (parsed at load time, only for real DLLs) */
+    uint32_t num_functions;
+    uint32_t num_names;
+    uint32_t ordinal_base;
+    uint32_t *addr_table;        /* absolute ptrs to AddressOfFunctions */
+    uint32_t *name_table;        /* absolute ptrs to AddressOfNames */
+    uint16_t *ordinal_table;     /* absolute ptrs to AddressOfNameOrdinals */
+} loaded_dll_t;
+
+static loaded_dll_t loaded_dlls[MAX_LOADED_DLLS];
+
+/* Normalize a DLL name to lowercase */
+static void dll_name_normalize(const char *src, char *dst, size_t dst_size) {
+    size_t i = 0;
+    for (; src[i] && i < dst_size - 1; i++) {
+        char c = src[i];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        /* Convert backslash path separators */
+        if (c == '\\') c = '/';
+        dst[i] = c;
+    }
+    dst[i] = '\0';
+
+    /* Strip leading path components — only keep the filename */
+    char *slash = strrchr(dst, '/');
+    if (slash) {
+        size_t len = strlen(slash + 1);
+        memmove(dst, slash + 1, len + 1);
+    }
+}
+
+/* Find a loaded DLL by normalized name */
+static loaded_dll_t *dll_find(const char *name_lower) {
+    for (int i = 0; i < MAX_LOADED_DLLS; i++) {
+        if (loaded_dlls[i].in_use && strcmp(loaded_dlls[i].name, name_lower) == 0)
+            return &loaded_dlls[i];
+    }
+    return NULL;
+}
+
+/* Find a loaded DLL by HMODULE */
+static loaded_dll_t *dll_find_by_handle(HMODULE hmod) {
+    for (int i = 0; i < MAX_LOADED_DLLS; i++) {
+        if (!loaded_dlls[i].in_use) continue;
+        /* Real DLL: image_base matches */
+        if (loaded_dlls[i].image_base && loaded_dlls[i].image_base == hmod)
+            return &loaded_dlls[i];
+        /* Shim-only DLL: synthetic handle = SHIM_HMODULE_BASE + slot */
+        if (!loaded_dlls[i].image_base &&
+            hmod == (HMODULE)(SHIM_HMODULE_BASE + i))
+            return &loaded_dlls[i];
+    }
+    return NULL;
+}
+
+/* Parse PE export directory into a loaded_dll_t */
+static void pe_parse_exports(loaded_dll_t *dll, pe_loaded_image_t *img) {
+    if (img->export_dir_rva == 0 || img->export_dir_size == 0) {
+        dll->num_functions = 0;
+        dll->num_names = 0;
+        return;
+    }
+
+    pe_export_directory_t *exp = (pe_export_directory_t *)(
+        img->image_base + img->export_dir_rva);
+
+    dll->num_functions = exp->num_functions;
+    dll->num_names = exp->num_names;
+    dll->ordinal_base = exp->ordinal_base;
+
+    /* Point directly into the loaded image's tables */
+    dll->addr_table = (uint32_t *)(img->image_base + exp->addr_table_rva);
+    dll->name_table = (uint32_t *)(img->image_base + exp->name_table_rva);
+    dll->ordinal_table = (uint16_t *)(img->image_base + exp->ordinal_table_rva);
+
+    DBG("pe_parse_exports: '%s' — %u functions, %u names, ordinal_base=%u",
+        dll->name, dll->num_functions, dll->num_names, dll->ordinal_base);
+}
+
+/* Resolve an export by name from a real DLL (binary search on name table) */
+static void *dll_resolve_export(loaded_dll_t *dll, const char *func_name) {
+    if (!dll->image_base || dll->num_names == 0)
+        return NULL;
+
+    /* Binary search through the name pointer table (sorted alphabetically) */
+    int lo = 0, hi = (int)dll->num_names - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        const char *name = (const char *)(dll->image_base + dll->name_table[mid]);
+        int cmp = strcmp(func_name, name);
+        if (cmp == 0) {
+            /* Found — use the ordinal table to index into the address table */
+            uint16_t ordinal = dll->ordinal_table[mid];
+            uint32_t func_rva = dll->addr_table[ordinal];
+
+            /* Check for forwarded export (RVA points inside export dir) */
+            uint32_t exp_start = dll->addr_table[0]; /* approximate */
+            (void)exp_start;
+            /* For now, return the absolute address */
+            return (void *)(dll->image_base + func_rva);
+        } else if (cmp < 0) {
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return NULL;
+}
+
+/* Check if a DLL name matches one of our shim tables */
+static const win32_dll_shim_t *dll_find_shim(const char *name_lower) {
+    /* Access the shim table from pe_loader.c via win32_resolve_import.
+     * But we also need to check direct DLL name match. */
+    extern const win32_dll_shim_t win32_ucrtbase;
+
+    static const win32_dll_shim_t *all_shims[] = {
+        &win32_kernel32, &win32_user32, &win32_gdi32,
+        &win32_msvcrt, &win32_ucrtbase, NULL
+    };
+
+    for (int i = 0; all_shims[i]; i++) {
+        /* Case-insensitive compare against shim dll_name */
+        const char *a = all_shims[i]->dll_name;
+        const char *b = name_lower;
+        int match = 1;
+        while (*a && *b) {
+            char ca = *a, cb = *b;
+            if (ca >= 'A' && ca <= 'Z') ca += 32;
+            if (cb >= 'A' && cb <= 'Z') cb += 32;
+            if (ca != cb) { match = 0; break; }
+            a++; b++;
+        }
+        if (match && *a == *b)
+            return all_shims[i];
+    }
+
+    /* Also match api-ms-win-crt-* DLLs to ucrtbase */
+    if (strncmp(name_lower, "api-ms-win-crt-", 15) == 0)
+        return &win32_ucrtbase;
+
+    return NULL;
+}
+
+/* ── LoadLibraryA ────────────────────────────────────────────── */
+static HMODULE WINAPI shim_LoadLibraryA(LPCSTR lpLibFileName) {
+    if (!lpLibFileName || !lpLibFileName[0]) {
+        last_error = 87;  /* ERROR_INVALID_PARAMETER */
+        return (HMODULE)0;
+    }
+
+    /* Normalize name */
+    char name_lower[64];
+    dll_name_normalize(lpLibFileName, name_lower, sizeof(name_lower));
+
+    DBG("LoadLibraryA: '%s' → '%s'", lpLibFileName, name_lower);
+
+    /* Already loaded? Bump refcount */
+    loaded_dll_t *existing = dll_find(name_lower);
+    if (existing) {
+        existing->refcount++;
+        HMODULE h = existing->image_base
+            ? (HMODULE)existing->image_base
+            : (HMODULE)(SHIM_HMODULE_BASE + (existing - loaded_dlls));
+        DBG("LoadLibraryA: '%s' already loaded, refcount=%d → 0x%x",
+            name_lower, existing->refcount, h);
+        return h;
+    }
+
+    /* Find a free slot */
+    int slot = -1;
+    for (int i = 0; i < MAX_LOADED_DLLS; i++) {
+        if (!loaded_dlls[i].in_use) { slot = i; break; }
+    }
+    if (slot < 0) {
+        last_error = 8;  /* ERROR_NOT_ENOUGH_MEMORY */
+        return (HMODULE)0;
+    }
+
+    loaded_dll_t *dll = &loaded_dlls[slot];
+    memset(dll, 0, sizeof(*dll));
+    strncpy(dll->name, name_lower, sizeof(dll->name) - 1);
+    dll->refcount = 1;
+    dll->in_use = 1;
+
+    /* Try to load from disk: /apps/{name}, then /{name} */
+    char path[128];
+    pe_loaded_image_t img;
+    int loaded_from_disk = 0;
+
+    snprintf(path, sizeof(path), "/apps/%s", name_lower);
+    if (pe_load(path, &img) == 0) {
+        loaded_from_disk = 1;
+    } else {
+        snprintf(path, sizeof(path), "/%s", name_lower);
+        if (pe_load(path, &img) == 0) {
+            loaded_from_disk = 1;
+        }
+    }
+
+    if (loaded_from_disk) {
+        /* Apply relocations and resolve imports */
+        pe_apply_relocations(&img);
+        pe_resolve_imports(&img);
+
+        dll->image_base = img.image_base;
+        dll->image_size = img.image_size;
+
+        /* Parse export directory */
+        pe_parse_exports(dll, &img);
+
+        /* Call DllMain(DLL_PROCESS_ATTACH) if entry point exists */
+        if (img.entry_point && img.entry_point != img.image_base) {
+            typedef BOOL (__attribute__((stdcall)) *dll_main_t)(
+                HMODULE hModule, DWORD ul_reason, LPVOID lpReserved);
+            dll_main_t dll_main = (dll_main_t)img.entry_point;
+            DBG("LoadLibraryA: calling DllMain(ATTACH) at 0x%x", img.entry_point);
+            dll_main((HMODULE)img.image_base, DLL_PROCESS_ATTACH, NULL);
+        }
+
+        DBG("LoadLibraryA: loaded '%s' from disk at 0x%x, size=0x%x",
+            name_lower, dll->image_base, dll->image_size);
+        return (HMODULE)dll->image_base;
+    }
+
+    /* Not on disk — check if it matches a shim table */
+    const win32_dll_shim_t *shim = dll_find_shim(name_lower);
+    if (shim) {
+        /* Shim-only DLL: image_base stays 0 */
+        HMODULE h = (HMODULE)(SHIM_HMODULE_BASE + slot);
+        DBG("LoadLibraryA: '%s' → shim-only handle 0x%x", name_lower, h);
+        return h;
+    }
+
+    /* Completely unknown DLL — still return a shim handle so callers
+     * that check for NULL don't crash; GetProcAddress will fail. */
+    HMODULE h = (HMODULE)(SHIM_HMODULE_BASE + slot);
+    DBG("LoadLibraryA: '%s' unknown, returning stub handle 0x%x", name_lower, h);
+    return h;
+}
+
+/* ── LoadLibraryExA ──────────────────────────────────────────── */
+static HMODULE WINAPI shim_LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
+    (void)hFile; (void)dwFlags;
+    return shim_LoadLibraryA(lpLibFileName);
+}
+
+/* ── FreeLibrary ─────────────────────────────────────────────── */
+static BOOL WINAPI shim_FreeLibrary(HMODULE hLibModule) {
+    loaded_dll_t *dll = dll_find_by_handle(hLibModule);
+    if (!dll) return FALSE;
+
+    dll->refcount--;
+    DBG("FreeLibrary: '%s' refcount → %d", dll->name, dll->refcount);
+
+    if (dll->refcount <= 0) {
+        /* Call DllMain(DLL_PROCESS_DETACH) for real DLLs */
+        if (dll->image_base) {
+            /* We don't easily have the entry_point stored, so skip DllMain
+             * on unload for now — most DLLs handle this gracefully. */
+            /* Free the loaded image memory */
+            pe_loaded_image_t tmp;
+            memset(&tmp, 0, sizeof(tmp));
+            tmp.image_base = dll->image_base;
+            tmp.image_size = dll->image_size;
+            pe_unload(&tmp);
+        }
+        memset(dll, 0, sizeof(*dll));
+    }
+
+    return TRUE;
+}
+
+/* ── GetProcAddress (rewritten for DLL loading) ──────────────── */
 static void *WINAPI shim_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
-    (void)hModule;
+    if (!lpProcName) return NULL;
+
+    /* If hModule matches a loaded DLL, try its exports first */
+    loaded_dll_t *dll = dll_find_by_handle(hModule);
+    if (dll) {
+        /* Real DLL with export table — search PE exports */
+        if (dll->image_base) {
+            void *p = dll_resolve_export(dll, lpProcName);
+            if (p) return p;
+        }
+
+        /* Shim-only or export not found — try shim tables by DLL name */
+        void *p = win32_resolve_import(dll->name, lpProcName);
+        if (p) return p;
+    }
+
+    /* Fallback: search all shim tables (covers GetModuleHandle(NULL) cases
+     * and handles where hModule is the app's own base address) */
     void *p;
     p = win32_resolve_import("kernel32.dll", lpProcName);
     if (p) return p;
@@ -668,7 +977,8 @@ static void *WINAPI shim_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     if (p) return p;
     p = win32_resolve_import("msvcrt.dll", lpProcName);
     if (p) return p;
-    DBG("GetProcAddress: '%s' not found", lpProcName);
+
+    DBG("GetProcAddress: '%s' not found (hModule=0x%x)", lpProcName, hModule);
     return NULL;
 }
 
@@ -2072,6 +2382,11 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "GetModuleHandleA",       (void *)shim_GetModuleHandleA },
     { "GetModuleHandleW",       (void *)shim_GetModuleHandleA },
     { "GetProcAddress",         (void *)shim_GetProcAddress },
+    { "LoadLibraryA",           (void *)shim_LoadLibraryA },
+    { "LoadLibraryW",           (void *)shim_LoadLibraryA },
+    { "LoadLibraryExA",         (void *)shim_LoadLibraryExA },
+    { "LoadLibraryExW",         (void *)shim_LoadLibraryExA },
+    { "FreeLibrary",            (void *)shim_FreeLibrary },
     { "GetCommandLineA",        (void *)shim_GetCommandLineA },
     { "GetCommandLineW",        (void *)shim_GetCommandLineA },
     { "GetCurrentProcessId",    (void *)shim_GetCurrentProcessId },

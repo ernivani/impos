@@ -127,6 +127,10 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
         out->reloc_dir_rva = opt->data_dirs[PE_DIR_BASERELOC].virtual_address;
         out->reloc_dir_size = opt->data_dirs[PE_DIR_BASERELOC].size;
     }
+    if (opt->num_data_dirs > PE_DIR_EXPORT) {
+        out->export_dir_rva = opt->data_dirs[PE_DIR_EXPORT].virtual_address;
+        out->export_dir_size = opt->data_dirs[PE_DIR_EXPORT].size;
+    }
     pe_next_load_addr = align_up(load_base + image_size, 4096);
 
     DBG("pe_load: entry=0x%x subsystem=%u import_rva=0x%x reloc_rva=0x%x",

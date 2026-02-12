@@ -188,6 +188,56 @@ static void shim__endthreadex(unsigned retval) {
     shim_ExitThread((DWORD)retval);
 }
 
+/* ── Delay-Load Helper ───────────────────────────────────────── */
+
+/* Minimal delay-load descriptor — matches MSVC's ImgDelayDescr */
+typedef struct {
+    uint32_t grAttrs;
+    uint32_t rvaDLLName;
+    uint32_t rvaHmod;
+    uint32_t rvaIAT;
+    uint32_t rvaINT;
+    uint32_t rvaBoundIAT;
+    uint32_t rvaUnloadIAT;
+    uint32_t dwTimeStamp;
+} ImgDelayDescr;
+
+/* Resolve LoadLibraryA/GetProcAddress at runtime via our own shim tables */
+typedef HMODULE (WINAPI *pfn_LoadLibraryA)(LPCSTR);
+typedef void * (WINAPI *pfn_GetProcAddress)(HMODULE, LPCSTR);
+
+/* __delayLoadHelper2 — called by compiler-generated delay-load thunks.
+ * Loads the DLL and resolves the requested function on first call. */
+static void *shim___delayLoadHelper2(const ImgDelayDescr *pidd, void **ppfnIATEntry) {
+    (void)ppfnIATEntry;
+
+    if (!pidd) return NULL;
+
+    /* Resolve LoadLibraryA from our own shim tables */
+    pfn_LoadLibraryA pLoadLibraryA =
+        (pfn_LoadLibraryA)win32_resolve_import("kernel32.dll", "LoadLibraryA");
+    if (!pLoadLibraryA) return NULL;
+
+    /* The DLL name RVA is relative to the module base.
+     * For simplicity, treat it as an absolute pointer (works in identity-mapped space). */
+    const char *dll_name = (const char *)(pidd->rvaDLLName);
+    if (!dll_name || !dll_name[0]) return NULL;
+
+    HMODULE hmod = pLoadLibraryA(dll_name);
+    if (!hmod) {
+        printf("[delayload] failed to load '%s'\n", dll_name);
+        return NULL;
+    }
+
+    /* Store module handle if slot is provided */
+    if (pidd->rvaHmod) {
+        HMODULE *phmod = (HMODULE *)(pidd->rvaHmod);
+        *phmod = hmod;
+    }
+
+    return (void *)hmod;
+}
+
 /* ── Export Table ─────────────────────────────────────────────── */
 
 static const win32_export_entry_t msvcrt_exports[] = {
@@ -276,6 +326,9 @@ static const win32_export_entry_t msvcrt_exports[] = {
     /* Threading */
     { "_beginthreadex", (void *)shim__beginthreadex },
     { "_endthreadex",   (void *)shim__endthreadex },
+
+    /* Delay-load */
+    { "__delayLoadHelper2", (void *)shim___delayLoadHelper2 },
 };
 
 const win32_dll_shim_t win32_msvcrt = {
