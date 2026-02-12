@@ -66,12 +66,15 @@ shell_fg_app_t *shell_get_fg_app(void) { return active_fg_app; }
 
 typedef void (*cmd_func_t)(int argc, char* argv[]);
 
+#define CMD_FLAG_ROOT  (1 << 0)   /* requires root to run */
+
 typedef struct {
     const char* name;
     cmd_func_t func;
     const char* short_desc;
     const char* help_text;
     const char* man_page;
+    uint8_t flags;
 } command_t;
 
 static void cmd_echo(int argc, char* argv[]);
@@ -129,6 +132,7 @@ static void cmd_winget(int argc, char* argv[]);
 static void cmd_run(int argc, char* argv[]);
 static void cmd_petest(int argc, char* argv[]);
 static void cmd_petest_gui(int argc, char* argv[]);
+static void cmd_sudo(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -146,7 +150,8 @@ static command_t commands[] = {
         "    Displays brief summaries of builtin commands. If\n"
         "    COMMAND is specified, detailed information about that\n"
         "    command is shown. Without arguments, lists all\n"
-        "    available shell commands with short descriptions.\n"
+        "    available shell commands with short descriptions.\n",
+        0
     },
     {
         "man", cmd_man,
@@ -161,7 +166,8 @@ static command_t commands[] = {
         "    The man utility displays the manual page for the\n"
         "    given COMMAND. Each manual page contains the command\n"
         "    name, synopsis, and a detailed description of its\n"
-        "    behavior and options.\n"
+        "    behavior and options.\n",
+        0
     },
     {
         "echo", cmd_echo,
@@ -177,7 +183,8 @@ static command_t commands[] = {
         "    The echo utility writes its arguments to standard\n"
         "    output, separated by single blank characters, followed\n"
         "    by a newline. If there are no arguments, only the\n"
-        "    newline is written.\n"
+        "    newline is written.\n",
+        0
     },
     {
         "cat", cmd_cat,
@@ -191,7 +198,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    The cat utility reads the given FILE and writes its\n"
         "    contents to standard output. If the file does not\n"
-        "    exist or is a directory, an error message is printed.\n"
+        "    exist or is a directory, an error message is printed.\n",
+        0
     },
     {
         "ls", cmd_ls,
@@ -212,7 +220,8 @@ static command_t commands[] = {
         "        Shows the . (current) and .. (parent) dirs.\n\n"
         "    -l  Use a long listing format. Each entry shows\n"
         "        permissions, owner, group, size, and name.\n\n"
-        "    Flags may be combined: ls -la\n"
+        "    Flags may be combined: ls -la\n",
+        0
     },
     {
         "cd", cmd_cd,
@@ -229,7 +238,8 @@ static command_t commands[] = {
         "    begins with / it is treated as an absolute path,\n"
         "    otherwise it is relative to the current directory.\n"
         "    The special names . and .. refer to the current and\n"
-        "    parent directory respectively.\n"
+        "    parent directory respectively.\n",
+        0
     },
     {
         "touch", cmd_touch,
@@ -243,7 +253,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Create an empty file named FILE in the current\n"
         "    directory. If the file already exists, an error is\n"
-        "    printed. The file is created with zero size.\n"
+        "    printed. The file is created with zero size.\n",
+        0
     },
     {
         "clear", cmd_clear,
@@ -256,7 +267,8 @@ static command_t commands[] = {
         "    clear\n\n"
         "DESCRIPTION\n"
         "    Clears the VGA text-mode terminal screen and resets\n"
-        "    the cursor position to row 0, column 0.\n"
+        "    the cursor position to row 0, column 0.\n",
+        0
     },
     {
         "pwd", cmd_pwd,
@@ -269,7 +281,8 @@ static command_t commands[] = {
         "    pwd\n\n"
         "DESCRIPTION\n"
         "    Print the full pathname of the current working\n"
-        "    directory by walking the .. chain up to /.\n"
+        "    directory by walking the .. chain up to /.\n",
+        0
     },
     {
         "history", cmd_history,
@@ -282,7 +295,8 @@ static command_t commands[] = {
         "    history\n\n"
         "DESCRIPTION\n"
         "    Prints the list of saved commands (up to 16 entries).\n"
-        "    Use Up/Down in the shell to recall history.\n"
+        "    Use Up/Down in the shell to recall history.\n",
+        0
     },
     {
         "mkdir", cmd_mkdir,
@@ -297,7 +311,8 @@ static command_t commands[] = {
         "    Create the directory NAME in the current working\n"
         "    directory. The new directory will contain the\n"
         "    standard . and .. entries. An error is reported if\n"
-        "    NAME already exists.\n"
+        "    NAME already exists.\n",
+        0
     },
     {
         "rm", cmd_rm,
@@ -311,7 +326,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Remove the file or directory named NAME. If NAME\n"
         "    is a directory it must be empty (contain only . and\n"
-        "    ..). The root directory cannot be removed.\n"
+        "    ..). The root directory cannot be removed.\n",
+        0
     },
     {
         "vi", cmd_vi,
@@ -350,7 +366,8 @@ static command_t commands[] = {
         "    :w        Save file\n"
         "    :q        Quit (fails if unsaved changes)\n"
         "    :wq       Save and quit\n"
-        "    :q!       Quit without saving\n"
+        "    :q!       Quit without saving\n",
+        0
     },
     {
         "setlayout", cmd_setlayout,
@@ -367,7 +384,8 @@ static command_t commands[] = {
         "    Supported layouts:\n"
         "      fr  - French AZERTY\n"
         "      us  - US QWERTY\n\n"
-        "    Without arguments, prints the current layout.\n"
+        "    Without arguments, prints the current layout.\n",
+        0
     },
     {
         "sync", cmd_sync,
@@ -383,7 +401,8 @@ static command_t commands[] = {
         "    to disk immediately. This ensures data persistence\n"
         "    across reboots. The filesystem is automatically\n"
         "    synced on changes when a disk is available, but\n"
-        "    this command forces an immediate sync.\n"
+        "    this command forces an immediate sync.\n",
+        0
     },
     {
         "exit", cmd_exit,
@@ -401,7 +420,8 @@ static command_t commands[] = {
         "    On a VM, the display stays visible.\n"
         "    Use 'shutdown' to power off the machine.\n\n"
         "    If STATUS is given, it is used as the exit code.\n"
-        "    0 indicates success, nonzero indicates failure.\n"
+        "    0 indicates success, nonzero indicates failure.\n",
+        0
     },
     {
         "shutdown", cmd_shutdown,
@@ -417,7 +437,8 @@ static command_t commands[] = {
         "    Bochs, the VM window closes. On real hardware\n"
         "    with ACPI support, the machine powers off.\n"
         "    If ACPI is not available, falls back to halting\n"
-        "    the CPU (same as 'exit').\n"
+        "    the CPU (same as 'exit').\n",
+        CMD_FLAG_ROOT
     },
     {
         "timedatectl", cmd_timedatectl,
@@ -449,7 +470,8 @@ static command_t commands[] = {
         "        Set the system timezone.\n"
         "        Example: timedatectl set-timezone Europe/Paris\n\n"
         "    list-timezones\n"
-        "        List common available timezones.\n"
+        "        List common available timezones.\n",
+        0
     },
     {
         "ifconfig", cmd_ifconfig,
@@ -474,7 +496,8 @@ static command_t commands[] = {
         "    ifconfig eth0 10.0.2.15 255.255.255.0\n"
         "        Set IP address and netmask\n\n"
         "    ifconfig eth0 up\n"
-        "        Enable network interface\n"
+        "        Enable network interface\n",
+        CMD_FLAG_ROOT
     },
     {
         "ping", cmd_ping,
@@ -491,7 +514,8 @@ static command_t commands[] = {
         "    network connectivity.\n\n"
         "EXAMPLES\n"
         "    ping 10.0.2.2\n"
-        "        Ping the default gateway\n"
+        "        Ping the default gateway\n",
+        0
     },
     {
         "lspci", cmd_lspci,
@@ -505,7 +529,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Scans the PCI bus and displays information about\n"
         "    all detected PCI devices, including vendor ID,\n"
-        "    device ID, and device class.\n"
+        "    device ID, and device class.\n",
+        0
     },
     {
         "arp", cmd_arp,
@@ -519,7 +544,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Sends an ARP request for the given IP address\n"
         "    and displays the MAC address in the reply.\n"
-        "    This tests if network RX actually works.\n"
+        "    This tests if network RX actually works.\n",
+        0
     },
     {
         "export", cmd_export,
@@ -535,7 +561,8 @@ static command_t commands[] = {
         "    for the current shell session.\n\n"
         "EXAMPLES\n"
         "    export PS1=\"> \"\n"
-        "    export HOME=/home/user\n"
+        "    export HOME=/home/user\n",
+        0
     },
     {
         "env", cmd_env,
@@ -548,7 +575,8 @@ static command_t commands[] = {
         "    env\n\n"
         "DESCRIPTION\n"
         "    Displays all currently set environment\n"
-        "    variables and their values.\n"
+        "    variables and their values.\n",
+        0
     },
     {
         "whoami", cmd_whoami,
@@ -560,7 +588,8 @@ static command_t commands[] = {
         "SYNOPSIS\n"
         "    whoami\n\n"
         "DESCRIPTION\n"
-        "    Prints the name of the current user.\n"
+        "    Prints the name of the current user.\n",
+        0
     },
     {
         "chmod", cmd_chmod,
@@ -574,7 +603,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Change the permissions of FILE to MODE.\n"
         "    MODE is an octal number (e.g. 755, 644).\n"
-        "    Only the file owner or root can change permissions.\n"
+        "    Only the file owner or root can change permissions.\n",
+        0
     },
     {
         "chown", cmd_chown,
@@ -587,7 +617,8 @@ static command_t commands[] = {
         "    chown USER[:GROUP] FILE\n\n"
         "DESCRIPTION\n"
         "    Change the owner (and optionally group) of FILE.\n"
-        "    Only root can change file ownership.\n"
+        "    Only root can change file ownership.\n",
+        CMD_FLAG_ROOT
     },
     {
         "ln", cmd_ln,
@@ -600,7 +631,8 @@ static command_t commands[] = {
         "    ln -s TARGET LINKNAME\n\n"
         "DESCRIPTION\n"
         "    Create a symbolic link named LINKNAME pointing to TARGET.\n"
-        "    The -s flag is required (only symlinks are supported).\n"
+        "    The -s flag is required (only symlinks are supported).\n",
+        0
     },
     {
         "readlink", cmd_readlink,
@@ -612,7 +644,8 @@ static command_t commands[] = {
         "SYNOPSIS\n"
         "    readlink LINK\n\n"
         "DESCRIPTION\n"
-        "    Print the target of the symbolic link LINK.\n"
+        "    Print the target of the symbolic link LINK.\n",
+        0
     },
     {
         "su", cmd_su,
@@ -625,7 +658,24 @@ static command_t commands[] = {
         "    su [USERNAME]\n\n"
         "DESCRIPTION\n"
         "    Switch to another user. Prompts for password unless\n"
-        "    the current user is root. Default target is root.\n"
+        "    the current user is root. Default target is root.\n",
+        0
+    },
+    {
+        "sudo", cmd_sudo,
+        "Execute a command as root",
+        "sudo: sudo COMMAND [ARGS...]\n"
+        "    Execute a command as root. Prompts for the current\n"
+        "    user's password (not root's).\n",
+        "NAME\n"
+        "    sudo - execute a command as root\n\n"
+        "SYNOPSIS\n"
+        "    sudo COMMAND [ARGS...]\n\n"
+        "DESCRIPTION\n"
+        "    Run COMMAND with root privileges. Authenticates using\n"
+        "    the current user's password. If already root, runs\n"
+        "    the command without prompting.\n",
+        0
     },
     {
         "id", cmd_id,
@@ -637,7 +687,8 @@ static command_t commands[] = {
         "SYNOPSIS\n"
         "    id\n\n"
         "DESCRIPTION\n"
-        "    Print user and group information for the current user.\n"
+        "    Print user and group information for the current user.\n",
+        0
     },
     {
         "useradd", cmd_useradd,
@@ -650,7 +701,8 @@ static command_t commands[] = {
         "    useradd USERNAME\n\n"
         "DESCRIPTION\n"
         "    Create a new user with auto-assigned UID, prompted\n"
-        "    password, and home directory. Root only.\n"
+        "    password, and home directory. Root only.\n",
+        CMD_FLAG_ROOT
     },
     {
         "userdel", cmd_userdel,
@@ -663,7 +715,8 @@ static command_t commands[] = {
         "    userdel [-r] USERNAME\n\n"
         "DESCRIPTION\n"
         "    Delete the user USERNAME. With -r, also remove\n"
-        "    the user's home directory. Root only.\n"
+        "    the user's home directory. Root only.\n",
+        CMD_FLAG_ROOT
     },
     {
         "test", cmd_test,
@@ -675,7 +728,8 @@ static command_t commands[] = {
         "SYNOPSIS\n"
         "    test\n\n"
         "DESCRIPTION\n"
-        "    Run all built-in test suites and print results.\n"
+        "    Run all built-in test suites and print results.\n",
+        CMD_FLAG_ROOT
     },
     {
         "logout", cmd_logout,
@@ -688,7 +742,8 @@ static command_t commands[] = {
         "    logout\n\n"
         "DESCRIPTION\n"
         "    Saves state and returns to the login prompt.\n"
-        "    The current user session is ended.\n"
+        "    The current user session is ended.\n",
+        0
     },
     {
         "gfxdemo", cmd_gfxdemo,
@@ -701,7 +756,8 @@ static command_t commands[] = {
         "    gfxdemo\n\n"
         "DESCRIPTION\n"
         "    Demonstrates the framebuffer graphics API by drawing\n"
-        "    rectangles, lines, and text. Press any key to exit.\n"
+        "    rectangles, lines, and text. Press any key to exit.\n",
+        CMD_FLAG_ROOT
     },
     {
         "nslookup", cmd_nslookup,
@@ -715,7 +771,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Sends a DNS type-A query to the configured DNS server\n"
         "    (default 10.0.2.3 for QEMU SLIRP) and prints the\n"
-        "    resolved IPv4 address.\n"
+        "    resolved IPv4 address.\n",
+        0
     },
     {
         "dhcp", cmd_dhcp_cmd,
@@ -728,7 +785,8 @@ static command_t commands[] = {
         "    dhcp\n\n"
         "DESCRIPTION\n"
         "    Sends DHCP Discover/Offer/Request/Acknowledge sequence\n"
-        "    to obtain a network configuration from the DHCP server.\n"
+        "    to obtain a network configuration from the DHCP server.\n",
+        CMD_FLAG_ROOT
     },
     {
         "httpd", cmd_httpd,
@@ -742,7 +800,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Starts a minimal HTTP server on port 80. It serves\n"
         "    static HTML for / and files from the filesystem.\n"
-        "    Use 'httpd stop' to shut it down.\n"
+        "    Use 'httpd stop' to shut it down.\n",
+        CMD_FLAG_ROOT
     },
     {
         "quota", cmd_quota,
@@ -757,7 +816,8 @@ static command_t commands[] = {
         "    Without arguments, shows quota for the current user.\n"
         "    -u USER   Show quota for USER (by UID).\n"
         "    -s USER INODES BLOCKS  Set quota limits for USER.\n"
-        "    INODES and BLOCKS are maximum counts (0 = unlimited).\n"
+        "    INODES and BLOCKS are maximum counts (0 = unlimited).\n",
+        CMD_FLAG_ROOT
     },
     {
         "connect", cmd_connect,
@@ -773,7 +833,8 @@ static command_t commands[] = {
         "    Checks that a NIC is present and the link is up,\n"
         "    then runs DHCP discovery to obtain an IP address,\n"
         "    netmask, and gateway from the network. Prints the\n"
-        "    assigned configuration on success.\n"
+        "    assigned configuration on success.\n",
+        CMD_FLAG_ROOT
     },
     {
         "firewall", cmd_firewall,
@@ -798,7 +859,8 @@ static command_t commands[] = {
         "             Optional port or port range (e.g. 80 or 1024-65535).\n"
         "    del N    Delete rule at index N.\n"
         "    flush    Remove all rules.\n"
-        "    default  Set default policy to allow or deny.\n"
+        "    default  Set default policy to allow or deny.\n",
+        CMD_FLAG_ROOT
     },
     {
         "top", cmd_top,
@@ -815,7 +877,8 @@ static command_t commands[] = {
         "    Shows a live-updating display of system stats: uptime,\n"
         "    heap memory usage, physical RAM, filesystem inode/block\n"
         "    usage, and a list of open windows. Refreshes every second.\n\n"
-        "    Press 'q' to exit and return to the shell.\n"
+        "    Press 'q' to exit and return to the shell.\n",
+        0
     },
     {
         "kill", cmd_kill,
@@ -836,7 +899,8 @@ static command_t commands[] = {
         "    -TERM        Send termination signal (15, default)\n"
         "    -USR1        Send user-defined signal 1 (10)\n"
         "    -USR2        Send user-defined signal 2 (12)\n"
-        "    -PIPE        Send broken pipe signal (13)\n"
+        "    -PIPE        Send broken pipe signal (13)\n",
+        0
     },
     {
         "display", cmd_display,
@@ -852,7 +916,8 @@ static command_t commands[] = {
         "    Displays a fullscreen overlay with a live frames-per-second\n"
         "    counter, mouse position, button state, and a crosshair at\n"
         "    the current mouse coordinates. Useful for diagnosing input\n"
-        "    and rendering issues. Press 'q' or ESC to exit.\n"
+        "    and rendering issues. Press 'q' or ESC to exit.\n",
+        CMD_FLAG_ROOT
     },
     {
         "gfxbench", cmd_gfxbench,
@@ -868,7 +933,8 @@ static command_t commands[] = {
         "    Runs five stress phases with no frame cap: rect flood,\n"
         "    line storm, circle cascade, alpha blending, and combined\n"
         "    chaos. Each phase runs for 5 seconds. FPS is measured and\n"
-        "    printed as a summary at the end. Press 'q' or ESC to quit.\n"
+        "    printed as a summary at the end. Press 'q' or ESC to quit.\n",
+        CMD_FLAG_ROOT
     },
     {
         "fps", cmd_fps,
@@ -883,7 +949,8 @@ static command_t commands[] = {
         "    Toggles a persistent FPS counter overlay on the top-right\n"
         "    corner of the desktop. The counter updates every second and\n"
         "    shows the number of WM composites per second. Run 'fps'\n"
-        "    again to turn it off.\n"
+        "    again to turn it off.\n",
+        CMD_FLAG_ROOT
     },
     {
         "spawn", cmd_spawn,
@@ -904,7 +971,8 @@ static command_t commands[] = {
         "    Types:\n"
         "      counter      - increments and prints a counter every second (ring 0)\n"
         "      hog          - infinite CPU loop (watchdog kills after 5s)\n"
-        "      user-counter - like counter but runs in ring 3 (user mode)\n"
+        "      user-counter - like counter but runs in ring 3 (user mode)\n",
+        CMD_FLAG_ROOT
     },
     {
         "shm", cmd_shm,
@@ -921,7 +989,8 @@ static command_t commands[] = {
         "    created from the shell and attached by user-mode tasks\n"
         "    via the SYS_SHM_ATTACH syscall.\n\n"
         "    list               Show all active shared memory regions.\n"
-        "    create NAME SIZE   Create a region with given name and size in bytes.\n"
+        "    create NAME SIZE   Create a region with given name and size in bytes.\n",
+        CMD_FLAG_ROOT
     },
     {
         "ntpdate", cmd_ntpdate,
@@ -935,7 +1004,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Contacts pool.ntp.org via UDP port 123 to obtain\n"
         "    the current time and updates the system clock.\n"
-        "    Requires an active network connection.\n"
+        "    Requires an active network connection.\n",
+        CMD_FLAG_ROOT
     },
     {
         "beep", cmd_beep,
@@ -949,7 +1019,8 @@ static command_t commands[] = {
         "    beep startup|error|ok|notify\n\n"
         "DESCRIPTION\n"
         "    Plays a tone using PIT channel 2 and the PC speaker.\n"
-        "    With no arguments, plays a default 880Hz beep.\n"
+        "    With no arguments, plays a default 880Hz beep.\n",
+        CMD_FLAG_ROOT
     },
     {
         "run", cmd_run,
@@ -963,7 +1034,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Loads a PE32 (.exe) file using the Win32 compatibility\n"
         "    layer. The executable runs natively with Win32 API calls\n"
-        "    translated to ImposOS equivalents.\n"
+        "    translated to ImposOS equivalents.\n",
+        0
     },
     {
         "winget", cmd_winget,
@@ -979,7 +1051,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Download, install, and manage Windows applications.\n"
         "    Packages are PE32 executables fetched from the network\n"
-        "    and stored in the local filesystem.\n"
+        "    and stored in the local filesystem.\n",
+        0
     },
     {
         "petest", cmd_petest,
@@ -993,7 +1066,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Creates hello.exe on the filesystem and executes it\n"
         "    via the PE loader. The .exe imports puts() from\n"
-        "    msvcrt.dll and ExitProcess() from kernel32.dll.\n"
+        "    msvcrt.dll and ExitProcess() from kernel32.dll.\n",
+        CMD_FLAG_ROOT
     },
     {
         "petest-gui", cmd_petest_gui,
@@ -1007,7 +1081,8 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Creates hello_gui.exe on the filesystem and executes it\n"
         "    via the PE loader. Opens a window with text and colored\n"
-        "    rectangles using Win32 user32/gdi32 API shims.\n"
+        "    rectangles using Win32 user32/gdi32 API shims.\n",
+        CMD_FLAG_ROOT
     },
 };
 
@@ -1372,8 +1447,11 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
         completion_matches_count = 0;
         
         if (word_count == 1 && prefix_len > 0) {
-            // Complete command names
+            // Complete command names (skip root-only for non-root users)
+            int is_root = (user_get_current_uid() == 0);
             for (size_t i = 0; i < NUM_COMMANDS && completion_matches_count < 32; i++) {
+                if ((commands[i].flags & CMD_FLAG_ROOT) && !is_root)
+                    continue;
                 const char* name = commands[i].name;
                 size_t j = 0;
                 for (; j < prefix_len; j++) {
@@ -1693,7 +1771,11 @@ void shell_process_command(char* command) {
         if (argc > 0) {
             for (size_t i = 0; i < NUM_COMMANDS; i++) {
                 if (strcmp(argv[0], commands[i].name) == 0) {
-                    commands[i].func(argc, argv);
+                    if ((commands[i].flags & CMD_FLAG_ROOT) && user_get_current_uid() != 0) {
+                        printf("%s: permission denied (requires root)\n", argv[0]);
+                    } else {
+                        commands[i].func(argc, argv);
+                    }
                     break;
                 }
             }
@@ -1737,6 +1819,10 @@ void shell_process_command(char* command) {
 
     for (size_t i = 0; i < NUM_COMMANDS; i++) {
         if (strcmp(argv[0], commands[i].name) == 0) {
+            if ((commands[i].flags & CMD_FLAG_ROOT) && user_get_current_uid() != 0) {
+                printf("%s: permission denied (requires root)\n", argv[0]);
+                return;
+            }
             commands[i].func(argc, argv);
             return;
         }
@@ -1779,9 +1865,15 @@ static void cmd_help(int argc, char* argv[]) {
         return;
     }
 
+    int is_root = (user_get_current_uid() == 0);
     printf("Available commands:\n");
     for (size_t i = 0; i < NUM_COMMANDS; i++) {
-        printf("  %s - %s\n", commands[i].name, commands[i].short_desc);
+        if ((commands[i].flags & CMD_FLAG_ROOT) && !is_root)
+            continue;
+        if (commands[i].flags & CMD_FLAG_ROOT)
+            printf("  %s [root] - %s\n", commands[i].name, commands[i].short_desc);
+        else
+            printf("  %s - %s\n", commands[i].name, commands[i].short_desc);
     }
 }
 
@@ -2477,6 +2569,66 @@ static void cmd_su(int argc, char* argv[]) {
 
     user_set_current(u->username);
     fs_change_directory(u->home);
+}
+
+static void cmd_sudo(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("usage: sudo <command> [args...]\n");
+        return;
+    }
+
+    const char* current_user = user_get_current();
+    if (!current_user) {
+        printf("sudo: no current user\n");
+        return;
+    }
+
+    /* Root doesn't need password */
+    if (user_get_current_uid() != 0) {
+        printf("[sudo] password for %s: ", current_user);
+        char password[64];
+        size_t len = 0;
+
+        while (len < sizeof(password) - 1) {
+            int c = getchar();
+            if (c == '\n' || c == '\r') break;
+            if (c == '\b' || c == 127) {
+                if (len > 0) {
+                    len--;
+                    printf("\b \b");
+                }
+            } else if (c >= 32 && c < 127) {
+                password[len++] = c;
+                putchar('*');
+            }
+        }
+        password[len] = '\0';
+        printf("\n");
+
+        if (!user_authenticate(current_user, password)) {
+            printf("sudo: Authentication failure\n");
+            return;
+        }
+    }
+
+    /* Reconstruct the command string from argv[1..] */
+    char cmd_buf[256];
+    size_t pos = 0;
+    for (int i = 1; i < argc && pos < sizeof(cmd_buf) - 1; i++) {
+        if (i > 1 && pos < sizeof(cmd_buf) - 1)
+            cmd_buf[pos++] = ' ';
+        size_t alen = strlen(argv[i]);
+        if (pos + alen >= sizeof(cmd_buf) - 1)
+            alen = sizeof(cmd_buf) - 1 - pos;
+        memcpy(cmd_buf + pos, argv[i], alen);
+        pos += alen;
+    }
+    cmd_buf[pos] = '\0';
+
+    /* Switch to root, run command, restore user */
+    user_set_current("root");
+    shell_process_command(cmd_buf);
+    user_set_current(current_user);
 }
 
 static void cmd_id(int argc, char* argv[]) {
