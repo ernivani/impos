@@ -1026,7 +1026,254 @@ static void ctx_show_desktop(int mx, int my) {
 
 static void ctx_draw_rename(void);
 
+/* ═══ Toast Notification System ═══════════════════════════════════ */
+
+#define TOAST_MAX         5
+#define TOAST_WIDTH     320
+#define TOAST_HEIGHT     72
+#define TOAST_GAP         6
+#define TOAST_MARGIN     12
+#define TOAST_DURATION  600   /* ticks at 120Hz = 5 seconds */
+#define TOAST_SLIDE_IN   15   /* ticks for slide animation */
+#define TOAST_SLIDE_OUT  10
+#define TOAST_DISMISS_VEL 8   /* px per tick when swiped away */
+
+typedef struct {
+    char app_name[32];
+    char title[48];
+    char message[80];
+    int type;
+    uint32_t start_tick;
+    int active;
+    /* Dismiss state */
+    int dismiss_offset;   /* mouse drag offset (positive = sliding right) */
+    int dismissing;       /* 1 = auto-sliding out after swipe */
+    /* Cached screen position for hit testing */
+    int screen_x, screen_y;
+} toast_t;
+
+static toast_t toasts[TOAST_MAX];
+static int toast_dragging = -1;  /* index of toast being dragged */
+static int toast_drag_start_x;   /* mouse X at drag start */
+static int toast_drag_start_off; /* dismiss_offset at drag start */
+
+void toast_show(const char *app_name, const char *title, const char *message, int type) {
+    /* Find a free slot, or evict the oldest */
+    int slot = -1;
+    uint32_t oldest_tick = 0xFFFFFFFF;
+    int oldest_slot = 0;
+    for (int i = 0; i < TOAST_MAX; i++) {
+        if (!toasts[i].active) { slot = i; break; }
+        if (toasts[i].start_tick < oldest_tick) {
+            oldest_tick = toasts[i].start_tick;
+            oldest_slot = i;
+        }
+    }
+    if (slot < 0) slot = oldest_slot;
+
+    toast_t *t = &toasts[slot];
+    memset(t, 0, sizeof(*t));
+    if (app_name) strncpy(t->app_name, app_name, 31);
+    if (title) strncpy(t->title, title, 47);
+    if (message) strncpy(t->message, message, 79);
+    t->type = type;
+    t->start_tick = pit_get_ticks();
+    t->active = 1;
+    wm_mark_dirty();
+}
+
+/* Draw a small colored dot icon for the notification type */
+static void toast_draw_icon(int cx, int cy, int type) {
+    uint32_t color;
+    switch (type) {
+        case TOAST_SUCCESS: color = GFX_RGB(46, 180, 67);  break;
+        case TOAST_WARNING: color = GFX_RGB(230, 170, 34); break;
+        case TOAST_ERROR:   color = GFX_RGB(230, 60, 55);  break;
+        default:            color = ui_theme.accent;        break;
+    }
+    /* Filled circle r=5 */
+    for (int dy = -5; dy <= 5; dy++)
+        for (int dx = -5; dx <= 5; dx++)
+            if (dx*dx + dy*dy <= 25)
+                gfx_put_pixel(cx + dx, cy + dy, color);
+    /* Inner highlight */
+    for (int dy = -2; dy <= 0; dy++)
+        for (int dx = -2; dx <= 0; dx++)
+            if (dx*dx + dy*dy <= 2) {
+                uint32_t hi = GFX_RGB(
+                    ((color >> 16) & 0xFF) / 2 + 128,
+                    ((color >> 8) & 0xFF) / 2 + 128,
+                    (color & 0xFF) / 2 + 128);
+                gfx_put_pixel(cx + dx - 1, cy + dy - 1, hi);
+            }
+}
+
+/* Draw a small X button */
+static void toast_draw_close(int cx, int cy, int hovered) {
+    uint32_t c = hovered ? GFX_RGB(255, 100, 100) : GFX_RGB(140, 140, 150);
+    for (int d = -3; d <= 3; d++) {
+        gfx_put_pixel(cx + d, cy + d, c);
+        gfx_put_pixel(cx + d, cy - d, c);
+        if (d > -3 && d < 3) {
+            gfx_put_pixel(cx + d + 1, cy + d, c);
+            gfx_put_pixel(cx + d + 1, cy - d, c);
+        }
+    }
+}
+
+static void toast_draw_all(void) {
+    uint32_t now = pit_get_ticks();
+    int fb_w = (int)gfx_width();
+    int base_y = MENUBAR_H + TOAST_MARGIN;
+    int drawn = 0;
+    int any_active = 0;
+    int mx = mouse_get_x(), my = mouse_get_y();
+
+    for (int i = 0; i < TOAST_MAX; i++) {
+        toast_t *t = &toasts[i];
+        if (!t->active) continue;
+
+        uint32_t elapsed = now - t->start_tick;
+
+        /* Auto-dismiss after timeout */
+        if (elapsed > TOAST_DURATION && !t->dismissing) {
+            t->dismissing = 1;
+        }
+
+        /* Animate dismiss (either timeout or user swipe) */
+        if (t->dismissing) {
+            t->dismiss_offset += TOAST_DISMISS_VEL;
+            if (t->dismiss_offset > TOAST_WIDTH + TOAST_MARGIN + 20) {
+                t->active = 0;
+                if (toast_dragging == i) toast_dragging = -1;
+                continue;
+            }
+        }
+
+        any_active = 1;
+
+        /* Slide-in animation */
+        int slide_x = 0;
+        if (elapsed < TOAST_SLIDE_IN) {
+            int anim_range = TOAST_WIDTH + TOAST_MARGIN;
+            slide_x = anim_range - (anim_range * (int)elapsed / TOAST_SLIDE_IN);
+        }
+
+        int total_offset = slide_x + t->dismiss_offset;
+        int tx = fb_w - TOAST_WIDTH - TOAST_MARGIN + total_offset;
+        int cur_y = base_y + drawn * (TOAST_HEIGHT + TOAST_GAP);
+
+        /* Save for hit testing */
+        t->screen_x = tx;
+        t->screen_y = cur_y;
+
+        /* Clip: skip if fully off-screen right */
+        if (tx >= fb_w) { drawn++; continue; }
+
+        /* --- Draw notification card --- */
+
+        /* Background: frosted glass look */
+        gfx_rounded_rect_alpha(tx, cur_y, TOAST_WIDTH, TOAST_HEIGHT,
+                               10, GFX_RGB(35, 35, 48), 210);
+        /* Subtle border */
+        gfx_draw_rect(tx, cur_y, TOAST_WIDTH, TOAST_HEIGHT,
+                       GFX_RGB(65, 65, 80));
+
+        /* Type icon (left side) */
+        toast_draw_icon(tx + 16, cur_y + 18, t->type);
+
+        /* App name (small, dimmed, top-left after icon) */
+        if (t->app_name[0]) {
+            gfx_draw_string_nobg(tx + 28, cur_y + 8,
+                                 t->app_name, GFX_RGB(140, 140, 155));
+        }
+
+        /* Close X button (top-right) */
+        int close_cx = tx + TOAST_WIDTH - 14;
+        int close_cy = cur_y + 14;
+        int close_hovered = (mx >= close_cx - 8 && mx <= close_cx + 8 &&
+                             my >= close_cy - 8 && my <= close_cy + 8);
+        toast_draw_close(close_cx, close_cy, close_hovered);
+
+        /* Title (bold white) */
+        int text_x = tx + 28;
+        int title_y = cur_y + 8 + FONT_H + 4;
+        if (t->title[0]) {
+            gfx_draw_string_nobg(text_x, title_y,
+                                 t->title, GFX_RGB(240, 240, 248));
+        }
+
+        /* Message (dimmer, below title) */
+        if (t->message[0]) {
+            gfx_draw_string_nobg(text_x, title_y + FONT_H + 2,
+                                 t->message, GFX_RGB(160, 160, 175));
+        }
+
+        drawn++;
+    }
+
+    if (any_active)
+        wm_mark_dirty();
+}
+
+/* Handle mouse interactions with toast notifications.
+   Returns 1 if event was consumed by toast system. */
+int toast_handle_mouse(int mx, int my, int btn_down, int btn_held, int btn_up) {
+    /* Drag in progress */
+    if (toast_dragging >= 0) {
+        toast_t *t = &toasts[toast_dragging];
+        if (!t->active) { toast_dragging = -1; return 0; }
+
+        if (btn_held) {
+            /* Update drag offset */
+            int dx = mx - toast_drag_start_x;
+            t->dismiss_offset = toast_drag_start_off + (dx > 0 ? dx : 0);
+            wm_mark_dirty();
+            return 1;
+        }
+        if (btn_up) {
+            /* Release: if dragged far enough, auto-dismiss; else snap back */
+            if (t->dismiss_offset > TOAST_WIDTH / 3) {
+                t->dismissing = 1;
+            } else {
+                t->dismiss_offset = 0;
+            }
+            toast_dragging = -1;
+            wm_mark_dirty();
+            return 1;
+        }
+    }
+
+    /* Check click/drag start on a toast */
+    if (btn_down) {
+        for (int i = 0; i < TOAST_MAX; i++) {
+            toast_t *t = &toasts[i];
+            if (!t->active || t->dismissing) continue;
+            if (mx >= t->screen_x && mx < t->screen_x + TOAST_WIDTH &&
+                my >= t->screen_y && my < t->screen_y + TOAST_HEIGHT) {
+                /* Check close button */
+                int close_cx = t->screen_x + TOAST_WIDTH - 14;
+                int close_cy = t->screen_y + 14;
+                if (mx >= close_cx - 8 && mx <= close_cx + 8 &&
+                    my >= close_cy - 8 && my <= close_cy + 8) {
+                    t->dismissing = 1;
+                    wm_mark_dirty();
+                    return 1;
+                }
+                /* Start drag */
+                toast_dragging = i;
+                toast_drag_start_x = mx;
+                toast_drag_start_off = t->dismiss_offset;
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 static void ctx_post_composite(void) {
+    toast_draw_all();
     ctx_draw_rename();
     if (!ctx_menu.visible) return;
 
@@ -1285,6 +1532,17 @@ static void desktop_unified_idle(void) {
     int mx = mouse_get_x(), my = mouse_get_y();
     static uint8_t prev_btns = 0;
 
+    /* Toast mouse handling (swipe-to-dismiss, close button) */
+    {
+        int btn_down = (btns & MOUSE_BTN_LEFT) && !(prev_btns & MOUSE_BTN_LEFT);
+        int btn_held = (btns & MOUSE_BTN_LEFT) && (prev_btns & MOUSE_BTN_LEFT);
+        int btn_up   = !(btns & MOUSE_BTN_LEFT) && (prev_btns & MOUSE_BTN_LEFT);
+        if (toast_handle_mouse(mx, my, btn_down, btn_held, btn_up)) {
+            prev_btns = btns;
+            return;  /* toast consumed the event */
+        }
+    }
+
     if ((btns & MOUSE_BTN_LEFT) && !(prev_btns & MOUSE_BTN_LEFT)) {
         ui_event_t ev;
         ev.type = UI_EVENT_MOUSE_DOWN;
@@ -1529,7 +1787,7 @@ static void desktop_unified_idle(void) {
             needs_composite = 1;
         }
     }
-    if (needs_composite) {
+    if (needs_composite || wm_is_dirty()) {
         task_set_current(TASK_WM);
         wm_composite();
     }
@@ -1948,6 +2206,12 @@ int desktop_run(void) {
         desktop_first_show = 0;
         gfx_crossfade(8, 30);
 
+        /* Welcome toast on login */
+        const char *user = user_get_current();
+        char welcome_msg[80];
+        snprintf(welcome_msg, sizeof(welcome_msg), "Welcome back, %s",
+                 user ? user : "user");
+        toast_show("ImposOS", "Welcome", welcome_msg, TOAST_INFO);
     } else {
         gfx_flip();
     }
@@ -1968,7 +2232,7 @@ int desktop_run(void) {
                 needs_composite = 1;
             }
         }
-        if (needs_composite) {
+        if (needs_composite || wm_is_dirty()) {
             task_set_current(TASK_WM);
             wm_composite();
         }
