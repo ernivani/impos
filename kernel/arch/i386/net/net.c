@@ -9,6 +9,7 @@
 #include <kernel/dns.h>
 #include <kernel/dhcp.h>
 #include <kernel/httpd.h>
+#include <kernel/io.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -65,21 +66,33 @@ void net_initialize(void) {
     httpd_initialize();
     
     /* Try to initialize NIC drivers: RTL8139 first, then PCnet */
+    DBG("net: trying RTL8139...");
     if (rtl8139_initialize() == 0) {
         rtl8139_get_mac(net_config.mac);
         net_config.link_up = 1;
         active_driver = 1;
+        DBG("net: RTL8139 OK, MAC=%x:%x:%x:%x:%x:%x",
+            net_config.mac[0], net_config.mac[1], net_config.mac[2],
+            net_config.mac[3], net_config.mac[4], net_config.mac[5]);
         printf("Network: RTL8139 initialized\n");
-    } else if (pcnet_initialize() == 0) {
-        pcnet_get_mac(net_config.mac);
-        net_config.link_up = 1;
-        active_driver = 2;
-        printf("Network: PCnet-FAST III initialized\n");
     } else {
-        printf("No network card detected\n");
+        DBG("net: RTL8139 not found, trying PCnet...");
+        if (pcnet_initialize() == 0) {
+            pcnet_get_mac(net_config.mac);
+            net_config.link_up = 1;
+            active_driver = 2;
+            DBG("net: PCnet OK, MAC=%x:%x:%x:%x:%x:%x",
+                net_config.mac[0], net_config.mac[1], net_config.mac[2],
+                net_config.mac[3], net_config.mac[4], net_config.mac[5]);
+            printf("Network: PCnet-FAST III initialized\n");
+        } else {
+            DBG("net: no NIC found!");
+            printf("No network card detected\n");
+        }
     }
-    
+
     net_initialized = 1;
+    DBG("net: init done, driver=%d link_up=%d", active_driver, net_config.link_up);
 }
 
 net_config_t* net_get_config(void) {
@@ -94,10 +107,12 @@ void net_set_ip(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 }
 
 int net_send_packet(const uint8_t* data, size_t len) {
+    DBG("net: send_packet len=%u driver=%d", (unsigned)len, active_driver);
     int ret = -1;
     if (active_driver == 1) ret = rtl8139_send_packet(data, len);
     else if (active_driver == 2) ret = pcnet_send_packet(data, len);
     if (ret == 0) { net_tx_packets++; net_tx_bytes += (uint32_t)len; }
+    DBG("net: send_packet ret=%d", ret);
     return ret;
 }
 
@@ -125,10 +140,10 @@ void net_process_packets(void) {
     if (active_driver == 0) {
         return;
     }
-    
+
     uint8_t buffer[1500];
     size_t len = sizeof(buffer);
-    
+
     while (net_receive_packet(buffer, &len) == 0) {
         net_rx_packets++;
         net_rx_bytes += (uint32_t)len;
@@ -138,15 +153,16 @@ void net_process_packets(void) {
             len = sizeof(buffer);
             continue;
         }
-        
+
         uint16_t ethertype = (buffer[12] << 8) | buffer[13];
-        
+        DBG("net: rx pkt len=%u ethertype=0x%x", (unsigned)len, ethertype);
+
         if (ethertype == 0x0806) {  /* ARP */
             arp_handle_packet(buffer + 14, len - 14);
         } else if (ethertype == 0x0800) {  /* IPv4 */
             ip_handle_packet(buffer + 14, len - 14);
         }
-        
+
         len = sizeof(buffer);
     }
 }

@@ -85,4 +85,22 @@ void tls_close(tls_conn_t *conn);
 int https_get(const char *host, uint16_t port, const char *path,
               uint8_t **out_body, size_t *out_len);
 
+/* Async HTTPS GET — runs in a background thread so UI stays responsive */
+typedef struct {
+    /* Input (set by caller before launch) */
+    char     host[256];
+    uint16_t port;
+    char     path[256];
+    /* Output (set by thread on completion) */
+    uint8_t *body;
+    size_t   body_len;
+    int      result;      /* >0 = body_len, <0 = error */
+    volatile int done;    /* 0 = running, 1 = finished */
+    int      tid;         /* thread task id */
+} https_async_t;
+
+/* Start async HTTPS GET. Returns 0 on success, -1 if thread creation fails.
+ * Caller should poll req->done in a loop with task_yield(). */
+int https_get_async(https_async_t *req);
+
 #endif

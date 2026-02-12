@@ -5,6 +5,7 @@
 #include <kernel/udp.h>
 #include <kernel/tcp.h>
 #include <kernel/firewall.h>
+#include <kernel/io.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -38,7 +39,11 @@ void ip_initialize(void) {
 
 int ip_send_packet(const uint8_t dst_ip[4], uint8_t protocol, const uint8_t* payload, size_t payload_len) {
     net_config_t* config = net_get_config();
+    DBG("ip: send to %d.%d.%d.%d proto=%d len=%u link_up=%d",
+        dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3],
+        protocol, (unsigned)payload_len, config->link_up);
     if (!config->link_up) {
+        DBG("ip: link down, aborting send");
         return -1;
     }
     
@@ -48,9 +53,25 @@ int ip_send_packet(const uint8_t dst_ip[4], uint8_t protocol, const uint8_t* pay
     if (memcmp(dst_ip, bcast_ip, 4) == 0) {
         /* Broadcast IP always uses broadcast MAC */
         memset(dst_mac, 0xFF, 6);
-    } else if (arp_resolve(dst_ip, dst_mac) != 0) {
-        /* ARP failed, fallback to broadcast */
-        memset(dst_mac, 0xFF, 6);
+    } else {
+        /* Determine ARP target: use gateway for non-local destinations */
+        const uint8_t *arp_target = dst_ip;
+        int local = 1;
+        for (int i = 0; i < 4; i++) {
+            if ((dst_ip[i] & config->netmask[i]) != (config->ip[i] & config->netmask[i])) {
+                local = 0;
+                break;
+            }
+        }
+        if (!local) {
+            arp_target = config->gateway;
+            DBG("ip: non-local dest, ARP resolving gateway %d.%d.%d.%d",
+                arp_target[0], arp_target[1], arp_target[2], arp_target[3]);
+        }
+        if (arp_resolve(arp_target, dst_mac) != 0) {
+            DBG("ip: ARP failed, using broadcast MAC");
+            memset(dst_mac, 0xFF, 6);
+        }
     }
     
     /* Build packet: Ethernet + IP + Payload */
@@ -89,23 +110,31 @@ int ip_send_packet(const uint8_t dst_ip[4], uint8_t protocol, const uint8_t* pay
 
 void ip_handle_packet(const uint8_t* data, size_t len) {
     if (len < sizeof(ip_header_t)) {
+        DBG("ip: recv too short len=%u", (unsigned)len);
         return;
     }
-    
+
     const ip_header_t* ip_hdr = (const ip_header_t*)data;
     net_config_t* config = net_get_config();
-    
+
+    DBG("ip: recv from %d.%d.%d.%d -> %d.%d.%d.%d proto=%d len=%u",
+        ip_hdr->src_ip[0], ip_hdr->src_ip[1], ip_hdr->src_ip[2], ip_hdr->src_ip[3],
+        ip_hdr->dst_ip[0], ip_hdr->dst_ip[1], ip_hdr->dst_ip[2], ip_hdr->dst_ip[3],
+        ip_hdr->protocol, (unsigned)len);
+
     /* Check if packet is for us (or broadcast for DHCP) */
     uint8_t bcast[4] = {255, 255, 255, 255};
     uint8_t zero[4]  = {0, 0, 0, 0};
     if (memcmp(ip_hdr->dst_ip, config->ip, 4) != 0 &&
         memcmp(ip_hdr->dst_ip, bcast, 4) != 0 &&
         memcmp(config->ip, zero, 4) != 0) {
+        DBG("ip: not for us, dropping");
         return;
     }
-    
+
     /* Verify checksum: sum of entire header (including checksum) should be 0 */
     if (ip_checksum(ip_hdr, sizeof(ip_header_t)) != 0) {
+        DBG("ip: bad checksum, dropping");
         return;  /* Bad checksum */
     }
     
@@ -140,6 +169,8 @@ void icmp_initialize(void) {
 }
 
 int icmp_send_echo_request(const uint8_t dst_ip[4], uint16_t id, uint16_t seq) {
+    DBG("icmp: echo request to %d.%d.%d.%d id=%d seq=%d",
+        dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], id, seq);
     uint8_t payload[64];
     icmp_header_t* icmp = (icmp_header_t*)payload;
     

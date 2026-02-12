@@ -13,6 +13,7 @@
 #include <kernel/tls.h>
 #include <kernel/socket.h>
 #include <kernel/dns.h>
+#include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -822,6 +823,47 @@ void test_crypto(void) {
         TEST_ASSERT(result.d[0] == 36, "bignum 2^16 mod 100 = 36");
     }
 
+    /* Bignum mulmod: carry overflow test (2048-bit) */
+    {
+        bignum_t a, two, m, result;
+        bn_zero(&a); bn_zero(&two); bn_zero(&m);
+        /* m = 2^2047 + 1 (has MSB set, true 2048-bit number) */
+        m.d[63] = 0x80000000;
+        m.d[0] = 1;
+        m.top = 64;
+        /* a = 2^2047 = m - 1 */
+        a.d[63] = 0x80000000;
+        a.top = 64;
+        /* Compute a*2 mod m = 2^2048 mod (2^2047+1) = 2^2047 - 1 */
+        two.d[0] = 2; two.top = 1;
+        bn_mulmod(&result, &a, &two, &m);
+        bignum_t expected;
+        bn_zero(&expected);
+        for (int i = 0; i < 63; i++) expected.d[i] = 0xFFFFFFFF;
+        expected.d[63] = 0x7FFFFFFF;
+        expected.top = 64;
+        TEST_ASSERT(bn_cmp(&result, &expected) == 0, "mulmod 2048-bit carry");
+    }
+
+    /* Bignum modexp: (m-1)^2 mod m = 1 (2048-bit) */
+    {
+        bignum_t base, exp, m, result;
+        bn_zero(&base); bn_zero(&exp); bn_zero(&m);
+        /* m = 2^2047 + 3 */
+        m.d[63] = 0x80000000;
+        m.d[0] = 3;
+        m.top = 64;
+        /* base = m - 1 = 2^2047 + 2 */
+        base.d[63] = 0x80000000;
+        base.d[0] = 2;
+        base.top = 64;
+        /* exp = 2 */
+        exp.d[0] = 2; exp.top = 1;
+        bn_modexp(&result, &base, &exp, &m);
+        /* (m-1)^2 mod m = (-1)^2 mod m = 1 */
+        TEST_ASSERT(result.d[0] == 1 && result.top == 1, "modexp (m-1)^2 mod m = 1");
+    }
+
     /* PRNG: should produce non-zero, non-identical output */
     {
         uint8_t buf1[16], buf2[16];
@@ -850,25 +892,40 @@ void test_tls(void) {
     }
 
     printf("  Attempting HTTPS GET to example.com...\n");
-    uint8_t *body = NULL;
-    size_t body_len = 0;
-    int ret = https_get("example.com", 443, "/", &body, &body_len);
-    if (ret > 0 && body) {
-        TEST_ASSERT(body_len > 0, "tls: got response body");
+
+    /* Run in background thread so UI stays responsive */
+    static https_async_t req;
+    strcpy(req.host, "example.com");
+    req.port = 443;
+    strcpy(req.path, "/");
+
+    if (https_get_async(&req) < 0) {
+        printf("  Failed to start HTTPS thread\n");
+        return;
+    }
+
+    printf("  TLS running in background (thread %d)...\n", req.tid);
+    while (!req.done) {
+        keyboard_run_idle();   /* keep WM/UI alive */
+        task_yield();
+    }
+
+    if (req.result > 0 && req.body) {
+        TEST_ASSERT(req.body_len > 0, "tls: got response body");
         /* Check for HTML content */
         int has_html = 0;
-        for (size_t i = 0; i + 5 < body_len; i++) {
-            if (memcmp(body + i, "<html", 5) == 0 ||
-                memcmp(body + i, "<HTML", 5) == 0) {
+        for (size_t i = 0; i + 5 < req.body_len; i++) {
+            if (memcmp(req.body + i, "<html", 5) == 0 ||
+                memcmp(req.body + i, "<HTML", 5) == 0) {
                 has_html = 1;
                 break;
             }
         }
         TEST_ASSERT(has_html, "tls: response contains HTML");
-        printf("  Received %u bytes of HTML\n", (unsigned)body_len);
-        free(body);
+        printf("  Received %u bytes of HTML\n", (unsigned)req.body_len);
+        free(req.body);
     } else {
-        printf("  HTTPS GET failed (ret=%d) - server may not support our cipher\n", ret);
+        printf("  HTTPS GET failed (ret=%d) - server may not support our cipher\n", req.result);
     }
 }
 
