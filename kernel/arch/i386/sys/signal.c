@@ -4,6 +4,7 @@
 #include <kernel/shm.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
+#include <kernel/wm.h>
 #include <kernel/io.h>
 #include <stdlib.h>
 
@@ -44,6 +45,10 @@ static void sig_kill_task(int tid) {
 
     pipe_cleanup_task(tid);
     shm_cleanup_task(tid);
+    if (t->wm_id >= 0) {
+        wm_destroy_window(t->wm_id);
+        t->wm_id = -1;
+    }
     t->killed = 1;
 
     if (t->is_user) {

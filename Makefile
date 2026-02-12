@@ -74,6 +74,19 @@ run-us: iso $(DISK_IMAGE)
 		-k en-us \
 		$(KVM_FLAG)
 
+run-debug: iso $(DISK_IMAGE)
+	qemu-system-i386 \
+		-cdrom myos.iso \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0,hostfwd=tcp::8080-:80 \
+		-device rtl8139,netdev=net0 \
+		-boot d \
+		-m 4G \
+		-vga virtio \
+		-display gtk \
+		-serial file:serial.log \
+		$(KVM_FLAG)
+
 run-gtk: iso
 	qemu-system-i386 -cdrom myos.iso -vga virtio -m 4G -display gtk $(KVM_FLAG)
 
