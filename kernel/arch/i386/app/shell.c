@@ -136,6 +136,7 @@ static void cmd_petest_gui(int argc, char* argv[]);
 static void cmd_sudo(int argc, char* argv[]);
 static void cmd_threadtest(int argc, char* argv[]);
 static void cmd_memtest(int argc, char* argv[]);
+static void cmd_fstest(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -1114,6 +1115,20 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Tests VirtualAlloc, VirtualProtect, VirtualQuery,\n"
         "    VirtualFree, and GlobalAlloc via a Win32 PE .exe.\n",
+        CMD_FLAG_ROOT
+    },
+    {
+        "fstest", cmd_fstest,
+        "Run Win32 file system tests",
+        "fstest: fstest\n"
+        "    Write fs_test.exe to disk and run it.\n",
+        "NAME\n"
+        "    fstest - test Win32 file system APIs\n\n"
+        "SYNOPSIS\n"
+        "    fstest\n\n"
+        "DESCRIPTION\n"
+        "    Tests CreateFile, ReadFile, WriteFile, SetFilePointer,\n"
+        "    FindFirstFile, CopyFile, DeleteFile, and path queries.\n",
         CMD_FLAG_ROOT
     },
 };
@@ -4633,6 +4648,25 @@ static void cmd_memtest(int argc, char* argv[]) {
             task_yield();
     } else {
         printf("memtest: failed (%d)\n", tid);
+    }
+}
+
+/* ── Embedded fs_test.exe (Win32 FS test) ─────────────────────
+ * PE32 console app: tests CreateFile, ReadFile, WriteFile,
+ * SetFilePointer, FindFirstFile, CopyFile, DeleteFile, paths.
+ */
+#include "fs_test_embed.h"
+
+static void cmd_fstest(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    fs_create_file("fs_test.exe", 0);
+    fs_write_file("fs_test.exe", fs_test_data, fs_test_data_len);
+    int tid = pe_run("fs_test.exe");
+    if (tid >= 0) {
+        while (task_get(tid) != NULL)
+            task_yield();
+    } else {
+        printf("fstest: failed (%d)\n", tid);
     }
 }
 
