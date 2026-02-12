@@ -238,6 +238,130 @@ static void *shim___delayLoadHelper2(const ImgDelayDescr *pidd, void **ppfnIATEn
     return (void *)hmod;
 }
 
+/* ── Wide String Functions ────────────────────────────────────── */
+
+static size_t shim_wcslen(const WCHAR *s) {
+    size_t len = 0;
+    while (s[len]) len++;
+    return len;
+}
+
+static WCHAR *shim_wcscpy(WCHAR *dst, const WCHAR *src) {
+    WCHAR *d = dst;
+    while ((*d++ = *src++));
+    return dst;
+}
+
+static WCHAR *shim_wcsncpy(WCHAR *dst, const WCHAR *src, size_t n) {
+    size_t i;
+    for (i = 0; i < n && src[i]; i++)
+        dst[i] = src[i];
+    for (; i < n; i++)
+        dst[i] = 0;
+    return dst;
+}
+
+static WCHAR *shim_wcscat(WCHAR *dst, const WCHAR *src) {
+    WCHAR *d = dst;
+    while (*d) d++;
+    while ((*d++ = *src++));
+    return dst;
+}
+
+static int shim_wcscmp(const WCHAR *a, const WCHAR *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return (int)*a - (int)*b;
+}
+
+static int shim_wcsncmp(const WCHAR *a, const WCHAR *b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] != b[i]) return (int)a[i] - (int)b[i];
+        if (!a[i]) return 0;
+    }
+    return 0;
+}
+
+static WCHAR *shim_wcschr(const WCHAR *s, WCHAR c) {
+    while (*s) {
+        if (*s == c) return (WCHAR *)s;
+        s++;
+    }
+    return c == 0 ? (WCHAR *)s : NULL;
+}
+
+static WCHAR *shim_wcsrchr(const WCHAR *s, WCHAR c) {
+    const WCHAR *last = NULL;
+    while (*s) {
+        if (*s == c) last = s;
+        s++;
+    }
+    if (c == 0) return (WCHAR *)s;
+    return (WCHAR *)last;
+}
+
+static WCHAR *shim_wcsstr(const WCHAR *haystack, const WCHAR *needle) {
+    if (!needle[0]) return (WCHAR *)haystack;
+    size_t nlen = shim_wcslen(needle);
+    for (; *haystack; haystack++) {
+        if (shim_wcsncmp(haystack, needle, nlen) == 0)
+            return (WCHAR *)haystack;
+    }
+    return NULL;
+}
+
+static WCHAR *shim__wcsdup(const WCHAR *s) {
+    size_t len = shim_wcslen(s) + 1;
+    WCHAR *dup = (WCHAR *)malloc(len * sizeof(WCHAR));
+    if (dup) memcpy(dup, s, len * sizeof(WCHAR));
+    return dup;
+}
+
+static int shim_wprintf(const WCHAR *fmt, ...) {
+    /* Convert format to narrow and print */
+    char narrow[512];
+    extern int win32_wchar_to_utf8(const WCHAR *, int, char *, int);
+    win32_wchar_to_utf8(fmt, -1, narrow, sizeof(narrow));
+    printf("%s", narrow);
+    return (int)strlen(narrow);
+}
+
+static int shim_swprintf(WCHAR *buf, size_t n, const WCHAR *fmt, ...) {
+    (void)buf; (void)n; (void)fmt;
+    if (buf && n > 0) buf[0] = 0;
+    return 0;
+}
+
+static int shim__wtoi(const WCHAR *s) {
+    int val = 0, neg = 0;
+    if (!s) return 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') { neg = 1; s++; }
+    else if (*s == '+') s++;
+    while (*s >= '0' && *s <= '9') {
+        val = val * 10 + (*s - '0');
+        s++;
+    }
+    return neg ? -val : val;
+}
+
+static void *shim__wfopen(const WCHAR *filename, const WCHAR *mode) {
+    char fn[256], md[16];
+    extern int win32_wchar_to_utf8(const WCHAR *, int, char *, int);
+    win32_wchar_to_utf8(filename, -1, fn, sizeof(fn));
+    win32_wchar_to_utf8(mode, -1, md, sizeof(md));
+    return fopen(fn, md);
+}
+
+static WCHAR shim_towupper(WCHAR c) {
+    if (c >= 'a' && c <= 'z') return c - 32;
+    return c;
+}
+
+static WCHAR shim_towlower(WCHAR c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    return c;
+}
+
 /* ── Export Table ─────────────────────────────────────────────── */
 
 static const win32_export_entry_t msvcrt_exports[] = {
@@ -329,6 +453,24 @@ static const win32_export_entry_t msvcrt_exports[] = {
 
     /* Delay-load */
     { "__delayLoadHelper2", (void *)shim___delayLoadHelper2 },
+
+    /* Wide string functions */
+    { "wcslen",         (void *)shim_wcslen },
+    { "wcscpy",         (void *)shim_wcscpy },
+    { "wcsncpy",        (void *)shim_wcsncpy },
+    { "wcscat",         (void *)shim_wcscat },
+    { "wcscmp",         (void *)shim_wcscmp },
+    { "wcsncmp",        (void *)shim_wcsncmp },
+    { "wcschr",         (void *)shim_wcschr },
+    { "wcsrchr",        (void *)shim_wcsrchr },
+    { "wcsstr",         (void *)shim_wcsstr },
+    { "_wcsdup",        (void *)shim__wcsdup },
+    { "wprintf",        (void *)shim_wprintf },
+    { "swprintf",       (void *)shim_swprintf },
+    { "_wtoi",          (void *)shim__wtoi },
+    { "_wfopen",        (void *)shim__wfopen },
+    { "towupper",       (void *)shim_towupper },
+    { "towlower",       (void *)shim_towlower },
 };
 
 const win32_dll_shim_t win32_msvcrt = {

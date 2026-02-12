@@ -1401,6 +1401,89 @@ static int WINAPI shim_SetDIBitsToDevice(
 
 /* ── Export Table ─────────────────────────────────────────────── */
 
+/* ── W-suffix Wrappers ───────────────────────────────────────── */
+
+/* UTF-8 ↔ UTF-16 helpers from kernel32 */
+extern int win32_utf8_to_wchar(const char *utf8, int utf8_len, WCHAR *out, int out_len);
+extern int win32_wchar_to_utf8(const WCHAR *wstr, int wstr_len, char *out, int out_len);
+
+static BOOL WINAPI shim_TextOutW(HDC hdc, int x, int y, LPCWSTR lpString, int c) {
+    char narrow[512];
+    int len = win32_wchar_to_utf8(lpString, c, narrow, sizeof(narrow) - 1);
+    if (len > 0 && narrow[len - 1] == '\0') len--;
+    narrow[len < (int)sizeof(narrow) ? len : (int)sizeof(narrow) - 1] = '\0';
+    return shim_TextOutA(hdc, x, y, narrow, len);
+}
+
+static HFONT WINAPI shim_CreateFontW(
+    int cHeight, int cWidth, int cEscapement, int cOrientation,
+    int cWeight, DWORD bItalic, DWORD bUnderline, DWORD bStrikeOut,
+    DWORD iCharSet, DWORD iOutPrecision, DWORD iClipPrecision,
+    DWORD iQuality, DWORD iPitchAndFamily, LPCWSTR pszFaceName)
+{
+    char narrow[64] = {0};
+    if (pszFaceName)
+        win32_wchar_to_utf8(pszFaceName, -1, narrow, sizeof(narrow));
+    return shim_CreateFontA(cHeight, cWidth, cEscapement, cOrientation,
+        cWeight, bItalic, bUnderline, bStrikeOut,
+        iCharSet, iOutPrecision, iClipPrecision,
+        iQuality, iPitchAndFamily, pszFaceName ? narrow : NULL);
+}
+
+static HFONT WINAPI shim_CreateFontIndirectW(const LOGFONTW *lplf) {
+    if (!lplf) return (HFONT)0;
+    LOGFONTA a;
+    memcpy(&a, lplf, sizeof(a)); /* same layout up to lfFaceName */
+    win32_wchar_to_utf8(lplf->lfFaceName, 32, a.lfFaceName, sizeof(a.lfFaceName));
+    a.lfFaceName[31] = '\0';
+    return shim_CreateFontIndirectA(&a);
+}
+
+static BOOL WINAPI shim_GetTextExtentPoint32W(HDC hdc, LPCWSTR lpString, int c, LPSIZE lpSize) {
+    /* Our font is fixed-width 8x16, so width = chars * 8 regardless of encoding */
+    (void)hdc; (void)lpString;
+    if (!lpSize) return FALSE;
+    lpSize->cx = c * 8;
+    lpSize->cy = 16;
+    return TRUE;
+}
+
+static int WINAPI shim_EnumFontFamiliesExW(
+    HDC hdc, LPLOGFONTW lpLogfont, FONTENUMPROCA lpProc, LPARAM lParam, DWORD dwFlags)
+{
+    /* Delegate to A version — callback uses ENUMLOGFONTEXA which is A-only */
+    LOGFONTA a;
+    memset(&a, 0, sizeof(a));
+    if (lpLogfont)
+        win32_wchar_to_utf8(lpLogfont->lfFaceName, 32, a.lfFaceName, sizeof(a.lfFaceName));
+    return shim_EnumFontFamiliesExA(hdc, &a, lpProc, lParam, dwFlags);
+}
+
+static int WINAPI shim_GetTextFaceW(HDC hdc, int c, LPWSTR lpName) {
+    char narrow[64];
+    int ret = shim_GetTextFaceA(hdc, sizeof(narrow), narrow);
+    if (lpName && c > 0)
+        win32_utf8_to_wchar(narrow, -1, lpName, c);
+    return ret;
+}
+
+static int WINAPI shim_GetObjectW(HGDIOBJ h, int cb, LPVOID pv) {
+    /* For LOGFONTW output, delegate to A and convert */
+    if (cb >= (int)sizeof(LOGFONTW) && pv) {
+        /* Try as font first */
+        LOGFONTA a;
+        int ret = shim_GetObjectA(h, sizeof(LOGFONTA), &a);
+        if (ret == (int)sizeof(LOGFONTA)) {
+            LOGFONTW *w = (LOGFONTW *)pv;
+            memcpy(w, &a, (size_t)((char *)a.lfFaceName - (char *)&a));
+            win32_utf8_to_wchar(a.lfFaceName, -1, w->lfFaceName, 32);
+            return (int)sizeof(LOGFONTW);
+        }
+    }
+    /* Fall through to A version for non-font objects */
+    return shim_GetObjectA(h, cb, pv);
+}
+
 static const win32_export_entry_t gdi32_exports[] = {
     /* Original functions */
     { "GetDC",                  (void *)shim_GetDC },
@@ -1453,6 +1536,14 @@ static const win32_export_entry_t gdi32_exports[] = {
     { "SetViewportOrgEx",       (void *)shim_SetViewportOrgEx },
     { "SetWindowOrgEx",         (void *)shim_SetWindowOrgEx },
     { "GetDeviceCaps",          (void *)shim_GetDeviceCaps },
+    /* W-suffix variants */
+    { "TextOutW",               (void *)shim_TextOutW },
+    { "CreateFontW",            (void *)shim_CreateFontW },
+    { "CreateFontIndirectW",    (void *)shim_CreateFontIndirectW },
+    { "GetTextExtentPoint32W",  (void *)shim_GetTextExtentPoint32W },
+    { "EnumFontFamiliesExW",    (void *)shim_EnumFontFamiliesExW },
+    { "GetTextFaceW",           (void *)shim_GetTextFaceW },
+    { "GetObjectW",             (void *)shim_GetObjectW },
     /* Phase 8: Clipping */
     { "IntersectClipRect",      (void *)shim_IntersectClipRect },
     { "SelectClipRgn",          (void *)shim_SelectClipRgn },

@@ -530,27 +530,118 @@ static BOOL WINAPI shim_KillTimer(HWND hWnd, UINT nIDEvent) {
     return TRUE;
 }
 
+/* ── W-suffix Wrappers ───────────────────────────────────────── */
+
+/* UTF-8 ↔ UTF-16 helpers from kernel32 */
+extern int win32_utf8_to_wchar(const char *utf8, int utf8_len, WCHAR *out, int out_len);
+extern int win32_wchar_to_utf8(const WCHAR *wstr, int wstr_len, char *out, int out_len);
+
+static ATOM WINAPI shim_RegisterClassExW(const WNDCLASSEXW *lpwcx) {
+    if (!lpwcx || !lpwcx->lpszClassName) return 0;
+
+    WNDCLASSEXA a;
+    memcpy(&a, lpwcx, sizeof(a)); /* Same layout except string pointers */
+    char class_name[64];
+    win32_wchar_to_utf8(lpwcx->lpszClassName, -1, class_name, sizeof(class_name));
+    a.lpszClassName = class_name;
+    a.lpszMenuName = NULL;
+    return shim_RegisterClassExA(&a);
+}
+
+static HWND WINAPI shim_CreateWindowExW(
+    DWORD dwExStyle, LPCWSTR lpClassName, LPCWSTR lpWindowName, DWORD dwStyle,
+    INT x, INT y, INT nWidth, INT nHeight,
+    HWND hWndParent, HMENU hMenu, HINSTANCE hInstance, LPVOID lpParam)
+{
+    char class_name[64] = {0}, title[128] = {0};
+    if (lpClassName)
+        win32_wchar_to_utf8(lpClassName, -1, class_name, sizeof(class_name));
+    if (lpWindowName)
+        win32_wchar_to_utf8(lpWindowName, -1, title, sizeof(title));
+    return shim_CreateWindowExA(dwExStyle,
+        lpClassName ? class_name : NULL,
+        lpWindowName ? title : NULL,
+        dwStyle, x, y, nWidth, nHeight,
+        hWndParent, hMenu, hInstance, lpParam);
+}
+
+static LRESULT WINAPI shim_DefWindowProcW(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    return shim_DefWindowProcA(hWnd, msg, wParam, lParam);
+}
+
+static BOOL WINAPI shim_GetMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgMin, UINT wMsgMax) {
+    return shim_GetMessageA(lpMsg, hWnd, wMsgMin, wMsgMax);
+}
+
+static LRESULT WINAPI shim_DispatchMessageW(const MSG *lpMsg) {
+    return shim_DispatchMessageA(lpMsg);
+}
+
+static int WINAPI shim_MessageBoxW(HWND hWnd, LPCWSTR lpText, LPCWSTR lpCaption, UINT uType) {
+    char text[256] = {0}, caption[128] = {0};
+    if (lpText)
+        win32_wchar_to_utf8(lpText, -1, text, sizeof(text));
+    if (lpCaption)
+        win32_wchar_to_utf8(lpCaption, -1, caption, sizeof(caption));
+    return shim_MessageBoxA(hWnd, text, caption, uType);
+}
+
+static BOOL WINAPI shim_SetWindowTextW(HWND hWnd, LPCWSTR lpString) {
+    char narrow[128] = {0};
+    if (lpString)
+        win32_wchar_to_utf8(lpString, -1, narrow, sizeof(narrow));
+    return shim_SetWindowTextA(hWnd, narrow);
+}
+
+static HCURSOR WINAPI shim_LoadCursorW(HINSTANCE hInst, LPCWSTR lpCursorName) {
+    /* Cursor names are typically resource IDs (integers), just pass through */
+    return shim_LoadCursorA(hInst, (LPCSTR)lpCursorName);
+}
+
+static HICON WINAPI shim_LoadIconW(HINSTANCE hInst, LPCWSTR lpIconName) {
+    return shim_LoadIconA(hInst, (LPCSTR)lpIconName);
+}
+
+static LRESULT WINAPI shim_SendMessageW(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    return shim_SendMessageA(hWnd, msg, wParam, lParam);
+}
+
+static BOOL WINAPI shim_PostMessageW(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    return shim_PostMessageA(hWnd, msg, wParam, lParam);
+}
+
 /* ── Export Table ─────────────────────────────────────────────── */
 
 static const win32_export_entry_t user32_exports[] = {
     { "RegisterClassExA",   (void *)shim_RegisterClassExA },
+    { "RegisterClassExW",   (void *)shim_RegisterClassExW },
     { "CreateWindowExA",    (void *)shim_CreateWindowExA },
+    { "CreateWindowExW",    (void *)shim_CreateWindowExW },
     { "ShowWindow",         (void *)shim_ShowWindow },
     { "UpdateWindow",       (void *)shim_UpdateWindow },
     { "GetMessageA",        (void *)shim_GetMessageA },
+    { "GetMessageW",        (void *)shim_GetMessageW },
     { "TranslateMessage",   (void *)shim_TranslateMessage },
     { "DispatchMessageA",   (void *)shim_DispatchMessageA },
+    { "DispatchMessageW",   (void *)shim_DispatchMessageW },
     { "DefWindowProcA",     (void *)shim_DefWindowProcA },
+    { "DefWindowProcW",     (void *)shim_DefWindowProcW },
     { "PostQuitMessage",    (void *)shim_PostQuitMessage },
     { "MessageBoxA",        (void *)shim_MessageBoxA },
+    { "MessageBoxW",        (void *)shim_MessageBoxW },
     { "GetClientRect",      (void *)shim_GetClientRect },
     { "SetWindowTextA",     (void *)shim_SetWindowTextA },
+    { "SetWindowTextW",     (void *)shim_SetWindowTextW },
     { "InvalidateRect",     (void *)shim_InvalidateRect },
     { "DestroyWindow",      (void *)shim_DestroyWindow },
     { "SendMessageA",       (void *)shim_SendMessageA },
+    { "SendMessageW",       (void *)shim_SendMessageW },
     { "PostMessageA",       (void *)shim_PostMessageA },
+    { "PostMessageW",       (void *)shim_PostMessageW },
     { "LoadCursorA",        (void *)shim_LoadCursorA },
+    { "LoadCursorW",        (void *)shim_LoadCursorW },
     { "LoadIconA",          (void *)shim_LoadIconA },
+    { "LoadIconW",          (void *)shim_LoadIconW },
     { "GetSystemMetrics",   (void *)shim_GetSystemMetrics },
     { "SetTimer",           (void *)shim_SetTimer },
     { "KillTimer",          (void *)shim_KillTimer },

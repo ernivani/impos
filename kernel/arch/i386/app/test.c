@@ -1618,6 +1618,195 @@ static void test_gdi_advanced(void) {
     }
 }
 
+/* ---- COM & OLE Tests ---- */
+
+static void test_com_ole(void) {
+    printf("== COM & OLE Tests ==\n");
+
+    /* Resolve COM functions */
+    typedef HRESULT (WINAPI *pfn_CoInitializeEx)(LPVOID, DWORD);
+    typedef void    (WINAPI *pfn_CoUninitialize)(void);
+    typedef LPVOID  (WINAPI *pfn_CoTaskMemAlloc)(DWORD);
+    typedef void    (WINAPI *pfn_CoTaskMemFree)(LPVOID);
+    typedef HRESULT (WINAPI *pfn_CoCreateInstance)(REFCLSID, LPVOID, DWORD, REFIID, LPVOID *);
+    typedef HRESULT (WINAPI *pfn_CoGetMalloc)(DWORD, void **);
+    typedef HRESULT (WINAPI *pfn_OleInitialize)(LPVOID);
+    typedef void    (WINAPI *pfn_OleUninitialize)(void);
+    typedef int     (WINAPI *pfn_StringFromGUID2)(const GUID *, WCHAR *, int);
+
+    pfn_CoInitializeEx pCoInitializeEx = (pfn_CoInitializeEx)
+        win32_resolve_import("ole32.dll", "CoInitializeEx");
+    pfn_CoUninitialize pCoUninitialize = (pfn_CoUninitialize)
+        win32_resolve_import("ole32.dll", "CoUninitialize");
+    pfn_CoTaskMemAlloc pCoTaskMemAlloc = (pfn_CoTaskMemAlloc)
+        win32_resolve_import("ole32.dll", "CoTaskMemAlloc");
+    pfn_CoTaskMemFree pCoTaskMemFree = (pfn_CoTaskMemFree)
+        win32_resolve_import("ole32.dll", "CoTaskMemFree");
+    pfn_CoCreateInstance pCoCreateInstance = (pfn_CoCreateInstance)
+        win32_resolve_import("ole32.dll", "CoCreateInstance");
+    pfn_CoGetMalloc pCoGetMalloc = (pfn_CoGetMalloc)
+        win32_resolve_import("ole32.dll", "CoGetMalloc");
+    pfn_OleInitialize pOleInitialize = (pfn_OleInitialize)
+        win32_resolve_import("ole32.dll", "OleInitialize");
+    pfn_OleUninitialize pOleUninitialize = (pfn_OleUninitialize)
+        win32_resolve_import("ole32.dll", "OleUninitialize");
+    pfn_StringFromGUID2 pStringFromGUID2 = (pfn_StringFromGUID2)
+        win32_resolve_import("ole32.dll", "StringFromGUID2");
+
+    TEST_ASSERT(pCoInitializeEx != NULL, "ole32: CoInitializeEx resolved");
+    TEST_ASSERT(pCoUninitialize != NULL, "ole32: CoUninitialize resolved");
+    TEST_ASSERT(pCoTaskMemAlloc != NULL, "ole32: CoTaskMemAlloc resolved");
+    TEST_ASSERT(pCoTaskMemFree != NULL, "ole32: CoTaskMemFree resolved");
+    TEST_ASSERT(pCoCreateInstance != NULL, "ole32: CoCreateInstance resolved");
+    TEST_ASSERT(pCoGetMalloc != NULL, "ole32: CoGetMalloc resolved");
+    TEST_ASSERT(pOleInitialize != NULL, "ole32: OleInitialize resolved");
+    TEST_ASSERT(pStringFromGUID2 != NULL, "ole32: StringFromGUID2 resolved");
+
+    /* Test CoInitializeEx */
+    HRESULT hr = pCoInitializeEx(NULL, 0);
+    TEST_ASSERT(hr == S_OK, "ole32: CoInitializeEx returns S_OK");
+
+    /* Test CoTaskMemAlloc / Free */
+    void *mem = pCoTaskMemAlloc(128);
+    TEST_ASSERT(mem != NULL, "ole32: CoTaskMemAlloc(128) not NULL");
+    memset(mem, 0xAB, 128);
+    pCoTaskMemFree(mem);
+    TEST_ASSERT(1, "ole32: CoTaskMemFree no crash");
+
+    /* Test CoGetMalloc / IMalloc */
+    void *pMalloc = NULL;
+    hr = pCoGetMalloc(1, &pMalloc);
+    TEST_ASSERT(hr == S_OK, "ole32: CoGetMalloc returns S_OK");
+    TEST_ASSERT(pMalloc != NULL, "ole32: CoGetMalloc returns IMalloc ptr");
+
+    /* Test CoCreateInstance — should fail (no objects registered) */
+    CLSID clsid = {0};
+    IID iid = {0};
+    void *pObj = NULL;
+    hr = pCoCreateInstance(&clsid, NULL, 0, &iid, &pObj);
+    TEST_ASSERT(hr == REGDB_E_CLASSNOTREG, "ole32: CoCreateInstance returns REGDB_E_CLASSNOTREG");
+    TEST_ASSERT(pObj == NULL, "ole32: CoCreateInstance ppv is NULL");
+
+    /* Test StringFromGUID2 */
+    GUID test_guid = {0x12345678, 0xABCD, 0xEF01, {0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01}};
+    WCHAR guid_str[40] = {0};
+    int guid_len = pStringFromGUID2(&test_guid, guid_str, 40);
+    TEST_ASSERT(guid_len == 39, "ole32: StringFromGUID2 returns 39");
+    TEST_ASSERT(guid_str[0] == '{', "ole32: StringFromGUID2 starts with '{'");
+    TEST_ASSERT(guid_str[37] == '}', "ole32: StringFromGUID2 ends with '}'");
+
+    /* Test OleInitialize / OleUninitialize */
+    hr = pOleInitialize(NULL);
+    TEST_ASSERT(hr == S_OK, "ole32: OleInitialize returns S_OK");
+    pOleUninitialize();
+    TEST_ASSERT(1, "ole32: OleUninitialize no crash");
+
+    pCoUninitialize();
+
+    /* Test shell32 */
+    typedef HRESULT (WINAPI *pfn_SHGetFolderPathA)(HWND, int, HANDLE, DWORD, LPSTR);
+    pfn_SHGetFolderPathA pSHGetFolderPathA = (pfn_SHGetFolderPathA)
+        win32_resolve_import("shell32.dll", "SHGetFolderPathA");
+    TEST_ASSERT(pSHGetFolderPathA != NULL, "shell32: SHGetFolderPathA resolved");
+
+    if (pSHGetFolderPathA) {
+        char path[260];
+        hr = pSHGetFolderPathA(0, CSIDL_DESKTOP, 0, 0, path);
+        TEST_ASSERT(hr == S_OK, "shell32: SHGetFolderPathA(DESKTOP) returns S_OK");
+        TEST_ASSERT(strcmp(path, "/home/user/Desktop") == 0, "shell32: CSIDL_DESKTOP path correct");
+
+        hr = pSHGetFolderPathA(0, CSIDL_APPDATA, 0, 0, path);
+        TEST_ASSERT(hr == S_OK, "shell32: SHGetFolderPathA(APPDATA) returns S_OK");
+        TEST_ASSERT(strcmp(path, "/home/user/AppData/Roaming") == 0, "shell32: CSIDL_APPDATA path correct");
+
+        hr = pSHGetFolderPathA(0, CSIDL_SYSTEM, 0, 0, path);
+        TEST_ASSERT(hr == S_OK, "shell32: SHGetFolderPathA(SYSTEM) returns S_OK");
+        TEST_ASSERT(strcmp(path, "C:\\Windows\\System32") == 0, "shell32: CSIDL_SYSTEM path correct");
+    }
+}
+
+/* ---- Unicode & Wide String Tests ---- */
+
+static void test_unicode_wide(void) {
+    printf("== Unicode & Wide String Tests ==\n");
+
+    /* Test proper UTF-8 → UTF-16 conversion */
+
+    /* ASCII */
+    WCHAR wbuf[64];
+    int n = win32_utf8_to_wchar("Hello", -1, wbuf, 64);
+    TEST_ASSERT(n == 6, "utf8→16: ASCII 'Hello' returns 6 (5+null)");
+    TEST_ASSERT(wbuf[0] == 'H', "utf8→16: wbuf[0]='H'");
+    TEST_ASSERT(wbuf[4] == 'o', "utf8→16: wbuf[4]='o'");
+    TEST_ASSERT(wbuf[5] == 0, "utf8→16: wbuf[5]=null");
+
+    /* 2-byte UTF-8 (é = U+00E9 = 0xC3 0xA9) */
+    n = win32_utf8_to_wchar("\xC3\xA9", -1, wbuf, 64);
+    TEST_ASSERT(n == 2, "utf8→16: 2-byte é returns 2 (1+null)");
+    TEST_ASSERT(wbuf[0] == 0x00E9, "utf8→16: é = U+00E9");
+
+    /* 3-byte UTF-8 (€ = U+20AC = 0xE2 0x82 0xAC) */
+    n = win32_utf8_to_wchar("\xE2\x82\xAC", -1, wbuf, 64);
+    TEST_ASSERT(n == 2, "utf8→16: 3-byte € returns 2 (1+null)");
+    TEST_ASSERT(wbuf[0] == 0x20AC, "utf8→16: € = U+20AC");
+
+    /* Test UTF-16 → UTF-8 reverse */
+    char nbuf[64];
+    WCHAR wsrc[] = {'H', 'i', 0x00E9, 0};
+    n = win32_wchar_to_utf8(wsrc, -1, nbuf, 64);
+    TEST_ASSERT(n == 5, "utf16→8: 'Hié' returns 5 (H+i+2byte+null)");
+    TEST_ASSERT(nbuf[0] == 'H', "utf16→8: nbuf[0]='H'");
+    TEST_ASSERT(nbuf[1] == 'i', "utf16→8: nbuf[1]='i'");
+    TEST_ASSERT((uint8_t)nbuf[2] == 0xC3, "utf16→8: é byte1=0xC3");
+    TEST_ASSERT((uint8_t)nbuf[3] == 0xA9, "utf16→8: é byte2=0xA9");
+
+    /* Test wcslen */
+    typedef size_t (*pfn_wcslen)(const WCHAR *);
+    pfn_wcslen pWcslen = (pfn_wcslen)win32_resolve_import("msvcrt.dll", "wcslen");
+    TEST_ASSERT(pWcslen != NULL, "msvcrt: wcslen resolved");
+    if (pWcslen) {
+        WCHAR test[] = {'A', 'B', 'C', 0};
+        TEST_ASSERT(pWcslen(test) == 3, "wcslen: 'ABC' = 3");
+    }
+
+    /* Test wcscpy */
+    typedef WCHAR *(*pfn_wcscpy)(WCHAR *, const WCHAR *);
+    pfn_wcscpy pWcscpy = (pfn_wcscpy)win32_resolve_import("msvcrt.dll", "wcscpy");
+    TEST_ASSERT(pWcscpy != NULL, "msvcrt: wcscpy resolved");
+    if (pWcscpy) {
+        WCHAR src[] = {'X', 'Y', 0};
+        WCHAR dst[8] = {0};
+        pWcscpy(dst, src);
+        TEST_ASSERT(dst[0] == 'X' && dst[1] == 'Y' && dst[2] == 0, "wcscpy: copies correctly");
+    }
+
+    /* Test wcscmp */
+    typedef int (*pfn_wcscmp)(const WCHAR *, const WCHAR *);
+    pfn_wcscmp pWcscmp = (pfn_wcscmp)win32_resolve_import("msvcrt.dll", "wcscmp");
+    TEST_ASSERT(pWcscmp != NULL, "msvcrt: wcscmp resolved");
+    if (pWcscmp) {
+        WCHAR a[] = {'A', 'B', 0};
+        WCHAR b[] = {'A', 'B', 0};
+        WCHAR c[] = {'A', 'C', 0};
+        TEST_ASSERT(pWcscmp(a, b) == 0, "wcscmp: equal strings return 0");
+        TEST_ASSERT(pWcscmp(a, c) < 0, "wcscmp: 'AB' < 'AC'");
+    }
+
+    /* Test W function resolution */
+    TEST_ASSERT(win32_resolve_import("kernel32.dll", "CreateFileW") != NULL,
+        "resolve: CreateFileW found");
+    TEST_ASSERT(win32_resolve_import("user32.dll", "MessageBoxW") != NULL,
+        "resolve: MessageBoxW found");
+    TEST_ASSERT(win32_resolve_import("gdi32.dll", "TextOutW") != NULL,
+        "resolve: TextOutW found");
+    TEST_ASSERT(win32_resolve_import("msvcrt.dll", "wcslen") != NULL,
+        "resolve: wcslen found");
+    TEST_ASSERT(win32_resolve_import("ole32.dll", "CoInitializeEx") != NULL,
+        "resolve: CoInitializeEx found");
+    TEST_ASSERT(win32_resolve_import("shell32.dll", "SHGetFolderPathA") != NULL,
+        "resolve: SHGetFolderPathA found");
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -1646,6 +1835,8 @@ void test_run_all(void) {
     test_win32_registry();
     test_winsock();
     test_gdi_advanced();
+    test_com_ole();
+    test_unicode_wide();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {
