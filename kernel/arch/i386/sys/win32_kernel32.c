@@ -229,10 +229,17 @@ static HANDLE WINAPI shim_GetStdHandle(DWORD nStdHandle) {
 #define HTYPE_FINDFILE 11  /* extends handle_type_t */
 #define MAX_PATH 260
 
+/* Must match real Windows layout exactly (318 bytes) so mingw-compiled
+ * PE code and our shim agree on field offsets */
 typedef struct {
     DWORD    dwFileAttributes;
+    DWORD    ftCreationTime[2];      /* FILETIME: 8 bytes */
+    DWORD    ftLastAccessTime[2];    /* FILETIME: 8 bytes */
+    DWORD    ftLastWriteTime[2];     /* FILETIME: 8 bytes */
     DWORD    nFileSizeHigh;
     DWORD    nFileSizeLow;
+    DWORD    dwReserved0;
+    DWORD    dwReserved1;
     char     cFileName[MAX_PATH];
     char     cAlternateFileName[14];
 } WIN32_FIND_DATAA;
