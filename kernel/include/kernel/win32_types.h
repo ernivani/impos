@@ -556,6 +556,8 @@ extern const win32_dll_shim_t win32_ws2_32;
 extern const win32_dll_shim_t win32_gdiplus;
 extern const win32_dll_shim_t win32_ole32;
 extern const win32_dll_shim_t win32_shell32;
+extern const win32_dll_shim_t win32_bcrypt;
+extern const win32_dll_shim_t win32_crypt32;
 
 /* Registry init (call early to pre-populate keys) */
 void registry_init(void);

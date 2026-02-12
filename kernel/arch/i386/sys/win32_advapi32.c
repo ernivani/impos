@@ -1,4 +1,5 @@
 #include <kernel/win32_types.h>
+#include <kernel/crypto.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -591,8 +592,56 @@ static BOOL WINAPI shim_GetUserNameA(LPSTR buf, LPDWORD size) {
     return TRUE;
 }
 
+/* ── CryptAPI (legacy advapi32 crypto) ───────────────────────── */
+
+#define CRYPT_PROVIDER_HANDLE 0xCAAA0001
+
+static BOOL WINAPI shim_CryptAcquireContextA(
+    HANDLE *phProv, LPCSTR szContainer, LPCSTR szProvider,
+    DWORD dwProvType, DWORD dwFlags)
+{
+    (void)szContainer; (void)szProvider; (void)dwProvType; (void)dwFlags;
+    if (phProv) *phProv = CRYPT_PROVIDER_HANDLE;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_CryptAcquireContextW(
+    HANDLE *phProv, const WCHAR *szContainer, const WCHAR *szProvider,
+    DWORD dwProvType, DWORD dwFlags)
+{
+    (void)szContainer; (void)szProvider; (void)dwProvType; (void)dwFlags;
+    if (phProv) *phProv = CRYPT_PROVIDER_HANDLE;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_CryptReleaseContext(HANDLE hProv, DWORD dwFlags) {
+    (void)hProv; (void)dwFlags;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_CryptGenRandom(HANDLE hProv, DWORD dwLen, BYTE *pbBuffer) {
+    (void)hProv;
+    if (!pbBuffer || dwLen == 0) return FALSE;
+    prng_random(pbBuffer, dwLen);
+    return TRUE;
+}
+
+static BOOL WINAPI shim_CryptEncrypt(
+    HANDLE hKey, HANDLE hHash, BOOL Final, DWORD dwFlags,
+    BYTE *pbData, DWORD *pdwDataLen, DWORD dwBufLen)
+{
+    (void)hKey; (void)hHash; (void)Final; (void)dwFlags;
+    (void)pbData; (void)pdwDataLen; (void)dwBufLen;
+    return FALSE;
+}
+
 /* ── Export Table ─────────────────────────────────────────── */
 static const win32_export_entry_t advapi32_exports[] = {
+    { "CryptAcquireContextA",     (void *)shim_CryptAcquireContextA },
+    { "CryptAcquireContextW",     (void *)shim_CryptAcquireContextW },
+    { "CryptEncrypt",             (void *)shim_CryptEncrypt },
+    { "CryptGenRandom",           (void *)shim_CryptGenRandom },
+    { "CryptReleaseContext",      (void *)shim_CryptReleaseContext },
     { "GetTokenInformation",      (void *)shim_GetTokenInformation },
     { "GetUserNameA",             (void *)shim_GetUserNameA },
     { "OpenProcessToken",         (void *)shim_OpenProcessToken },
