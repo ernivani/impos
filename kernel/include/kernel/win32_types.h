@@ -50,10 +50,11 @@ typedef uint32_t ATOM;
 #define FALSE   0
 #endif
 
-/* Calling conventions (no-op on our flat model) */
-#define WINAPI   __attribute__((cdecl))
-#define CALLBACK __attribute__((cdecl))
-#define APIENTRY __attribute__((cdecl))
+/* Calling conventions — Win32 API functions use stdcall (callee cleans stack).
+ * This must match what PE apps compiled with mingw expect. */
+#define WINAPI   __attribute__((stdcall))
+#define CALLBACK __attribute__((stdcall))
+#define APIENTRY __attribute__((stdcall))
 
 /* Callback types */
 typedef uint32_t (CALLBACK *WNDPROC)(HWND, UINT, uint32_t, uint32_t);
