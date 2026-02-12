@@ -102,16 +102,16 @@ _Chromium has its own HTTP/QUIC stack but needs Winsock for raw sockets._
 
 ### Phase 8: Advanced GDI & Rendering
 _Chromium uses Skia which calls into GDI/GDI+ and Direct2D/DirectWrite._
-- [ ] CreateCompatibleDC / CreateCompatibleBitmap / CreateDIBSection — offscreen rendering
-- [ ] StretchBlt / StretchDIBits / SetDIBitsToDevice — image blitting
-- [ ] Pen/brush improvements — CreatePen, LineTo, MoveToEx, Polygon, Polyline
-- [ ] CreateFontIndirectA with real font matching
-- [ ] GetTextMetricsA / GetTextExtentPoint32A — text measurement
-- [ ] SaveDC / RestoreDC — GDI state stack
-- [ ] SetViewportOrgEx / SetWindowOrgEx — coordinate transforms
-- [ ] ClipRect / SelectClipRgn — clipping regions
-- [ ] GDI+ flat API stubs — GdipCreateFromHDC, GdipDrawImage, GdipCreateBitmapFromScan0
-- [ ] EnumFontFamiliesExA — font enumeration
+- [x] CreateCompatibleDC / CreateCompatibleBitmap / CreateDIBSection — offscreen rendering
+- [x] StretchBlt / StretchDIBits / SetDIBitsToDevice — image blitting
+- [x] Pen/brush improvements — CreatePen, LineTo, MoveToEx, Polygon, Polyline
+- [x] CreateFontIndirectA with real font matching
+- [x] GetTextMetricsA / GetTextExtentPoint32A — text measurement
+- [x] SaveDC / RestoreDC — GDI state stack
+- [x] SetViewportOrgEx / SetWindowOrgEx — coordinate transforms
+- [x] ClipRect / SelectClipRgn — clipping regions
+- [x] GDI+ flat API stubs — GdipCreateFromHDC, GdipDrawImage, GdipCreateBitmapFromScan0
+- [x] EnumFontFamiliesExA — font enumeration
 
 ### Phase 9: COM & OLE Foundation
 _Chromium uses COM for accessibility, drag-drop, shell integration, audio._

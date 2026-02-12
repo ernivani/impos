@@ -1341,6 +1341,283 @@ static void test_winsock(void) {
     if (pWSACleanup) pWSACleanup();
 }
 
+/* ---- Advanced GDI Tests ---- */
+
+static void test_gdi_advanced(void) {
+    printf("== Advanced GDI Tests ==\n");
+
+    /* Resolve GDI functions via shim tables */
+    typedef uint32_t (__attribute__((stdcall)) *pfn_CreateCompatibleDC)(uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_DeleteDC)(uint32_t);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_CreateCompatibleBitmap)(uint32_t, int, int);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_SelectObject)(uint32_t, uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_DeleteObject)(uint32_t);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_CreatePen)(int, int, uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_MoveToEx)(uint32_t, int, int, void *);
+    typedef int      (__attribute__((stdcall)) *pfn_LineTo)(uint32_t, int, int);
+    typedef int      (__attribute__((stdcall)) *pfn_GetTextMetricsA)(uint32_t, void *);
+    typedef int      (__attribute__((stdcall)) *pfn_GetTextExtentPoint32A)(uint32_t, const char *, int, void *);
+    typedef int      (__attribute__((stdcall)) *pfn_SaveDC)(uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_RestoreDC)(uint32_t, int);
+    typedef int      (__attribute__((stdcall)) *pfn_SetTextColor)(uint32_t, uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_GetDeviceCaps)(uint32_t, int);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_CreateDIBSection)(uint32_t, const void *, uint32_t, void **, uint32_t, uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_GetObjectA)(uint32_t, int, void *);
+    typedef int      (__attribute__((stdcall)) *pfn_StretchBlt)(uint32_t, int, int, int, int, uint32_t, int, int, int, int, uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_SetViewportOrgEx)(uint32_t, int, int, void *);
+    typedef int      (__attribute__((stdcall)) *pfn_IntersectClipRect)(uint32_t, int, int, int, int);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_CreateRectRgn)(int, int, int, int);
+    typedef int      (__attribute__((stdcall)) *pfn_SelectClipRgn)(uint32_t, uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_EnumFontFamiliesExA)(uint32_t, void *, void *, uint32_t, uint32_t);
+
+    pfn_CreateCompatibleDC pCreateCompatibleDC = (pfn_CreateCompatibleDC)win32_resolve_import("gdi32.dll", "CreateCompatibleDC");
+    pfn_DeleteDC pDeleteDC = (pfn_DeleteDC)win32_resolve_import("gdi32.dll", "DeleteDC");
+    pfn_CreateCompatibleBitmap pCreateCompatibleBitmap = (pfn_CreateCompatibleBitmap)win32_resolve_import("gdi32.dll", "CreateCompatibleBitmap");
+    pfn_SelectObject pSelectObject = (pfn_SelectObject)win32_resolve_import("gdi32.dll", "SelectObject");
+    pfn_DeleteObject pDeleteObject = (pfn_DeleteObject)win32_resolve_import("gdi32.dll", "DeleteObject");
+    pfn_CreatePen pCreatePen = (pfn_CreatePen)win32_resolve_import("gdi32.dll", "CreatePen");
+    pfn_MoveToEx pMoveToEx = (pfn_MoveToEx)win32_resolve_import("gdi32.dll", "MoveToEx");
+    pfn_LineTo pLineTo = (pfn_LineTo)win32_resolve_import("gdi32.dll", "LineTo");
+    pfn_GetTextMetricsA pGetTextMetricsA = (pfn_GetTextMetricsA)win32_resolve_import("gdi32.dll", "GetTextMetricsA");
+    pfn_GetTextExtentPoint32A pGetTextExtentPoint32A = (pfn_GetTextExtentPoint32A)win32_resolve_import("gdi32.dll", "GetTextExtentPoint32A");
+    pfn_SaveDC pSaveDC = (pfn_SaveDC)win32_resolve_import("gdi32.dll", "SaveDC");
+    pfn_RestoreDC pRestoreDC = (pfn_RestoreDC)win32_resolve_import("gdi32.dll", "RestoreDC");
+    pfn_SetTextColor pSetTextColor = (pfn_SetTextColor)win32_resolve_import("gdi32.dll", "SetTextColor");
+    pfn_GetDeviceCaps pGetDeviceCaps = (pfn_GetDeviceCaps)win32_resolve_import("gdi32.dll", "GetDeviceCaps");
+    pfn_CreateDIBSection pCreateDIBSection = (pfn_CreateDIBSection)win32_resolve_import("gdi32.dll", "CreateDIBSection");
+    pfn_GetObjectA pGetObjectA = (pfn_GetObjectA)win32_resolve_import("gdi32.dll", "GetObjectA");
+    pfn_StretchBlt pStretchBlt = (pfn_StretchBlt)win32_resolve_import("gdi32.dll", "StretchBlt");
+    pfn_SetViewportOrgEx pSetViewportOrgEx = (pfn_SetViewportOrgEx)win32_resolve_import("gdi32.dll", "SetViewportOrgEx");
+    pfn_IntersectClipRect pIntersectClipRect = (pfn_IntersectClipRect)win32_resolve_import("gdi32.dll", "IntersectClipRect");
+    pfn_CreateRectRgn pCreateRectRgn = (pfn_CreateRectRgn)win32_resolve_import("gdi32.dll", "CreateRectRgn");
+    pfn_SelectClipRgn pSelectClipRgn = (pfn_SelectClipRgn)win32_resolve_import("gdi32.dll", "SelectClipRgn");
+    pfn_EnumFontFamiliesExA pEnumFontFamiliesExA = (pfn_EnumFontFamiliesExA)win32_resolve_import("gdi32.dll", "EnumFontFamiliesExA");
+
+    /* Verify all functions resolved */
+    TEST_ASSERT(pCreateCompatibleDC != NULL, "gdi: CreateCompatibleDC resolved");
+    TEST_ASSERT(pDeleteDC != NULL, "gdi: DeleteDC resolved");
+    TEST_ASSERT(pCreateCompatibleBitmap != NULL, "gdi: CreateCompatibleBitmap resolved");
+    TEST_ASSERT(pCreatePen != NULL, "gdi: CreatePen resolved");
+    TEST_ASSERT(pMoveToEx != NULL, "gdi: MoveToEx resolved");
+    TEST_ASSERT(pLineTo != NULL, "gdi: LineTo resolved");
+    TEST_ASSERT(pGetTextMetricsA != NULL, "gdi: GetTextMetricsA resolved");
+    TEST_ASSERT(pGetTextExtentPoint32A != NULL, "gdi: GetTextExtentPoint32A resolved");
+    TEST_ASSERT(pSaveDC != NULL, "gdi: SaveDC resolved");
+    TEST_ASSERT(pRestoreDC != NULL, "gdi: RestoreDC resolved");
+    TEST_ASSERT(pGetDeviceCaps != NULL, "gdi: GetDeviceCaps resolved");
+    TEST_ASSERT(pCreateDIBSection != NULL, "gdi: CreateDIBSection resolved");
+    TEST_ASSERT(pGetObjectA != NULL, "gdi: GetObjectA resolved");
+    TEST_ASSERT(pStretchBlt != NULL, "gdi: StretchBlt resolved");
+    TEST_ASSERT(pEnumFontFamiliesExA != NULL, "gdi: EnumFontFamiliesExA resolved");
+
+    if (!pCreateCompatibleDC || !pDeleteDC || !pCreateCompatibleBitmap) return;
+
+    /* Test 1: CreateCompatibleDC returns valid handle */
+    uint32_t memDC = pCreateCompatibleDC(0);
+    TEST_ASSERT(memDC != 0, "gdi: CreateCompatibleDC returns non-zero");
+
+    /* Test 2: CreateCompatibleBitmap */
+    uint32_t hBmp = pCreateCompatibleBitmap(memDC, 64, 48);
+    TEST_ASSERT(hBmp != 0, "gdi: CreateCompatibleBitmap returns non-zero");
+
+    /* Test 3: SelectObject bitmap into memory DC */
+    if (hBmp && memDC) {
+        pSelectObject(memDC, hBmp);
+        TEST_ASSERT(1, "gdi: SelectObject bitmap no crash");
+    }
+
+    /* Test 4: GetObjectA on bitmap */
+    if (hBmp && pGetObjectA) {
+        BITMAP bm;
+        memset(&bm, 0, sizeof(bm));
+        int ret = pGetObjectA(hBmp, sizeof(BITMAP), &bm);
+        TEST_ASSERT(ret == (int)sizeof(BITMAP), "gdi: GetObjectA returns BITMAP size");
+        TEST_ASSERT(bm.bmWidth == 64, "gdi: GetObjectA bitmap width 64");
+        TEST_ASSERT(bm.bmHeight == 48, "gdi: GetObjectA bitmap height 48");
+        TEST_ASSERT(bm.bmBitsPixel == 32, "gdi: GetObjectA bitmap bpp 32");
+    }
+
+    /* Test 5: CreateDIBSection */
+    if (pCreateDIBSection) {
+        BITMAPINFO bmi;
+        memset(&bmi, 0, sizeof(bmi));
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = 32;
+        bmi.bmiHeader.biHeight = -32;  /* top-down */
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = 0;
+
+        void *bits = NULL;
+        uint32_t hDib = pCreateDIBSection(memDC, &bmi, 0, &bits, 0, 0);
+        TEST_ASSERT(hDib != 0, "gdi: CreateDIBSection returns non-zero");
+        TEST_ASSERT(bits != NULL, "gdi: CreateDIBSection sets bits pointer");
+
+        /* Write a pixel to verify memory */
+        if (bits) {
+            ((uint32_t *)bits)[0] = 0xFF0000;
+            TEST_ASSERT(((uint32_t *)bits)[0] == 0xFF0000, "gdi: DIBSection write/read");
+        }
+
+        if (hDib) pDeleteObject(hDib);
+    }
+
+    /* Test 6: CreatePen */
+    if (pCreatePen) {
+        uint32_t hPen = pCreatePen(0, 1, RGB(255, 0, 0));
+        TEST_ASSERT(hPen != 0, "gdi: CreatePen returns non-zero");
+        if (hPen) pDeleteObject(hPen);
+    }
+
+    /* Test 7: MoveToEx / LineTo */
+    if (pMoveToEx && pLineTo && memDC) {
+        int ret = pMoveToEx(memDC, 0, 0, NULL);
+        TEST_ASSERT(ret != 0, "gdi: MoveToEx returns TRUE");
+        ret = pLineTo(memDC, 10, 10);
+        TEST_ASSERT(ret != 0, "gdi: LineTo returns TRUE");
+    }
+
+    /* Test 8: GetTextMetricsA */
+    if (pGetTextMetricsA && memDC) {
+        TEXTMETRICA tm;
+        memset(&tm, 0, sizeof(tm));
+        int ret = pGetTextMetricsA(memDC, &tm);
+        TEST_ASSERT(ret != 0, "gdi: GetTextMetricsA returns TRUE");
+        TEST_ASSERT(tm.tmHeight == 16, "gdi: TextMetrics height 16");
+        TEST_ASSERT(tm.tmAveCharWidth == 8, "gdi: TextMetrics aveCharWidth 8");
+    }
+
+    /* Test 9: GetTextExtentPoint32A */
+    if (pGetTextExtentPoint32A && memDC) {
+        SIZE sz;
+        memset(&sz, 0, sizeof(sz));
+        int ret = pGetTextExtentPoint32A(memDC, "Hello", 5, &sz);
+        TEST_ASSERT(ret != 0, "gdi: GetTextExtentPoint32A returns TRUE");
+        TEST_ASSERT(sz.cx == 40, "gdi: text extent cx = 5*8 = 40");
+        TEST_ASSERT(sz.cy == 16, "gdi: text extent cy = 16");
+    }
+
+    /* Test 10: SaveDC / RestoreDC */
+    if (pSaveDC && pRestoreDC && pSetTextColor && memDC) {
+        pSetTextColor(memDC, RGB(255, 0, 0));
+        int level = pSaveDC(memDC);
+        TEST_ASSERT(level > 0, "gdi: SaveDC returns positive level");
+
+        pSetTextColor(memDC, RGB(0, 255, 0));
+
+        int ret = pRestoreDC(memDC, -1);
+        TEST_ASSERT(ret != 0, "gdi: RestoreDC returns TRUE");
+    }
+
+    /* Test 11: GetDeviceCaps */
+    if (pGetDeviceCaps) {
+        int hres = pGetDeviceCaps(memDC, 8);  /* HORZRES */
+        int vres = pGetDeviceCaps(memDC, 10); /* VERTRES */
+        int bpp  = pGetDeviceCaps(memDC, 12); /* BITSPIXEL */
+        int dpi  = pGetDeviceCaps(memDC, 88); /* LOGPIXELSX */
+        TEST_ASSERT(hres == 1920, "gdi: GetDeviceCaps HORZRES 1920");
+        TEST_ASSERT(vres == 1080, "gdi: GetDeviceCaps VERTRES 1080");
+        TEST_ASSERT(bpp == 32, "gdi: GetDeviceCaps BITSPIXEL 32");
+        TEST_ASSERT(dpi == 96, "gdi: GetDeviceCaps LOGPIXELSX 96");
+    }
+
+    /* Test 12: StretchBlt between memory DCs */
+    if (pStretchBlt && pCreateCompatibleDC && pCreateCompatibleBitmap) {
+        uint32_t srcDC = pCreateCompatibleDC(0);
+        uint32_t srcBmp = pCreateCompatibleBitmap(srcDC, 16, 16);
+        pSelectObject(srcDC, srcBmp);
+
+        uint32_t dstDC = pCreateCompatibleDC(0);
+        uint32_t dstBmp = pCreateCompatibleBitmap(dstDC, 32, 32);
+        pSelectObject(dstDC, dstBmp);
+
+        int ret = pStretchBlt(dstDC, 0, 0, 32, 32, srcDC, 0, 0, 16, 16, 0x00CC0020);
+        TEST_ASSERT(ret != 0, "gdi: StretchBlt returns TRUE");
+
+        pDeleteObject(srcBmp);
+        pDeleteDC(srcDC);
+        pDeleteObject(dstBmp);
+        pDeleteDC(dstDC);
+    }
+
+    /* Test 13: SetViewportOrgEx */
+    if (pSetViewportOrgEx && memDC) {
+        POINT oldOrg;
+        int ret = pSetViewportOrgEx(memDC, 10, 20, &oldOrg);
+        TEST_ASSERT(ret != 0, "gdi: SetViewportOrgEx returns TRUE");
+        TEST_ASSERT(oldOrg.x == 0 && oldOrg.y == 0, "gdi: old viewport origin (0,0)");
+    }
+
+    /* Test 14: IntersectClipRect */
+    if (pIntersectClipRect && memDC) {
+        int ret = pIntersectClipRect(memDC, 10, 10, 100, 100);
+        TEST_ASSERT(ret == 2, "gdi: IntersectClipRect returns SIMPLEREGION");
+    }
+
+    /* Test 15: CreateRectRgn / SelectClipRgn */
+    if (pCreateRectRgn && pSelectClipRgn && memDC) {
+        uint32_t hRgn = pCreateRectRgn(0, 0, 50, 50);
+        TEST_ASSERT(hRgn != 0, "gdi: CreateRectRgn returns non-zero");
+        int ret = pSelectClipRgn(memDC, hRgn);
+        TEST_ASSERT(ret == 2, "gdi: SelectClipRgn returns SIMPLEREGION");
+        /* Reset clip */
+        pSelectClipRgn(memDC, 0);
+        pDeleteObject(hRgn);
+    }
+
+    /* Test 16: EnumFontFamiliesExA callback */
+    if (pEnumFontFamiliesExA && memDC) {
+        /* We'll just check it calls back — the callback is stdcall but we test via
+         * the function returning a value (the callback return value) */
+        int ret = pEnumFontFamiliesExA(memDC, NULL, NULL, 0, 0);
+        /* NULL proc returns 0 */
+        TEST_ASSERT(ret == 0, "gdi: EnumFontFamiliesExA NULL proc returns 0");
+    }
+
+    /* Cleanup */
+    if (hBmp) pDeleteObject(hBmp);
+    if (memDC) pDeleteDC(memDC);
+
+    /* === GDI+ Tests === */
+    printf("== GDI+ Tests ==\n");
+
+    typedef int      (__attribute__((stdcall)) *pfn_GdiplusStartup)(uint32_t *, const void *, void *);
+    typedef void     (__attribute__((stdcall)) *pfn_GdiplusShutdown)(uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_GdipCreateFromHDC)(uint32_t, uint32_t *);
+    typedef int      (__attribute__((stdcall)) *pfn_GdipDeleteGraphics)(uint32_t);
+
+    pfn_GdiplusStartup pGdiplusStartup = (pfn_GdiplusStartup)win32_resolve_import("gdiplus.dll", "GdiplusStartup");
+    pfn_GdiplusShutdown pGdiplusShutdown = (pfn_GdiplusShutdown)win32_resolve_import("gdiplus.dll", "GdiplusShutdown");
+    pfn_GdipCreateFromHDC pGdipCreateFromHDC = (pfn_GdipCreateFromHDC)win32_resolve_import("gdiplus.dll", "GdipCreateFromHDC");
+    pfn_GdipDeleteGraphics pGdipDeleteGraphics = (pfn_GdipDeleteGraphics)win32_resolve_import("gdiplus.dll", "GdipDeleteGraphics");
+
+    TEST_ASSERT(pGdiplusStartup != NULL, "gdip: GdiplusStartup resolved");
+    TEST_ASSERT(pGdiplusShutdown != NULL, "gdip: GdiplusShutdown resolved");
+    TEST_ASSERT(pGdipCreateFromHDC != NULL, "gdip: GdipCreateFromHDC resolved");
+    TEST_ASSERT(pGdipDeleteGraphics != NULL, "gdip: GdipDeleteGraphics resolved");
+
+    if (pGdiplusStartup && pGdiplusShutdown) {
+        uint32_t token = 0;
+        struct { uint32_t ver; void *cb; int a; int b; } input = {1, NULL, 0, 0};
+        int ret = pGdiplusStartup(&token, &input, NULL);
+        TEST_ASSERT(ret == 0, "gdip: GdiplusStartup returns Ok");
+        TEST_ASSERT(token != 0, "gdip: GdiplusStartup sets token");
+
+        if (pGdipCreateFromHDC && pGdipDeleteGraphics) {
+            uint32_t graphics = 0;
+            ret = pGdipCreateFromHDC(1, &graphics);
+            TEST_ASSERT(ret == 0, "gdip: GdipCreateFromHDC returns Ok");
+            TEST_ASSERT(graphics != 0, "gdip: GdipCreateFromHDC sets handle");
+
+            ret = pGdipDeleteGraphics(graphics);
+            TEST_ASSERT(ret == 0, "gdip: GdipDeleteGraphics returns Ok");
+        }
+
+        pGdiplusShutdown(token);
+        TEST_ASSERT(1, "gdip: GdiplusShutdown no crash");
+    }
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -1368,6 +1645,7 @@ void test_run_all(void) {
     test_win32_dll();
     test_win32_registry();
     test_winsock();
+    test_gdi_advanced();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

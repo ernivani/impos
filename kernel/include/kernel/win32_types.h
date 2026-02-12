@@ -289,12 +289,154 @@ typedef union {
     int64_t QuadPart;
 } LARGE_INTEGER, *PLARGE_INTEGER;
 
+/* Handle types (additional) */
+typedef uint32_t HRGN;
+
 /* COLORREF */
 typedef DWORD COLORREF;
 #define RGB(r,g,b) ((COLORREF)(((BYTE)(r)|((WORD)((BYTE)(g))<<8))|(((DWORD)(BYTE)(b))<<16)))
 #define GetRValue(c) ((BYTE)(c))
 #define GetGValue(c) ((BYTE)(((WORD)(c))>>8))
 #define GetBValue(c) ((BYTE)((c)>>16))
+
+/* ── SIZE ────────────────────────────────────────────────────── */
+typedef struct {
+    LONG cx;
+    LONG cy;
+} SIZE, *LPSIZE;
+
+/* ── TEXTMETRICA ─────────────────────────────────────────────── */
+typedef struct {
+    LONG tmHeight;
+    LONG tmAscent;
+    LONG tmDescent;
+    LONG tmInternalLeading;
+    LONG tmExternalLeading;
+    LONG tmAveCharWidth;
+    LONG tmMaxCharWidth;
+    LONG tmWeight;
+    LONG tmOverhang;
+    LONG tmDigitizedAspectX;
+    LONG tmDigitizedAspectY;
+    BYTE tmFirstChar;
+    BYTE tmLastChar;
+    BYTE tmDefaultChar;
+    BYTE tmBreakChar;
+    BYTE tmItalic;
+    BYTE tmUnderlined;
+    BYTE tmStruckOut;
+    BYTE tmPitchAndFamily;
+    BYTE tmCharSet;
+} TEXTMETRICA, *LPTEXTMETRICA;
+
+/* ── LOGFONTA ────────────────────────────────────────────────── */
+typedef struct {
+    LONG  lfHeight;
+    LONG  lfWidth;
+    LONG  lfEscapement;
+    LONG  lfOrientation;
+    LONG  lfWeight;
+    BYTE  lfItalic;
+    BYTE  lfUnderline;
+    BYTE  lfStrikeOut;
+    BYTE  lfCharSet;
+    BYTE  lfOutPrecision;
+    BYTE  lfClipPrecision;
+    BYTE  lfQuality;
+    BYTE  lfPitchAndFamily;
+    CHAR  lfFaceName[32];
+} LOGFONTA, *LPLOGFONTA;
+
+/* ── BITMAP (for GetObjectA) ─────────────────────────────────── */
+typedef struct {
+    LONG   bmType;
+    LONG   bmWidth;
+    LONG   bmHeight;
+    LONG   bmWidthBytes;
+    WORD   bmPlanes;
+    WORD   bmBitsPixel;
+    LPVOID bmBits;
+} BITMAP, *LPBITMAP;
+
+/* ── BITMAPINFOHEADER / BITMAPINFO ───────────────────────────── */
+typedef struct {
+    DWORD biSize;
+    LONG  biWidth;
+    LONG  biHeight;
+    WORD  biPlanes;
+    WORD  biBitCount;
+    DWORD biCompression;
+    DWORD biSizeImage;
+    LONG  biXPelsPerMeter;
+    LONG  biYPelsPerMeter;
+    DWORD biClrUsed;
+    DWORD biClrImportant;
+} BITMAPINFOHEADER;
+
+typedef struct {
+    DWORD rgbBlue;
+    DWORD rgbGreen;
+    DWORD rgbRed;
+    DWORD rgbReserved;
+} RGBQUAD;
+
+typedef struct {
+    BITMAPINFOHEADER bmiHeader;
+    RGBQUAD          bmiColors[1];
+} BITMAPINFO, *LPBITMAPINFO;
+
+/* ── ENUMLOGFONTEXA (for EnumFontFamiliesExA callback) ───────── */
+typedef struct {
+    LOGFONTA elfLogFont;
+    CHAR     elfFullName[64];
+    CHAR     elfStyle[32];
+    CHAR     elfScript[32];
+} ENUMLOGFONTEXA;
+
+typedef struct {
+    TEXTMETRICA ntmTm;
+    DWORD       ntmFlags;
+    DWORD       ntmSizeEM;
+    DWORD       ntmCellHeight;
+    DWORD       ntmAvgWidth;
+} NEWTEXTMETRICEXA;
+
+typedef int (CALLBACK *FONTENUMPROCA)(const ENUMLOGFONTEXA *, const NEWTEXTMETRICEXA *, DWORD, LPARAM);
+
+/* ── GDI constants (additional) ──────────────────────────────── */
+#define PS_SOLID        0
+#define PS_DASH         1
+#define PS_DOT          2
+#define PS_NULL         5
+
+#define DIB_RGB_COLORS  0
+#define BI_RGB          0
+
+/* GetDeviceCaps indices */
+#define HORZRES         8
+#define VERTRES         10
+#define BITSPIXEL       12
+#define PLANES          14
+#define LOGPIXELSX      88
+#define LOGPIXELSY      90
+#define SIZEPALETTE     104
+#define NUMCOLORS       24
+#define RASTERCAPS      38
+#define TECHNOLOGY      2
+#define DT_RASDISPLAY   1
+
+/* Raster ops */
+#define SRCINVERT       0x00660046
+#define SRCAND          0x008800C6
+#define SRCPAINT        0x00EE0086
+#define BLACKNESS       0x00000042
+#define WHITENESS       0x00FF0062
+
+/* Stock objects additional */
+#define WHITE_PEN       6
+#define BLACK_PEN       7
+#define NULL_PEN        8
+#define DEFAULT_PALETTE 15
 
 /* ── Win32 shim DLL lookup ───────────────────────────────────── */
 typedef struct {
@@ -315,6 +457,7 @@ extern const win32_dll_shim_t win32_gdi32;
 extern const win32_dll_shim_t win32_msvcrt;
 extern const win32_dll_shim_t win32_advapi32;
 extern const win32_dll_shim_t win32_ws2_32;
+extern const win32_dll_shim_t win32_gdiplus;
 
 /* Registry init (call early to pre-populate keys) */
 void registry_init(void);
