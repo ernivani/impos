@@ -13,6 +13,7 @@
 #include <kernel/mouse.h>
 #include <kernel/acpi.h>
 #include <kernel/ui_theme.h>
+#include <kernel/beep.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -1103,8 +1104,9 @@ int login_run(void) {
             }
         }
 
-        /* Wrong password — shake + error */
+        /* Wrong password — shake + error + beep */
         shake_field(pl);
+        beep_error();
         strcpy(err, "Incorrect password");
         continue;
 
