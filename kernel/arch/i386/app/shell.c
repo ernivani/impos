@@ -31,6 +31,7 @@
 #include <kernel/rtc.h>
 #include <kernel/beep.h>
 #include <kernel/pe_loader.h>
+#include <kernel/tls.h>
 #include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
@@ -721,14 +722,15 @@ static command_t commands[] = {
     {
         "test", cmd_test,
         "Run regression tests",
-        "test: test\n"
-        "    Run all regression test suites.\n",
+        "test: test [crypto|tls]\n"
+        "    Run all or specific test suites.\n",
         "NAME\n"
         "    test - run regression tests\n\n"
         "SYNOPSIS\n"
-        "    test\n\n"
+        "    test [SUITE]\n\n"
         "DESCRIPTION\n"
-        "    Run all built-in test suites and print results.\n",
+        "    Run all built-in test suites and print results.\n"
+        "    Optional SUITE: crypto, tls\n",
         CMD_FLAG_ROOT
     },
     {
@@ -2786,9 +2788,24 @@ static void cmd_userdel(int argc, char* argv[]) {
     printf("User '%s' deleted\n", username);
 }
 
+/* Forward declarations for individual test suites */
+extern void test_crypto(void);
+extern void test_tls(void);
+
 static void cmd_test(int argc, char* argv[]) {
-    (void)argc;
-    (void)argv;
+    if (argc >= 2) {
+        if (strcmp(argv[1], "crypto") == 0) {
+            test_crypto();
+            return;
+        }
+        if (strcmp(argv[1], "tls") == 0) {
+            test_tls();
+            return;
+        }
+        printf("Unknown test suite: %s\n", argv[1]);
+        printf("Available: crypto, tls (or no args for all)\n");
+        return;
+    }
     test_run_all();
 }
 
@@ -4555,7 +4572,7 @@ static void cmd_winget(int argc, char* argv[]) {
         printf("\nCommands:\n");
         printf("  list      List installed packages\n");
         printf("  search    Search for packages\n");
-        printf("  install   Install a package\n");
+        printf("  install   Install a package (URL or name)\n");
         printf("  info      Show package info\n");
         return;
     }
@@ -4563,7 +4580,6 @@ static void cmd_winget(int argc, char* argv[]) {
     if (strcmp(argv[1], "list") == 0) {
         printf("Name                         Version    Source\n");
         printf("-------------------------------------------\n");
-        /* List .exe files in current directory */
         fs_dir_entry_info_t entries[32];
         int n = fs_enumerate_directory(entries, 32, 0);
         int found = 0;
@@ -4585,21 +4601,95 @@ static void cmd_winget(int argc, char* argv[]) {
         printf("Name                         Id                          Version\n");
         printf("----------------------------------------------------------------\n");
         printf("No packages found matching '%s'.\n", argv[2]);
-        printf("\nNote: Package repository requires network access.\n");
-        printf("Use 'dhcp' to obtain an IP address first.\n");
+        printf("\nTip: Use 'winget install https://...' for direct URL downloads.\n");
     } else if (strcmp(argv[1], "install") == 0) {
         if (argc < 3) {
-            printf("Usage: winget install <package>\n");
+            printf("Usage: winget install <url>\n");
+            printf("  Example: winget install https://example.com/app.exe\n");
             return;
         }
-        printf("Searching for '%s'...\n", argv[2]);
-        printf("No package found matching '%s' in the repository.\n", argv[2]);
-        printf("\nTo run a local .exe file, use: run <file.exe>\n");
+
+        const char *url = argv[2];
+
+        /* Check if it's an HTTPS URL */
+        if (memcmp(url, "https://", 8) != 0) {
+            printf("winget: only https:// URLs are supported\n");
+            printf("Usage: winget install https://host/path/file.exe\n");
+            return;
+        }
+
+        /* Check network is up */
+        net_config_t *cfg = net_get_config();
+        if (!cfg || !cfg->link_up || (cfg->ip[0] == 0 && cfg->ip[1] == 0)) {
+            printf("winget: network not configured. Run 'dhcp' first.\n");
+            return;
+        }
+
+        /* Parse URL: https://host/path */
+        char host[256];
+        char path[256];
+        const char *hp = url + 8;
+        int hi = 0;
+        while (*hp && *hp != '/' && hi < 255)
+            host[hi++] = *hp++;
+        host[hi] = '\0';
+
+        if (*hp == '/') {
+            int pi = 0;
+            while (*hp && pi < 255)
+                path[pi++] = *hp++;
+            path[pi] = '\0';
+        } else {
+            path[0] = '/';
+            path[1] = '\0';
+        }
+
+        /* Extract filename from path */
+        const char *filename = path;
+        const char *slash = path;
+        while (*slash) {
+            if (*slash == '/') filename = slash + 1;
+            slash++;
+        }
+        if (!*filename) filename = "download.exe";
+
+        printf("Downloading %s from %s...\n", filename, host);
+
+        uint8_t *body = NULL;
+        size_t body_len = 0;
+        int ret = https_get(host, 443, path, &body, &body_len);
+        if (ret < 0 || !body || body_len == 0) {
+            printf("winget: download failed\n");
+            if (body) free(body);
+            return;
+        }
+
+        printf("Downloaded %u bytes\n", (unsigned)body_len);
+
+        /* Save to filesystem */
+        fs_create_file(filename, 0);
+        ret = fs_write_file(filename, body, body_len);
+        free(body);
+
+        if (ret < 0) {
+            printf("winget: failed to save %s (file too large?)\n", filename);
+            return;
+        }
+
+        printf("Saved as %s\n", filename);
+
+        /* If it's a .exe, offer to run it */
+        size_t flen = strlen(filename);
+        if (flen > 4 && strcmp(filename + flen - 4, ".exe") == 0) {
+            printf("Running %s...\n", filename);
+            pe_run(filename);
+        }
     } else if (strcmp(argv[1], "info") == 0) {
-        printf("ImposOS WinGet Package Manager v1.0\n");
+        printf("ImposOS WinGet Package Manager v2.0 (TLS)\n");
         printf("Win32 Compatibility Layer: PE32 loader + API shims\n");
         printf("Supported DLLs: kernel32.dll, user32.dll, gdi32.dll, msvcrt.dll\n");
         printf("Subsystems: Windows GUI, Windows Console\n");
+        printf("Transport: HTTPS (TLS 1.2, AES-128-CBC-SHA256)\n");
     } else {
         printf("winget: unknown command '%s'\n", argv[1]);
     }
