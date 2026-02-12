@@ -88,7 +88,7 @@ make run    # Build + boot in QEMU
 
 ### File System (Phase 6) — 100%
 - [x] Custom on-disk format: 64 inodes, 256 blocks (512B each)
-- [x] Inode structure: type, mode (rwx), uid, gid, size, blocks, indirect block (48 bytes packed)
+- [x] Inode structure: type, mode (rwx), uid, gid, size, blocks, indirect block, timestamps (60 bytes packed)
 - [x] 8 direct blocks (4 KB) + single-indirect block (128 pointers, ~64 KB) = max ~69 KB per file
 - [x] Directories with . and .. entries, 28-char filenames
 - [x] Absolute/relative path parsing
@@ -99,6 +99,7 @@ make run    # Build + boot in QEMU
 - [x] Per-user quotas: inode + block limits (/etc/quota)
 - [x] Persistence: `fs_sync()` writes to disk, validated on load
 - [x] I/O statistics tracking
+- [x] File timestamps: created_at, modified_at, accessed_at (epoch seconds since 2000-01-01)
 
 ### Shell (Phase 7) — 100%
 - [x] 41+ commands (see full list in [Architecture Summary](#architecture-summary))
@@ -287,7 +288,7 @@ make run    # Build + boot in QEMU
 | **Hardware** | USB support | PS/2 keyboard/mouse only |
 | **Hardware** | Audio / sound | No audio driver |
 | **Hardware** | ~~GPU acceleration~~ | ✅ Done — VirtIO GPU 2D driver (PCI detect, virtqueue, 2D commands), BGA registers, hardware cursor plane, SSE2 NT stores, dirty rect coalescing, 60fps cap |
-| **Hardware** | Real-time clock (RTC) | Time doesn't persist across reboots |
+| **Hardware** | ~~Real-time clock (RTC)~~ | ✅ Done — CMOS RTC, NTP sync, timezone support |
 | **Platform** | 64-bit (x86_64) | i386 only |
 | **Platform** | SMP / multi-core | Single-core only |
 | **Platform** | EFI boot | BIOS/GRUB legacy only |
@@ -304,12 +305,12 @@ make run    # Build + boot in QEMU
 | FS | Hard links (currently only symlinks) |
 | Networking | SSH client/server |
 | Networking | FTP client |
-| Networking | NTP time sync |
+| Networking | ~~NTP time sync~~ ✅ Done |
 | Networking | WebSocket support |
-| GUI | Clipboard (copy/paste between apps) |
+| GUI | ~~Clipboard (copy/paste between apps)~~ ✅ Done |
 | GUI | Drag-and-drop |
 | GUI | Multiple workspaces/virtual desktops |
-| GUI | Notification system |
+| GUI | ~~Notification system~~ ✅ Done |
 | GUI | Screen resolution switching at runtime |
 | Apps | Calculator |
 | Apps | Image viewer |
@@ -336,7 +337,7 @@ make run    # Build + boot in QEMU
 7. **No crash recovery** — A power loss during write can corrupt the filesystem. No journaling.
 8. **Single-core only** — No SMP support, no spinlocks needed but also no parallelism.
 9. **PS/2 only** — USB keyboards and mice are not supported.
-10. **No real clock** — PIT counts ticks from boot, but there's no RTC driver for wall-clock time.
+10. ~~**No real clock**~~ — ✅ Fixed: RTC driver reads CMOS, NTP sync, timezone support.
 11. **8 TCP connections max** — Hard-coded limit on concurrent TCP sessions.
 12. **No TLS** — All network traffic is plaintext.
 
@@ -389,15 +390,15 @@ make run    # Build + boot in QEMU
 > **Section 0.3 complete**: Software optimizations (SSE2 NT stores, dirty rect coalescing, 60fps cap, occluded window skip) + hardware GPU acceleration (VirtIO GPU driver with 2D commands, hardware cursor plane, BGA register access). VirtIO GPU activates with `-vga virtio`; falls back to SSE2+MMIO with `-vga std`.
 
 #### 0.4 — Clipboard & Core Desktop Integration
-- [ ] **Clipboard system** — Copy/paste with MIME types between all apps
+- [x] **Clipboard system** — System-wide copy/paste (Cmd+C/V/X/A), text selection in terminal
 - [ ] **Virtual workspaces** — Multiple desktops with keyboard shortcut switching + animated transitions
-- [ ] **Alt-Tab task switcher** — With live window previews
+- [x] **Alt-Tab task switcher** — Ctrl+Tab visual switcher with window thumbnails
 - [ ] **Window snapping** — Half/quarter screen snap-to-edge
-- [ ] **Notification system** — Toast notifications with actions, do-not-disturb, history
-- [ ] **Global keyboard shortcuts** — System-wide hotkey registry
-- [ ] **Application launcher** — Search-based launcher (like GNOME Activities / KRunner)
+- [x] **Notification system** — Toast notifications with swipe-to-dismiss, auto-expire, stacking
+- [x] **Global keyboard shortcuts** — Mac-style shortcuts (Cmd+C/V/X/A/W/Q)
+- [x] **Application launcher** — Finder (Alt+Space) with fuzzy search
 
-> These are features every desktop user expects on day one.
+> Clipboard, Alt-Tab switcher, toast notifications, and keyboard shortcuts are done. Virtual workspaces and window snapping remain.
 
 #### 0.5 — Audio
 - [ ] **Audio driver** — AC97 or Intel HDA (QEMU supports both)
@@ -442,7 +443,7 @@ make run    # Build + boot in QEMU
 
 - [x] **Shell pipes** — `cmd1 | cmd2` with grep/cat/wc on right side
 - [ ] **Shell redirections** — `cmd > file`, `cmd < file`, `cmd >> file`
-- [ ] **RTC driver** — Read CMOS real-time clock, provide actual wall-clock time
+- [x] **RTC driver** — CMOS RTC, NTP sync, timezone support, epoch timestamps
 - [ ] **ctype.h** — isalpha, isdigit, isspace, toupper, tolower
 - [ ] **errno** — Global error code, perror(), strerror()
 
@@ -452,7 +453,7 @@ make run    # Build + boot in QEMU
 - [ ] **Hard links** — Multiple directory entries pointing to same inode
 - [ ] **Mount/unmount** — Support multiple partitions or disk images
 - [ ] **/proc filesystem** — Virtual FS exposing kernel state (tasks, memory, network)
-- [ ] **Timestamps** — Created/modified/accessed times on inodes
+- [x] **Timestamps** — Created/modified/accessed times on inodes (epoch since 2000-01-01)
 - [ ] **File search indexing** — Background index for fast search (like Tracker/Baloo)
 
 ### Priority 4 — Networking Enhancements (Months)
@@ -472,7 +473,7 @@ make run    # Build + boot in QEMU
 - [x] **Window decorations** — Soft shadows (9-patch atlas), rounded corners (10px), per-window opacity
 - [ ] **Window animations** — Open/close/minimize transitions
 - [ ] **Widget animations** — Smooth fade/slide for panels and dialogs
-- [ ] **Right-click context menus** — Already partial, expand everywhere
+- [x] **Right-click context menus** — Desktop and file manager context menus
 - [ ] **Multi-monitor support** — Extend, mirror, per-monitor DPI
 - [ ] **Screen lock** — Lockscreen with PAM-style auth
 - [ ] **Settings daemon** — Centralized config (like gsettings/KConfig)
