@@ -2,6 +2,7 @@
 #include <kernel/fs.h>
 #include <kernel/task.h>
 #include <kernel/pmm.h>
+#include <kernel/vmm.h>
 #include <kernel/io.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -263,21 +264,264 @@ static DWORD WINAPI shim_GetCurrentThreadId(void) {
     return (DWORD)task_get_current();
 }
 
-/* ── Memory ──────────────────────────────────────────────────── */
+/* ── Memory — VirtualAlloc with real page-backed allocations ── */
+
+/* Track virtual allocations for VirtualQuery / VirtualFree */
+#define MAX_VREGIONS 64
+typedef struct {
+    uint32_t base;      /* virtual base address */
+    uint32_t size;      /* region size in bytes */
+    uint32_t n_frames;  /* number of PMM frames allocated */
+    uint32_t protect;   /* Win32 protection flags */
+    int      in_use;
+} vregion_t;
+
+static vregion_t vregions[MAX_VREGIONS];
+
+/* Next VirtualAlloc address — start at 0x10000000 to stay away from
+ * kernel/heap space but inside identity-mapped 256MB */
+static uint32_t valloc_next = 0x05000000;
+
+/* Convert Win32 protection flags to PTE flags */
+static uint32_t win32_prot_to_pte(DWORD protect) {
+    uint32_t flags = PTE_PRESENT | PTE_USER;
+    if (protect == PAGE_NOACCESS)
+        return PTE_USER;  /* present=0, will fault */
+    if (protect == PAGE_READONLY || protect == PAGE_EXECUTE_READ)
+        return flags;  /* read-only (no PTE_WRITABLE) */
+    return flags | PTE_WRITABLE;  /* PAGE_READWRITE and others */
+}
 
 static LPVOID WINAPI shim_VirtualAlloc(
     LPVOID lpAddress, DWORD dwSize, DWORD flAllocationType, DWORD flProtect)
 {
-    (void)lpAddress; (void)flAllocationType; (void)flProtect;
-    void *p = calloc(1, dwSize);
-    return p;
+    (void)flAllocationType;
+
+    /* Round size up to page boundary */
+    uint32_t pages = (dwSize + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (pages == 0) pages = 1;
+
+    uint32_t base;
+    if (lpAddress) {
+        base = (uint32_t)lpAddress & PAGE_MASK;
+    } else {
+        /* Align next address to page boundary */
+        base = (valloc_next + PAGE_SIZE - 1) & PAGE_MASK;
+        valloc_next = base + pages * PAGE_SIZE;
+        /* Safety: don't exceed identity-mapped region */
+        if (valloc_next > 0x0F000000) {
+            DBG("VirtualAlloc: out of virtual address space");
+            return NULL;
+        }
+    }
+
+    /* Find a free region slot */
+    int slot = -1;
+    for (int i = 0; i < MAX_VREGIONS; i++) {
+        if (!vregions[i].in_use) { slot = i; break; }
+    }
+    if (slot < 0) {
+        DBG("VirtualAlloc: no region slots");
+        return NULL;
+    }
+
+    /* Allocate physical frames and map pages */
+    uint32_t pte_flags = win32_prot_to_pte(flProtect);
+    for (uint32_t i = 0; i < pages; i++) {
+        uint32_t frame = pmm_alloc_frame();
+        if (!frame) {
+            /* Rollback: free already-allocated frames */
+            for (uint32_t j = 0; j < i; j++) {
+                uint32_t va = base + j * PAGE_SIZE;
+                /* Read back the physical frame from the PTE to free it */
+                uint32_t pde_idx = va >> 22;
+                uint32_t pte_idx = (va >> 12) & 0x3FF;
+                extern uint32_t kernel_page_tables[][1024];
+                if (pde_idx < 64) {
+                    uint32_t phys = kernel_page_tables[pde_idx][pte_idx] & PAGE_MASK;
+                    pmm_free_frame(phys);
+                }
+                vmm_unmap_page(va);
+            }
+            return NULL;
+        }
+        /* Zero the frame */
+        memset((void *)frame, 0, PAGE_SIZE);
+        vmm_map_page(base + i * PAGE_SIZE, frame, pte_flags);
+    }
+
+    /* Record the region */
+    vregions[slot].base = base;
+    vregions[slot].size = pages * PAGE_SIZE;
+    vregions[slot].n_frames = pages;
+    vregions[slot].protect = flProtect;
+    vregions[slot].in_use = 1;
+
+    DBG("VirtualAlloc: base=0x%x size=%u pages=%u prot=0x%x",
+        base, dwSize, pages, flProtect);
+    return (LPVOID)base;
 }
 
 static BOOL WINAPI shim_VirtualFree(LPVOID lpAddress, DWORD dwSize, DWORD dwFreeType) {
     (void)dwSize; (void)dwFreeType;
+    uint32_t addr = (uint32_t)lpAddress;
+
+    for (int i = 0; i < MAX_VREGIONS; i++) {
+        if (vregions[i].in_use && vregions[i].base == addr) {
+            /* Free all frames */
+            for (uint32_t j = 0; j < vregions[i].n_frames; j++) {
+                uint32_t va = addr + j * PAGE_SIZE;
+                uint32_t pde_idx = va >> 22;
+                uint32_t pte_idx = (va >> 12) & 0x3FF;
+                extern uint32_t kernel_page_tables[][1024];
+                if (pde_idx < 64) {
+                    uint32_t pte = kernel_page_tables[pde_idx][pte_idx];
+                    if (pte & PTE_PRESENT)
+                        pmm_free_frame(pte & PAGE_MASK);
+                }
+                vmm_unmap_page(va);
+            }
+            vregions[i].in_use = 0;
+            return TRUE;
+        }
+    }
+    /* Fallback: might be a malloc'd pointer from old code */
     free(lpAddress);
     return TRUE;
 }
+
+static BOOL WINAPI shim_VirtualProtect(
+    LPVOID lpAddress, DWORD dwSize, DWORD flNewProtect, DWORD *lpflOldProtect)
+{
+    uint32_t addr = (uint32_t)lpAddress & PAGE_MASK;
+    uint32_t pages = (dwSize + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint32_t pte_flags = win32_prot_to_pte(flNewProtect);
+
+    /* Find the region to get old protect */
+    DWORD old_prot = PAGE_READWRITE;
+    for (int i = 0; i < MAX_VREGIONS; i++) {
+        if (vregions[i].in_use &&
+            addr >= vregions[i].base &&
+            addr < vregions[i].base + vregions[i].size) {
+            old_prot = vregions[i].protect;
+            vregions[i].protect = flNewProtect;
+            break;
+        }
+    }
+    if (lpflOldProtect) *lpflOldProtect = old_prot;
+
+    /* Update page table entries */
+    extern uint32_t kernel_page_tables[][1024];
+    for (uint32_t i = 0; i < pages; i++) {
+        uint32_t va = addr + i * PAGE_SIZE;
+        uint32_t pde_idx = va >> 22;
+        uint32_t pte_idx = (va >> 12) & 0x3FF;
+        if (pde_idx < 64) {
+            uint32_t phys = kernel_page_tables[pde_idx][pte_idx] & PAGE_MASK;
+            kernel_page_tables[pde_idx][pte_idx] = phys | pte_flags;
+            vmm_invlpg(va);
+        }
+    }
+    return TRUE;
+}
+
+/* MEMORY_BASIC_INFORMATION for VirtualQuery */
+typedef struct {
+    LPVOID BaseAddress;
+    LPVOID AllocationBase;
+    DWORD  AllocationProtect;
+    DWORD  RegionSize;
+    DWORD  State;
+    DWORD  Protect;
+    DWORD  Type;
+} MEMORY_BASIC_INFORMATION;
+
+static DWORD WINAPI shim_VirtualQuery(
+    LPCVOID lpAddress, MEMORY_BASIC_INFORMATION *lpBuffer, DWORD dwLength)
+{
+    if (!lpBuffer || dwLength < sizeof(MEMORY_BASIC_INFORMATION))
+        return 0;
+
+    uint32_t addr = (uint32_t)lpAddress;
+    memset(lpBuffer, 0, sizeof(MEMORY_BASIC_INFORMATION));
+
+    for (int i = 0; i < MAX_VREGIONS; i++) {
+        if (vregions[i].in_use &&
+            addr >= vregions[i].base &&
+            addr < vregions[i].base + vregions[i].size) {
+            lpBuffer->BaseAddress = (LPVOID)vregions[i].base;
+            lpBuffer->AllocationBase = (LPVOID)vregions[i].base;
+            lpBuffer->AllocationProtect = vregions[i].protect;
+            lpBuffer->RegionSize = vregions[i].size;
+            lpBuffer->State = MEM_COMMIT;
+            lpBuffer->Protect = vregions[i].protect;
+            lpBuffer->Type = 0x20000;  /* MEM_PRIVATE */
+            return sizeof(MEMORY_BASIC_INFORMATION);
+        }
+    }
+
+    /* Address not in our tracked regions — report as free */
+    lpBuffer->BaseAddress = (LPVOID)(addr & PAGE_MASK);
+    lpBuffer->RegionSize = PAGE_SIZE;
+    lpBuffer->State = 0x10000;  /* MEM_FREE */
+    return sizeof(MEMORY_BASIC_INFORMATION);
+}
+
+/* ── Memory-mapped files ─────────────────────────────────────── */
+
+#define HTYPE_FILEMAPPING 10  /* extends handle_type_t */
+
+static HANDLE WINAPI shim_CreateFileMappingA(
+    HANDLE hFile, LPVOID lpAttr, DWORD flProtect,
+    DWORD dwMaxHigh, DWORD dwMaxLow, LPCSTR lpName)
+{
+    (void)lpAttr; (void)flProtect; (void)dwMaxHigh; (void)lpName;
+
+    HANDLE h = alloc_handle((handle_type_t)HTYPE_FILEMAPPING);
+    if (h == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
+
+    win32_handle_t *wh = get_handle(h);
+    /* Store the source file handle and desired size */
+    wh->size = dwMaxLow;
+    if (hFile != INVALID_HANDLE_VALUE) {
+        win32_handle_t *fh = get_handle(hFile);
+        if (fh && fh->buffer) {
+            wh->buffer = fh->buffer;
+            wh->size = fh->size;
+        }
+    }
+    return h;
+}
+
+static LPVOID WINAPI shim_MapViewOfFile(
+    HANDLE hMap, DWORD dwAccess, DWORD dwOffHigh, DWORD dwOffLow, DWORD dwBytes)
+{
+    (void)dwAccess; (void)dwOffHigh;
+
+    win32_handle_t *wh = get_handle(hMap);
+    if (!wh) return NULL;
+
+    DWORD map_size = dwBytes ? dwBytes : wh->size;
+    if (map_size == 0) map_size = PAGE_SIZE;
+
+    /* Allocate pages for the mapping */
+    LPVOID p = shim_VirtualAlloc(NULL, map_size, MEM_COMMIT, PAGE_READWRITE);
+    if (!p) return NULL;
+
+    /* Copy file data into the mapped region if available */
+    if (wh->buffer && wh->size > 0) {
+        uint32_t copy_size = wh->size - dwOffLow;
+        if (copy_size > map_size) copy_size = map_size;
+        memcpy(p, wh->buffer + dwOffLow, copy_size);
+    }
+    return p;
+}
+
+static BOOL WINAPI shim_UnmapViewOfFile(LPCVOID lpBase) {
+    return shim_VirtualFree((LPVOID)lpBase, 0, MEM_RELEASE);
+}
+
+/* ── Heap (unchanged — wraps malloc) ─────────────────────────── */
 
 static HANDLE WINAPI shim_GetProcessHeap(void) {
     return (HANDLE)1;
@@ -288,10 +532,12 @@ static HANDLE WINAPI shim_HeapCreate(DWORD flOptions, DWORD dwInitialSize, DWORD
     return (HANDLE)1;
 }
 
+#define HEAP_ZERO_MEMORY 0x08
+
 static LPVOID WINAPI shim_HeapAlloc(HANDLE hHeap, DWORD dwFlags, DWORD dwBytes) {
     (void)hHeap;
     void *p = malloc(dwBytes);
-    if (p && (dwFlags & 0x08)) /* HEAP_ZERO_MEMORY */
+    if (p && (dwFlags & HEAP_ZERO_MEMORY))
         memset(p, 0, dwBytes);
     return p;
 }
@@ -315,6 +561,43 @@ static DWORD WINAPI shim_HeapSize(HANDLE hHeap, DWORD dwFlags, LPCVOID lpMem) {
 static BOOL WINAPI shim_HeapDestroy(HANDLE hHeap) {
     (void)hHeap;
     return TRUE;
+}
+
+/* ── GlobalAlloc / GlobalFree (legacy) ───────────────────────── */
+
+#define GMEM_FIXED    0x0000
+#define GMEM_MOVEABLE 0x0002
+#define GMEM_ZEROINIT 0x0040
+#define GPTR          (GMEM_FIXED | GMEM_ZEROINIT)
+
+typedef HANDLE HGLOBAL;
+
+static HGLOBAL WINAPI shim_GlobalAlloc(UINT uFlags, DWORD dwBytes) {
+    void *p;
+    if (uFlags & GMEM_ZEROINIT)
+        p = calloc(1, dwBytes);
+    else
+        p = malloc(dwBytes);
+    return (HGLOBAL)p;
+}
+
+static HGLOBAL WINAPI shim_GlobalFree(HGLOBAL hMem) {
+    free((void *)hMem);
+    return (HGLOBAL)0;
+}
+
+static LPVOID WINAPI shim_GlobalLock(HGLOBAL hMem) {
+    return (LPVOID)hMem;  /* GMEM_FIXED: handle IS the pointer */
+}
+
+static BOOL WINAPI shim_GlobalUnlock(HGLOBAL hMem) {
+    (void)hMem;
+    return TRUE;
+}
+
+static DWORD WINAPI shim_GlobalSize(HGLOBAL hMem) {
+    (void)hMem;
+    return 0;  /* can't determine size from malloc */
 }
 
 /* ── Timing ──────────────────────────────────────────────────── */
@@ -928,9 +1211,19 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "GetCurrentProcessId",    (void *)shim_GetCurrentProcessId },
     { "GetCurrentThreadId",     (void *)shim_GetCurrentThreadId },
 
-    /* Memory */
+    /* Memory — Virtual */
     { "VirtualAlloc",           (void *)shim_VirtualAlloc },
     { "VirtualFree",            (void *)shim_VirtualFree },
+    { "VirtualProtect",         (void *)shim_VirtualProtect },
+    { "VirtualQuery",           (void *)shim_VirtualQuery },
+
+    /* Memory — File mapping */
+    { "CreateFileMappingA",     (void *)shim_CreateFileMappingA },
+    { "CreateFileMappingW",     (void *)shim_CreateFileMappingA },
+    { "MapViewOfFile",          (void *)shim_MapViewOfFile },
+    { "UnmapViewOfFile",        (void *)shim_UnmapViewOfFile },
+
+    /* Memory — Heap */
     { "GetProcessHeap",         (void *)shim_GetProcessHeap },
     { "HeapCreate",             (void *)shim_HeapCreate },
     { "HeapAlloc",              (void *)shim_HeapAlloc },
@@ -938,6 +1231,13 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "HeapReAlloc",            (void *)shim_HeapReAlloc },
     { "HeapSize",               (void *)shim_HeapSize },
     { "HeapDestroy",            (void *)shim_HeapDestroy },
+
+    /* Memory — Global (legacy) */
+    { "GlobalAlloc",            (void *)shim_GlobalAlloc },
+    { "GlobalFree",             (void *)shim_GlobalFree },
+    { "GlobalLock",             (void *)shim_GlobalLock },
+    { "GlobalUnlock",           (void *)shim_GlobalUnlock },
+    { "GlobalSize",             (void *)shim_GlobalSize },
 
     /* Timing */
     { "GetTickCount",           (void *)shim_GetTickCount },

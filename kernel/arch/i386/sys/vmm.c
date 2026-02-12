@@ -10,7 +10,7 @@
 #define IDENTITY_TABLES  64   /* 64 * 4MB = 256MB */
 
 static uint32_t kernel_page_directory[1024] __attribute__((aligned(4096)));
-static uint32_t kernel_page_tables[IDENTITY_TABLES][1024] __attribute__((aligned(4096)));
+uint32_t kernel_page_tables[IDENTITY_TABLES][1024] __attribute__((aligned(4096)));
 
 void vmm_init(multiboot_info_t *mbi) {
     (void)mbi;
