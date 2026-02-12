@@ -73,4 +73,22 @@ int  desktop_dock_action(int idx);
 /* Request desktop icon refresh (deferred, checked in idle callback) */
 void desktop_request_refresh(void);
 
+/* ═══ Toast Notifications ═════════════════════════════════════════ */
+
+#define TOAST_INFO     0
+#define TOAST_SUCCESS  1
+#define TOAST_WARNING  2
+#define TOAST_ERROR    3
+
+/* Show a toast notification (auto-dismisses after ~5 seconds).
+   app_name: source app (e.g. "Settings", "Terminal", "Network")
+   title: bold heading line
+   message: detail text (can be NULL)
+   type: TOAST_INFO / SUCCESS / WARNING / ERROR */
+void toast_show(const char *app_name, const char *title, const char *message, int type);
+
+/* Process mouse interaction with toasts (called from desktop idle).
+   Returns 1 if the mouse event was consumed by a toast. */
+int toast_handle_mouse(int mx, int my, int btn_down, int btn_held, int btn_up);
+
 #endif
