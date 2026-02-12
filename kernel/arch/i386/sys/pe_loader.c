@@ -152,6 +152,7 @@ static const win32_dll_shim_t *shim_table[] = {
     &win32_msvcrt,
     &win32_ucrtbase,
     &win32_advapi32,
+    &win32_ws2_32,
     NULL
 };
 
