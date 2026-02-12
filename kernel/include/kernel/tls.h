@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <kernel/crypto.h>
+#include <kernel/ec.h>
 
 /* TLS 1.2 content types */
 #define TLS_CHANGE_CIPHER_SPEC 20
@@ -15,6 +16,7 @@
 #define TLS_HS_CLIENT_HELLO     1
 #define TLS_HS_SERVER_HELLO     2
 #define TLS_HS_CERTIFICATE      11
+#define TLS_HS_SERVER_KEY_EXCHANGE 12
 #define TLS_HS_SERVER_HELLO_DONE 14
 #define TLS_HS_CLIENT_KEY_EXCHANGE 16
 #define TLS_HS_FINISHED         20
@@ -22,8 +24,9 @@
 /* TLS version */
 #define TLS_VERSION_1_2  0x0303
 
-/* Cipher suite: TLS_RSA_WITH_AES_128_CBC_SHA256 */
-#define TLS_RSA_AES128_CBC_SHA256 0x003C
+/* Cipher suites */
+#define TLS_RSA_AES128_CBC_SHA256      0x003C
+#define TLS_ECDHE_RSA_AES128_CBC_SHA256 0xC027
 
 /* Max TLS record payload */
 #define TLS_MAX_RECORD   16384
@@ -67,6 +70,11 @@ typedef struct {
 
     /* Server's RSA public key */
     rsa_pubkey_t server_key;
+
+    /* ECDHE state */
+    uint16_t cipher_suite;           /* negotiated cipher */
+    uint8_t  ecdhe_privkey[32];      /* our ECDHE private key */
+    ec_point_t ecdhe_server_pubkey;  /* server's ephemeral EC public key */
 } tls_conn_t;
 
 /* Connect TLS over an existing TCP socket */
