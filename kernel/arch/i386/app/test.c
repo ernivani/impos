@@ -1019,6 +1019,204 @@ static void test_win32_dll(void) {
     }
 }
 
+/* ---- Win32 Registry Tests ---- */
+
+static void test_win32_registry(void) {
+    printf("== Win32 Registry Tests ==\n");
+
+    /* Force re-init for clean state */
+    registry_init();
+
+    /* Typedefs matching the stdcall shim signatures */
+    typedef uint32_t (__attribute__((stdcall)) *pfn_RegOpenKeyExA)(
+        uint32_t hKey, const char *sub, uint32_t opts, uint32_t sam, uint32_t *out);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_RegCloseKey)(uint32_t hKey);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_RegQueryValueExA)(
+        uint32_t hKey, const char *name, uint32_t *res, uint32_t *type,
+        uint8_t *data, uint32_t *cbData);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_RegEnumKeyExA)(
+        uint32_t hKey, uint32_t idx, char *name, uint32_t *cchName,
+        uint32_t *res, char *cls, uint32_t *cchCls, void *ft);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_RegEnumValueA)(
+        uint32_t hKey, uint32_t idx, char *name, uint32_t *cchName,
+        uint32_t *res, uint32_t *type, uint8_t *data, uint32_t *cbData);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_RegCreateKeyExA)(
+        uint32_t hKey, const char *sub, uint32_t res, char *cls,
+        uint32_t opts, uint32_t sam, void *sa, uint32_t *out, uint32_t *disp);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_RegSetValueExA)(
+        uint32_t hKey, const char *name, uint32_t res, uint32_t type,
+        const uint8_t *data, uint32_t cbData);
+
+    /* Resolve all registry functions from advapi32 shim */
+    pfn_RegOpenKeyExA pOpen = (pfn_RegOpenKeyExA)
+        win32_resolve_import("advapi32.dll", "RegOpenKeyExA");
+    pfn_RegCloseKey pClose = (pfn_RegCloseKey)
+        win32_resolve_import("advapi32.dll", "RegCloseKey");
+    pfn_RegQueryValueExA pQuery = (pfn_RegQueryValueExA)
+        win32_resolve_import("advapi32.dll", "RegQueryValueExA");
+    pfn_RegEnumKeyExA pEnumKey = (pfn_RegEnumKeyExA)
+        win32_resolve_import("advapi32.dll", "RegEnumKeyExA");
+    pfn_RegEnumValueA pEnumVal = (pfn_RegEnumValueA)
+        win32_resolve_import("advapi32.dll", "RegEnumValueA");
+    pfn_RegCreateKeyExA pCreate = (pfn_RegCreateKeyExA)
+        win32_resolve_import("advapi32.dll", "RegCreateKeyExA");
+    pfn_RegSetValueExA pSet = (pfn_RegSetValueExA)
+        win32_resolve_import("advapi32.dll", "RegSetValueExA");
+
+    TEST_ASSERT(pOpen != NULL,    "reg: RegOpenKeyExA resolved");
+    TEST_ASSERT(pClose != NULL,   "reg: RegCloseKey resolved");
+    TEST_ASSERT(pQuery != NULL,   "reg: RegQueryValueExA resolved");
+    TEST_ASSERT(pEnumKey != NULL, "reg: RegEnumKeyExA resolved");
+    TEST_ASSERT(pEnumVal != NULL, "reg: RegEnumValueA resolved");
+    TEST_ASSERT(pCreate != NULL,  "reg: RegCreateKeyExA resolved");
+    TEST_ASSERT(pSet != NULL,     "reg: RegSetValueExA resolved");
+
+    if (!pOpen || !pClose || !pQuery || !pEnumKey || !pEnumVal || !pCreate || !pSet)
+        return;
+
+    #define HKLM 0x80000002
+    #define HKCU 0x80000001
+
+    /* Test 1: Open a pre-populated key */
+    uint32_t hKey = 0;
+    uint32_t ret = pOpen(HKLM, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                         0, 0x20019, &hKey);
+    TEST_ASSERT(ret == 0, "reg: open CurrentVersion succeeds");
+    TEST_ASSERT(hKey != 0, "reg: open returns non-null handle");
+
+    /* Test 2: Query REG_SZ value "ProductName" */
+    if (hKey) {
+        uint32_t type = 0;
+        uint8_t data[256];
+        uint32_t cbData = sizeof(data);
+        ret = pQuery(hKey, "ProductName", NULL, &type, data, &cbData);
+        TEST_ASSERT(ret == 0, "reg: query ProductName succeeds");
+        TEST_ASSERT(type == 1, "reg: ProductName is REG_SZ");
+        TEST_ASSERT(strcmp((char *)data, "Windows 10 Pro") == 0, "reg: ProductName value");
+    }
+
+    /* Test 3: Query with NULL data returns required size */
+    if (hKey) {
+        uint32_t type = 0;
+        uint32_t cbData = 0;
+        ret = pQuery(hKey, "ProductName", NULL, &type, NULL, &cbData);
+        TEST_ASSERT(ret == 0, "reg: query NULL data returns size");
+        TEST_ASSERT(cbData == strlen("Windows 10 Pro") + 1, "reg: correct size returned");
+    }
+
+    /* Test 4: Query with small buffer returns ERROR_MORE_DATA */
+    if (hKey) {
+        uint8_t small[4];
+        uint32_t cbData = sizeof(small);
+        ret = pQuery(hKey, "ProductName", NULL, NULL, small, &cbData);
+        TEST_ASSERT(ret == 234, "reg: small buffer returns ERROR_MORE_DATA");
+    }
+
+    /* Test 5: Query REG_DWORD */
+    if (hKey) {
+        uint32_t type = 0;
+        uint32_t dw_data = 0;
+        uint32_t cbData = sizeof(dw_data);
+        ret = pQuery(hKey, "CurrentMajorVersionNumber", NULL, &type,
+                     (uint8_t *)&dw_data, &cbData);
+        TEST_ASSERT(ret == 0, "reg: query DWORD succeeds");
+        TEST_ASSERT(type == 4, "reg: DWORD type is REG_DWORD");
+        TEST_ASSERT(dw_data == 10, "reg: MajorVersion is 10");
+    }
+
+    /* Test 6: Close key */
+    if (hKey) {
+        ret = pClose(hKey);
+        TEST_ASSERT(ret == 0, "reg: close succeeds");
+    }
+
+    /* Test 7: Open non-existent key returns ERROR_FILE_NOT_FOUND */
+    uint32_t hBogus = 0;
+    ret = pOpen(HKLM, "SOFTWARE\\NonExistent\\Key", 0, 0x20019, &hBogus);
+    TEST_ASSERT(ret == 2, "reg: open bogus key returns FILE_NOT_FOUND");
+
+    /* Test 8: RegEnumKeyExA on a parent key */
+    uint32_t hSoftware = 0;
+    ret = pOpen(HKLM, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, 0x20019, &hSoftware);
+    if (ret == 0 && hSoftware) {
+        /* CurrentVersion has children: Fonts, FontSubstitutes */
+        char name[128];
+        uint32_t cchName = sizeof(name);
+        ret = pEnumKey(hSoftware, 0, name, &cchName, NULL, NULL, NULL, NULL);
+        TEST_ASSERT(ret == 0, "reg: enum key index 0 succeeds");
+
+        /* Enum past all children should return ERROR_NO_MORE_ITEMS */
+        cchName = sizeof(name);
+        uint32_t r2 = pEnumKey(hSoftware, 100, name, &cchName, NULL, NULL, NULL, NULL);
+        TEST_ASSERT(r2 == 259, "reg: enum past end returns NO_MORE_ITEMS");
+
+        pClose(hSoftware);
+    }
+
+    /* Test 9: RegEnumValueA */
+    uint32_t hCodePage = 0;
+    ret = pOpen(HKLM, "SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage",
+                0, 0x20019, &hCodePage);
+    if (ret == 0 && hCodePage) {
+        char vname[64];
+        uint32_t cchName = sizeof(vname);
+        uint32_t type = 0;
+        uint8_t vdata[256];
+        uint32_t cbData = sizeof(vdata);
+        ret = pEnumVal(hCodePage, 0, vname, &cchName, NULL, &type, vdata, &cbData);
+        TEST_ASSERT(ret == 0, "reg: enum value index 0 succeeds");
+        TEST_ASSERT(type == 1, "reg: enum value is REG_SZ");
+
+        /* Past all values */
+        cchName = sizeof(vname);
+        cbData = sizeof(vdata);
+        uint32_t r2 = pEnumVal(hCodePage, 100, vname, &cchName, NULL, &type, vdata, &cbData);
+        TEST_ASSERT(r2 == 259, "reg: enum value past end returns NO_MORE_ITEMS");
+
+        pClose(hCodePage);
+    }
+
+    /* Test 10: RegCreateKeyExA + RegSetValueExA round-trip */
+    uint32_t hNew = 0;
+    uint32_t disp = 0;
+    ret = pCreate(HKCU, "Software\\TestApp\\Settings", 0, NULL, 0, 0xF003F, NULL, &hNew, &disp);
+    TEST_ASSERT(ret == 0, "reg: create new key succeeds");
+    TEST_ASSERT(disp == 1, "reg: disposition is CREATED_NEW");
+
+    if (hNew) {
+        /* Set a string value */
+        const char *val = "hello";
+        ret = pSet(hNew, "MyValue", 0, 1, (const uint8_t *)val, strlen(val) + 1);
+        TEST_ASSERT(ret == 0, "reg: set value succeeds");
+
+        /* Read it back */
+        uint32_t type = 0;
+        uint8_t readback[64];
+        uint32_t cbData = sizeof(readback);
+        ret = pQuery(hNew, "MyValue", NULL, &type, readback, &cbData);
+        TEST_ASSERT(ret == 0, "reg: query round-trip succeeds");
+        TEST_ASSERT(type == 1, "reg: round-trip type is REG_SZ");
+        TEST_ASSERT(strcmp((char *)readback, "hello") == 0, "reg: round-trip value matches");
+
+        pClose(hNew);
+    }
+
+    /* Test 11: Re-open created key returns OPENED_EXISTING */
+    uint32_t hNew2 = 0;
+    uint32_t disp2 = 0;
+    ret = pCreate(HKCU, "Software\\TestApp\\Settings", 0, NULL, 0, 0xF003F, NULL, &hNew2, &disp2);
+    TEST_ASSERT(ret == 0, "reg: reopen existing key succeeds");
+    TEST_ASSERT(disp2 == 2, "reg: disposition is OPENED_EXISTING");
+    if (hNew2) pClose(hNew2);
+
+    /* Test 12: Close predefined key is a no-op (success) */
+    ret = pClose(HKLM);
+    TEST_ASSERT(ret == 0, "reg: close predefined key succeeds");
+
+    #undef HKLM
+    #undef HKCU
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -1044,6 +1242,7 @@ void test_run_all(void) {
     test_mouse();
     test_crypto();
     test_win32_dll();
+    test_win32_registry();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

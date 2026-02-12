@@ -46,7 +46,7 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
     size_t file_size;
     uint8_t *file_data = read_file_to_buffer(filename, &file_size);
     if (!file_data) {
-        printf("pe: cannot load '%s'\n", filename);
+        DBG("pe_load: file not found '%s'", filename);
         return -1;
     }
 
@@ -151,6 +151,7 @@ static const win32_dll_shim_t *shim_table[] = {
     &win32_gdi32,
     &win32_msvcrt,
     &win32_ucrtbase,
+    &win32_advapi32,
     NULL
 };
 

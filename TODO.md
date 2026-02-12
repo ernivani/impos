@@ -80,12 +80,12 @@ _Chromium loads 50+ DLLs. Need real DLL file loading, not just hardcoded shim ta
 
 ### Phase 6: Registry Emulation
 _Chromium reads ~100 registry keys on startup for system info, proxy settings, font config._
-- [ ] In-memory registry tree — hierarchical key/value store backed by filesystem
-- [ ] RegOpenKeyExA / RegCloseKey
-- [ ] RegQueryValueExA — REG_SZ, REG_DWORD, REG_BINARY types
-- [ ] RegEnumKeyExA / RegEnumValueA
-- [ ] RegCreateKeyExA / RegSetValueExA (for Chromium writing prefs)
-- [ ] Pre-populated keys — HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion (OS version), HKCU\Software\Google\Chrome, font registry
+- [x] In-memory registry tree — hierarchical key/value store backed by filesystem
+- [x] RegOpenKeyExA / RegCloseKey
+- [x] RegQueryValueExA — REG_SZ, REG_DWORD, REG_BINARY types
+- [x] RegEnumKeyExA / RegEnumValueA
+- [x] RegCreateKeyExA / RegSetValueExA (for Chromium writing prefs)
+- [x] Pre-populated keys — HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion (OS version), HKCU\Software\Google\Chrome, font registry
 
 ### Phase 7: Winsock Networking
 _Chromium has its own HTTP/QUIC stack but needs Winsock for raw sockets._

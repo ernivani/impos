@@ -313,6 +313,10 @@ extern const win32_dll_shim_t win32_kernel32;
 extern const win32_dll_shim_t win32_user32;
 extern const win32_dll_shim_t win32_gdi32;
 extern const win32_dll_shim_t win32_msvcrt;
+extern const win32_dll_shim_t win32_advapi32;
+
+/* Registry init (call early to pre-populate keys) */
+void registry_init(void);
 
 /* Master lookup: find a function by DLL name + function name */
 void *win32_resolve_import(const char *dll_name, const char *func_name);
