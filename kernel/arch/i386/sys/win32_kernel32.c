@@ -2,6 +2,7 @@
 #include <kernel/fs.h>
 #include <kernel/task.h>
 #include <kernel/pmm.h>
+#include <kernel/io.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -207,7 +208,7 @@ static HANDLE WINAPI shim_GetStdHandle(DWORD nStdHandle) {
 /* ── Process / Module ────────────────────────────────────────── */
 
 static void WINAPI shim_ExitProcess(UINT uExitCode) {
-    printf("[Win32] ExitProcess(%u)\n", uExitCode);
+    DBG("ExitProcess(%u)", uExitCode);
     task_exit();
 }
 
@@ -228,7 +229,7 @@ static void *WINAPI shim_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     if (p) return p;
     p = win32_resolve_import("msvcrt.dll", lpProcName);
     if (p) return p;
-    printf("[Win32] GetProcAddress: '%s' not found\n", lpProcName);
+    DBG("GetProcAddress: '%s' not found", lpProcName);
     return NULL;
 }
 

@@ -31,6 +31,7 @@
 #include <kernel/rtc.h>
 #include <kernel/beep.h>
 #include <kernel/pe_loader.h>
+#include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1755,12 +1756,11 @@ void shell_process_command(char* command) {
             snprintf(exe_name, sizeof(exe_name), "%s.exe", name);
         }
 
-        /* Check if file exists */
-        uint8_t tmp;
-        size_t sz = 1;
-        if (fs_read_file(exe_name, &tmp, &sz) >= 0 || sz > 0) {
-            int ret = pe_run(exe_name);
-            if (ret >= 0) return;  /* Successfully launched */
+        /* Try to load and run — pe_run returns < 0 if file not found */
+        int ret = pe_run(exe_name);
+        if (ret >= 0) {
+            for (int i = 0; i < 5; i++) task_yield();
+            return;
         }
     }
 
@@ -4178,9 +4178,13 @@ static void cmd_run(int argc, char* argv[]) {
         return;
     }
 
+    DBG("cmd_run: calling pe_run('%s')", argv[1]);
     int ret = pe_run(argv[1]);
+    DBG("cmd_run: pe_run returned %d", ret);
     if (ret < 0) {
         printf("Failed to run '%s' (error %d)\n", argv[1], ret);
+    } else {
+        for (int i = 0; i < 5; i++) task_yield();
     }
 }
 
@@ -4367,12 +4371,9 @@ static const unsigned int hello_exe_len = 2048;
 
 static void cmd_petest(int argc, char* argv[]) {
     (void)argc; (void)argv;
-    printf("[1] writing file\n");
     fs_create_file("hello.exe", 0);
     fs_write_file("hello.exe", hello_exe_data, hello_exe_len);
-    printf("[2] pe_run\n");
     int ret = pe_run("hello.exe");
-    printf("[3] ret=%d\n", ret);
     if (ret >= 0)
         for (int i = 0; i < 5; i++) task_yield();
 }
@@ -4386,17 +4387,13 @@ static void cmd_petest(int argc, char* argv[]) {
 
 static void cmd_petest_gui(int argc, char* argv[]) {
     (void)argc; (void)argv;
-    printf("[petest-gui] writing hello_gui.exe (%u bytes)\n", hello_gui_data_len);
     fs_create_file("hello_gui.exe", 0);
     fs_write_file("hello_gui.exe", hello_gui_data, hello_gui_data_len);
-    printf("[petest-gui] pe_run\n");
     int ret = pe_run("hello_gui.exe");
     if (ret >= 0) {
-        printf("[petest-gui] started as task %d\n", ret);
-        /* Yield so the PE task can finish init before the shell prompt */
         for (int i = 0; i < 5; i++) task_yield();
     } else {
-        printf("[petest-gui] failed: %d\n", ret);
+        printf("petest-gui: failed (%d)\n", ret);
     }
 }
 
