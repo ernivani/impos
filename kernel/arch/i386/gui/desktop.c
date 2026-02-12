@@ -2185,17 +2185,42 @@ static int dock_index_for_action(int action) {
 static void desktop_launch_app(int action);
 static void desktop_close_focused_app(void);
 
+/* Find running app matching a launch action (by task name) */
+static int find_running_app_by_action(int action) {
+    const char *name = NULL;
+    switch (action) {
+        case DESKTOP_ACTION_TERMINAL: name = "Terminal"; break;
+        case DESKTOP_ACTION_FILES:    name = "Files";    break;
+        case DESKTOP_ACTION_BROWSER:  name = "Activity"; break;
+        case DESKTOP_ACTION_EDITOR:   name = "Editor";   break;
+        case DESKTOP_ACTION_SETTINGS: name = "Settings"; break;
+        case DESKTOP_ACTION_TRASH:    name = "Trash";    break;
+    }
+    if (!name) return -1;
+    for (int i = 0; i < MAX_RUNNING_APPS; i++) {
+        if (!running_apps[i].active) continue;
+        if (running_apps[i].task_id >= 0) {
+            task_info_t *t = task_get(running_apps[i].task_id);
+            if (t && t->active && strcmp(t->name, name) == 0)
+                return i;
+        }
+    }
+    return -1;
+}
+
 static void desktop_launch_app(int action) {
     int dock_idx = dock_index_for_action(action);
 
-    /* If app already running, focus its window */
-    if (dock_idx >= 0) {
-        int existing = find_running_app_by_dock(dock_idx);
-        if (existing >= 0 && (running_apps[existing].ui_win || running_apps[existing].is_terminal)) {
-            wm_focus_window(running_apps[existing].wm_id);
-            wm_composite();
-            return;
-        }
+    /* If app already running, focus (and restore if minimized) */
+    int existing = find_running_app_by_action(action);
+    if (existing >= 0 && (running_apps[existing].ui_win || running_apps[existing].is_terminal)) {
+        int wid = running_apps[existing].wm_id;
+        if (wm_is_minimized(wid))
+            wm_restore_window(wid);
+        else
+            wm_focus_window(wid);
+        wm_composite();
+        return;
     }
 
     switch (action) {
@@ -2594,7 +2619,12 @@ int desktop_run(void) {
             if (da < 0) {
                 int didx = -(da + 1);
                 if (didx >= 0 && didx < dock_item_count && dock_dynamic[didx].wm_id >= 0) {
-                    wm_focus_window(dock_dynamic[didx].wm_id);
+                    int wid = dock_dynamic[didx].wm_id;
+                    /* Restore if minimized */
+                    if (wm_is_minimized(wid))
+                        wm_restore_window(wid);
+                    else
+                        wm_focus_window(wid);
                     wm_composite();
                 }
                 continue;

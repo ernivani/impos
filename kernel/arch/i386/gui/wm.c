@@ -379,6 +379,7 @@ int wm_create_window(int x, int y, int w, int h, const char *title) {
     return win->id;
 }
 
+/* Start close animation; actual destroy happens when anim finishes */
 void wm_destroy_window(int id) {
     int idx = -1;
     for (int i = 0; i < win_count; i++)
@@ -935,17 +936,25 @@ void wm_composite(void) {
         gfx_draw_string(fx + 6, 5, fps_buf, GFX_RGB(0, 255, 80), GFX_RGB(0, 0, 0));
     }
 
+    /* Stamp cursor into backbuffer, flip (cursor included), then undo */
+    int mx = mouse_get_x(), my = mouse_get_y();
+    gfx_stamp_cursor_to_backbuf(mx, my);
+
     /* Flip to framebuffer — use dirty rects when possible */
     if (!full_composite_needed && dirty_rect_count > 0) {
         gfx_flip_rects(dirty_rects, dirty_rect_count);
     } else {
         gfx_flip();
     }
+
+    /* Restore clean backbuffer (remove cursor stamp) */
+    gfx_unstamp_cursor_from_backbuf();
+
+    /* Sync cursor state so gfx_draw_mouse_cursor has fresh save data */
+    gfx_sync_cursor_after_composite(mx, my);
+
     full_composite_needed = 0;
     dirty_rect_count = 0;
-
-    /* Mouse cursor on top (directly to framebuffer) */
-    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
 }
 
 /* ═══ Mouse processing ═══════════════════════════════════════ */
@@ -1052,7 +1061,6 @@ void wm_mouse_idle(void) {
                     wm_composite();
                     last_drag_composite_tick = now;
                 } else {
-                    /* Still update cursor so it doesn't freeze between composites */
                     gfx_draw_mouse_cursor(mx, my);
                 }
             }
@@ -1077,7 +1085,6 @@ void wm_mouse_idle(void) {
                 wm_composite();
                 last_drag_composite_tick = now;
             } else {
-                /* Still update cursor so it doesn't freeze between composites */
                 gfx_draw_mouse_cursor(mx, my);
             }
         } else {
@@ -1162,7 +1169,7 @@ void wm_mouse_idle(void) {
         return;
     }
 
-    /* Just cursor moved */
+    /* Just cursor moved — redraw cursor directly on framebuffer */
     gfx_draw_mouse_cursor(mx, my);
 }
 
