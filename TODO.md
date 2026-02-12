@@ -115,21 +115,21 @@ _Chromium uses Skia which calls into GDI/GDI+ and Direct2D/DirectWrite._
 
 ### Phase 9: COM & OLE Foundation
 _Chromium uses COM for accessibility, drag-drop, shell integration, audio._
-- [ ] CoInitializeEx / CoUninitialize
-- [ ] CoCreateInstance — object factory with CLSID dispatch
-- [ ] IUnknown vtable convention — QueryInterface/AddRef/Release
-- [ ] IMalloc / CoTaskMemAlloc / CoTaskMemFree
-- [ ] OLE clipboard — OleSetClipboard, OleGetClipboard
-- [ ] IDropTarget / IDropSource stubs (drag-and-drop)
-- [ ] Shell COM — SHGetFolderPathA, SHCreateDirectoryExA
-- [ ] ole32.dll + shell32.dll shim tables
+- [x] CoInitializeEx / CoUninitialize
+- [x] CoCreateInstance — object factory with CLSID dispatch
+- [x] IUnknown vtable convention — QueryInterface/AddRef/Release
+- [x] IMalloc / CoTaskMemAlloc / CoTaskMemFree
+- [x] OLE clipboard — OleSetClipboard, OleGetClipboard
+- [x] IDropTarget / IDropSource stubs (drag-and-drop)
+- [x] Shell COM — SHGetFolderPathA, SHCreateDirectoryExA
+- [x] ole32.dll + shell32.dll shim tables
 
 ### Phase 10: Unicode & Wide String APIs
 _Chromium is a Unicode application. Most real calls use W (wide) variants._
-- [ ] W-suffix versions of all kernel32/user32/gdi32 APIs (CreateFileW, CreateWindowExW, etc.)
-- [ ] UTF-8 ↔ UTF-16 conversion layer (MultiByteToWideChar/WideCharToMultiByte already stubbed)
-- [ ] wcslen, wcscpy, wcscat, wcscmp, wprintf, swprintf in msvcrt shim
-- [ ] Internal string handling: store as UTF-8, convert at API boundary
+- [x] W-suffix versions of all kernel32/user32/gdi32 APIs (CreateFileW, CreateWindowExW, etc.)
+- [x] UTF-8 ↔ UTF-16 conversion layer (MultiByteToWideChar/WideCharToMultiByte already stubbed)
+- [x] wcslen, wcscpy, wcscat, wcscmp, wprintf, swprintf in msvcrt shim
+- [x] Internal string handling: store as UTF-8, convert at API boundary
 
 ### Phase 11: Security & Crypto APIs
 _Chromium verifies TLS certificates and uses Windows crypto for key storage._

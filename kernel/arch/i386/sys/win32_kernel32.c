@@ -794,7 +794,7 @@ static const win32_dll_shim_t *dll_find_shim(const char *name_lower) {
     static const win32_dll_shim_t *all_shims[] = {
         &win32_kernel32, &win32_user32, &win32_gdi32,
         &win32_msvcrt, &win32_ucrtbase, &win32_advapi32, &win32_ws2_32,
-        &win32_gdiplus, NULL
+        &win32_gdiplus, &win32_ole32, &win32_shell32, NULL
     };
 
     for (int i = 0; all_shims[i]; i++) {
@@ -1732,17 +1732,146 @@ static void WINAPI shim_Sleep(DWORD dwMilliseconds) {
 
 /* ── String / Misc ───────────────────────────────────────────── */
 
+/* ── Proper UTF-8 ↔ UTF-16 Conversion ────────────────────────── */
+
+/* Convert UTF-8 string to UTF-16 (WCHAR).
+ * utf8_len: -1 means null-terminated.
+ * out_len: size of output buffer in WCHARs. If 0, returns required count.
+ * Returns number of WCHARs written/needed (including null if utf8_len was -1). */
+int win32_utf8_to_wchar(const char *utf8, int utf8_len, WCHAR *out, int out_len) {
+    if (!utf8) return 0;
+
+    const uint8_t *s = (const uint8_t *)utf8;
+    int src_len = utf8_len;
+    int include_null = 0;
+
+    if (src_len < 0) {
+        src_len = (int)strlen(utf8);
+        include_null = 1;
+    }
+
+    int wi = 0;
+    int si = 0;
+
+    while (si < src_len) {
+        uint32_t cp;
+        uint8_t b = s[si];
+
+        if (b < 0x80) {
+            cp = b;
+            si += 1;
+        } else if ((b & 0xE0) == 0xC0) {
+            if (si + 1 >= src_len) break;
+            cp = ((b & 0x1F) << 6) | (s[si+1] & 0x3F);
+            si += 2;
+        } else if ((b & 0xF0) == 0xE0) {
+            if (si + 2 >= src_len) break;
+            cp = ((b & 0x0F) << 12) | ((s[si+1] & 0x3F) << 6) | (s[si+2] & 0x3F);
+            si += 3;
+        } else if ((b & 0xF8) == 0xF0) {
+            if (si + 3 >= src_len) break;
+            cp = ((b & 0x07) << 18) | ((s[si+1] & 0x3F) << 12)
+               | ((s[si+2] & 0x3F) << 6) | (s[si+3] & 0x3F);
+            si += 4;
+        } else {
+            cp = 0xFFFD; /* replacement char */
+            si += 1;
+        }
+
+        /* Emit as UTF-16 */
+        if (cp <= 0xFFFF) {
+            if (out && wi < out_len) out[wi] = (WCHAR)cp;
+            wi++;
+        } else if (cp <= 0x10FFFF) {
+            /* Surrogate pair */
+            cp -= 0x10000;
+            if (out && wi < out_len) out[wi] = (WCHAR)(0xD800 | (cp >> 10));
+            wi++;
+            if (out && wi < out_len) out[wi] = (WCHAR)(0xDC00 | (cp & 0x3FF));
+            wi++;
+        }
+    }
+
+    if (include_null) {
+        if (out && wi < out_len) out[wi] = 0;
+        wi++;
+    }
+
+    return wi;
+}
+
+/* Convert UTF-16 (WCHAR) string to UTF-8.
+ * wstr_len: -1 means null-terminated.
+ * out_len: size of output buffer in bytes. If 0, returns required count.
+ * Returns number of bytes written/needed (including null if wstr_len was -1). */
+int win32_wchar_to_utf8(const WCHAR *wstr, int wstr_len, char *out, int out_len) {
+    if (!wstr) return 0;
+
+    int src_len = wstr_len;
+    int include_null = 0;
+
+    if (src_len < 0) {
+        src_len = 0;
+        while (wstr[src_len]) src_len++;
+        include_null = 1;
+    }
+
+    int bi = 0;
+    int si = 0;
+
+    while (si < src_len) {
+        uint32_t cp = wstr[si++];
+
+        /* Handle surrogate pairs */
+        if (cp >= 0xD800 && cp <= 0xDBFF && si < src_len) {
+            WCHAR lo = wstr[si];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                si++;
+            }
+        }
+
+        /* Encode as UTF-8 */
+        if (cp < 0x80) {
+            if (out && bi < out_len) out[bi] = (char)cp;
+            bi++;
+        } else if (cp < 0x800) {
+            if (out && bi < out_len) out[bi] = (char)(0xC0 | (cp >> 6));
+            bi++;
+            if (out && bi < out_len) out[bi] = (char)(0x80 | (cp & 0x3F));
+            bi++;
+        } else if (cp < 0x10000) {
+            if (out && bi < out_len) out[bi] = (char)(0xE0 | (cp >> 12));
+            bi++;
+            if (out && bi < out_len) out[bi] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            bi++;
+            if (out && bi < out_len) out[bi] = (char)(0x80 | (cp & 0x3F));
+            bi++;
+        } else {
+            if (out && bi < out_len) out[bi] = (char)(0xF0 | (cp >> 18));
+            bi++;
+            if (out && bi < out_len) out[bi] = (char)(0x80 | ((cp >> 12) & 0x3F));
+            bi++;
+            if (out && bi < out_len) out[bi] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            bi++;
+            if (out && bi < out_len) out[bi] = (char)(0x80 | (cp & 0x3F));
+            bi++;
+        }
+    }
+
+    if (include_null) {
+        if (out && bi < out_len) out[bi] = '\0';
+        bi++;
+    }
+
+    return bi;
+}
+
 static int WINAPI shim_MultiByteToWideChar(
     UINT cp, DWORD flags, LPCSTR mb, int cbMB, void *wc, int cchWC)
 {
     (void)cp; (void)flags;
-    int len = (cbMB < 0) ? (int)strlen(mb) + 1 : cbMB;
-    if (cchWC == 0) return len;
-    uint16_t *out = (uint16_t *)wc;
-    int n = (len < cchWC) ? len : cchWC;
-    for (int i = 0; i < n; i++)
-        out[i] = (uint8_t)mb[i];
-    return n;
+    return win32_utf8_to_wchar(mb, cbMB, (WCHAR *)wc, cchWC);
 }
 
 static int WINAPI shim_WideCharToMultiByte(
@@ -1750,19 +1879,7 @@ static int WINAPI shim_WideCharToMultiByte(
     LPSTR mb, int cbMB, LPCSTR defChar, LPVOID usedDef)
 {
     (void)cp; (void)flags; (void)defChar; (void)usedDef;
-    const uint16_t *in = (const uint16_t *)wc;
-    int len = 0;
-    if (cchWC < 0) {
-        while (in[len]) len++;
-        len++;
-    } else {
-        len = cchWC;
-    }
-    if (cbMB == 0) return len;
-    int n = (len < cbMB) ? len : cbMB;
-    for (int i = 0; i < n; i++)
-        mb[i] = (char)(in[i] & 0xFF);
-    return n;
+    return win32_wchar_to_utf8((const WCHAR *)wc, cchWC, mb, cbMB);
 }
 
 static BOOL WINAPI shim_QueryPerformanceCounter(void *lpCounter) {
@@ -2321,6 +2438,139 @@ static LONG WINAPI shim_InterlockedExchangeAdd(volatile LONG *addend, LONG value
     return old;
 }
 
+/* ── W-suffix Wrappers ───────────────────────────────────────── */
+
+static HANDLE WINAPI shim_CreateFileW(
+    LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
+    LPVOID lpSecAttrs, DWORD dwCreation, DWORD dwFlags, HANDLE hTemplate)
+{
+    char narrow[MAX_PATH];
+    win32_wchar_to_utf8(lpFileName, -1, narrow, sizeof(narrow));
+    return shim_CreateFileA(narrow, dwDesiredAccess, dwShareMode,
+                            lpSecAttrs, dwCreation, dwFlags, hTemplate);
+}
+
+static DWORD WINAPI shim_GetModuleFileNameW(HMODULE hModule, LPWSTR lpFilename, DWORD nSize) {
+    char narrow[MAX_PATH];
+    DWORD ret = shim_GetModuleFileNameA(hModule, narrow, MAX_PATH);
+    if (ret > 0 && lpFilename && nSize > 0)
+        win32_utf8_to_wchar(narrow, -1, lpFilename, (int)nSize);
+    return ret;
+}
+
+static DWORD WINAPI shim_GetCurrentDirectoryW(DWORD nBufferLength, LPWSTR lpBuffer) {
+    char narrow[MAX_PATH];
+    DWORD ret = shim_GetCurrentDirectoryA(MAX_PATH, narrow);
+    if (ret > 0 && lpBuffer && nBufferLength > 0)
+        win32_utf8_to_wchar(narrow, -1, lpBuffer, (int)nBufferLength);
+    return ret;
+}
+
+static BOOL WINAPI shim_SetCurrentDirectoryW(LPCWSTR lpPathName) {
+    char narrow[MAX_PATH];
+    win32_wchar_to_utf8(lpPathName, -1, narrow, sizeof(narrow));
+    return shim_SetCurrentDirectoryA(narrow);
+}
+
+static DWORD WINAPI shim_GetTempPathW(DWORD nBufferLength, LPWSTR lpBuffer) {
+    char narrow[MAX_PATH];
+    DWORD ret = shim_GetTempPathA(MAX_PATH, narrow);
+    if (ret > 0 && lpBuffer && nBufferLength > 0)
+        win32_utf8_to_wchar(narrow, -1, lpBuffer, (int)nBufferLength);
+    return ret;
+}
+
+static HANDLE WINAPI shim_FindFirstFileW(LPCWSTR lpFileName, WIN32_FIND_DATAW *lpFindData) {
+    (void)lpFileName;
+    if (!lpFindData) return INVALID_HANDLE_VALUE;
+
+    WIN32_FIND_DATAA narrow_data;
+    HANDLE h = shim_FindFirstFileA(NULL, &narrow_data);
+    if (h == INVALID_HANDLE_VALUE) return h;
+
+    /* Convert result to wide */
+    memset(lpFindData, 0, sizeof(WIN32_FIND_DATAW));
+    lpFindData->dwFileAttributes = narrow_data.dwFileAttributes;
+    lpFindData->nFileSizeHigh = narrow_data.nFileSizeHigh;
+    lpFindData->nFileSizeLow = narrow_data.nFileSizeLow;
+    win32_utf8_to_wchar(narrow_data.cFileName, -1, lpFindData->cFileName, 260);
+    return h;
+}
+
+static BOOL WINAPI shim_FindNextFileW(HANDLE hFindFile, WIN32_FIND_DATAW *lpFindData) {
+    if (!lpFindData) return FALSE;
+
+    WIN32_FIND_DATAA narrow_data;
+    BOOL ret = shim_FindNextFileA(hFindFile, &narrow_data);
+    if (!ret) return FALSE;
+
+    memset(lpFindData, 0, sizeof(WIN32_FIND_DATAW));
+    lpFindData->dwFileAttributes = narrow_data.dwFileAttributes;
+    lpFindData->nFileSizeHigh = narrow_data.nFileSizeHigh;
+    lpFindData->nFileSizeLow = narrow_data.nFileSizeLow;
+    win32_utf8_to_wchar(narrow_data.cFileName, -1, lpFindData->cFileName, 260);
+    return TRUE;
+}
+
+static BOOL WINAPI shim_DeleteFileW(LPCWSTR lpFileName) {
+    char narrow[MAX_PATH];
+    win32_wchar_to_utf8(lpFileName, -1, narrow, sizeof(narrow));
+    return shim_DeleteFileA(narrow);
+}
+
+static BOOL WINAPI shim_CreateDirectoryW(LPCWSTR lpPathName, LPVOID lpSecAttrs) {
+    char narrow[MAX_PATH];
+    win32_wchar_to_utf8(lpPathName, -1, narrow, sizeof(narrow));
+    return shim_CreateDirectoryA(narrow, lpSecAttrs);
+}
+
+static DWORD WINAPI shim_GetFullPathNameW(
+    LPCWSTR lpFileName, DWORD nBufferLength, LPWSTR lpBuffer, LPWSTR *lpFilePart)
+{
+    char narrow_in[MAX_PATH], narrow_out[MAX_PATH];
+    win32_wchar_to_utf8(lpFileName, -1, narrow_in, sizeof(narrow_in));
+    DWORD ret = shim_GetFullPathNameA(narrow_in, MAX_PATH, narrow_out, NULL);
+    if (ret > 0 && lpBuffer && nBufferLength > 0)
+        win32_utf8_to_wchar(narrow_out, -1, lpBuffer, (int)nBufferLength);
+    if (lpFilePart) *lpFilePart = NULL;
+    return ret;
+}
+
+static DWORD WINAPI shim_GetEnvironmentVariableW(LPCWSTR lpName, LPWSTR lpBuffer, DWORD nSize) {
+    (void)lpName; (void)lpBuffer; (void)nSize;
+    return 0;
+}
+
+static BOOL WINAPI shim_SetEnvironmentVariableW(LPCWSTR lpName, LPCWSTR lpValue) {
+    (void)lpName; (void)lpValue;
+    return TRUE;
+}
+
+static void WINAPI shim_OutputDebugStringW(LPCWSTR lpOutputString) {
+    if (!lpOutputString) return;
+    char narrow[512];
+    win32_wchar_to_utf8(lpOutputString, -1, narrow, sizeof(narrow));
+    printf("[debug] %s\n", narrow);
+}
+
+static void WINAPI shim_OutputDebugStringA(LPCSTR lpOutputString) {
+    if (!lpOutputString) return;
+    printf("[debug] %s\n", lpOutputString);
+}
+
+static HMODULE WINAPI shim_GetModuleHandleW(LPCWSTR lpModuleName) {
+    if (!lpModuleName) return shim_GetModuleHandleA(NULL);
+    char narrow[MAX_PATH];
+    win32_wchar_to_utf8(lpModuleName, -1, narrow, sizeof(narrow));
+    return shim_GetModuleHandleA(narrow);
+}
+
+static HMODULE WINAPI shim_LoadLibraryW(LPCWSTR lpLibFileName) {
+    char narrow[MAX_PATH];
+    win32_wchar_to_utf8(lpLibFileName, -1, narrow, sizeof(narrow));
+    return shim_LoadLibraryA(narrow);
+}
+
 /* ── Stubs ───────────────────────────────────────────────────── */
 
 static BOOL WINAPI shim_stub_true(void) { return TRUE; }
@@ -2338,8 +2588,12 @@ static const win32_export_entry_t kernel32_exports[] = {
 
     /* Directory enumeration */
     { "FindFirstFileA",         (void *)shim_FindFirstFileA },
+    { "FindFirstFileW",         (void *)shim_FindFirstFileW },
     { "FindNextFileA",          (void *)shim_FindNextFileA },
+    { "FindNextFileW",          (void *)shim_FindNextFileW },
     { "FindClose",              (void *)shim_FindClose },
+
+    { "CreateFileW",            (void *)shim_CreateFileW },
 
     /* File attributes & info */
     { "GetFileAttributesA",     (void *)shim_GetFileAttributesA },
@@ -2353,25 +2607,29 @@ static const win32_export_entry_t kernel32_exports[] = {
 
     /* Directory ops */
     { "CreateDirectoryA",       (void *)shim_CreateDirectoryA },
-    { "CreateDirectoryW",       (void *)shim_CreateDirectoryA },
+    { "CreateDirectoryW",       (void *)shim_CreateDirectoryW },
     { "RemoveDirectoryA",       (void *)shim_RemoveDirectoryA },
 
     /* Temp files */
     { "GetTempPathA",           (void *)shim_GetTempPathA },
+    { "GetTempPathW",           (void *)shim_GetTempPathW },
     { "GetTempFileNameA",       (void *)shim_GetTempFileNameA },
 
     /* File operations */
     { "DeleteFileA",            (void *)shim_DeleteFileA },
-    { "DeleteFileW",            (void *)shim_DeleteFileA },
+    { "DeleteFileW",            (void *)shim_DeleteFileW },
     { "MoveFileA",              (void *)shim_MoveFileA },
     { "CopyFileA",              (void *)shim_CopyFileA },
 
     /* Module / path queries */
     { "GetModuleFileNameA",     (void *)shim_GetModuleFileNameA },
-    { "GetModuleFileNameW",     (void *)shim_GetModuleFileNameA },
+    { "GetModuleFileNameW",     (void *)shim_GetModuleFileNameW },
     { "GetCurrentDirectoryA",   (void *)shim_GetCurrentDirectoryA },
+    { "GetCurrentDirectoryW",   (void *)shim_GetCurrentDirectoryW },
     { "SetCurrentDirectoryA",   (void *)shim_SetCurrentDirectoryA },
+    { "SetCurrentDirectoryW",   (void *)shim_SetCurrentDirectoryW },
     { "GetFullPathNameA",       (void *)shim_GetFullPathNameA },
+    { "GetFullPathNameW",       (void *)shim_GetFullPathNameW },
     { "GetLongPathNameA",       (void *)shim_GetLongPathNameA },
 
     /* Overlapped I/O stubs */
@@ -2381,10 +2639,10 @@ static const win32_export_entry_t kernel32_exports[] = {
     /* Process / Module */
     { "ExitProcess",            (void *)shim_ExitProcess },
     { "GetModuleHandleA",       (void *)shim_GetModuleHandleA },
-    { "GetModuleHandleW",       (void *)shim_GetModuleHandleA },
+    { "GetModuleHandleW",       (void *)shim_GetModuleHandleW },
     { "GetProcAddress",         (void *)shim_GetProcAddress },
     { "LoadLibraryA",           (void *)shim_LoadLibraryA },
-    { "LoadLibraryW",           (void *)shim_LoadLibraryA },
+    { "LoadLibraryW",           (void *)shim_LoadLibraryW },
     { "LoadLibraryExA",         (void *)shim_LoadLibraryExA },
     { "LoadLibraryExW",         (void *)shim_LoadLibraryExA },
     { "FreeLibrary",            (void *)shim_FreeLibrary },
@@ -2498,6 +2756,14 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "InterlockedExchange",           (void *)shim_InterlockedExchange },
     { "InterlockedCompareExchange",    (void *)shim_InterlockedCompareExchange },
     { "InterlockedExchangeAdd",        (void *)shim_InterlockedExchangeAdd },
+
+    /* Environment */
+    { "GetEnvironmentVariableW",  (void *)shim_GetEnvironmentVariableW },
+    { "SetEnvironmentVariableW",  (void *)shim_SetEnvironmentVariableW },
+
+    /* Debug output */
+    { "OutputDebugStringA",       (void *)shim_OutputDebugStringA },
+    { "OutputDebugStringW",       (void *)shim_OutputDebugStringW },
 
     /* Stubs — commonly imported but not critical */
     { "IsProcessorFeaturePresent",  (void *)shim_stub_zero },

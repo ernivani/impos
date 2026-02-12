@@ -154,6 +154,8 @@ static const win32_dll_shim_t *shim_table[] = {
     &win32_advapi32,
     &win32_ws2_32,
     &win32_gdiplus,
+    &win32_ole32,
+    &win32_shell32,
     NULL
 };
 

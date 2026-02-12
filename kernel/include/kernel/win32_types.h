@@ -438,6 +438,102 @@ typedef int (CALLBACK *FONTENUMPROCA)(const ENUMLOGFONTEXA *, const NEWTEXTMETRI
 #define NULL_PEN        8
 #define DEFAULT_PALETTE 15
 
+/* ── Wide String Types ───────────────────────────────────────── */
+typedef WCHAR  *LPWSTR;
+typedef const WCHAR *LPCWSTR;
+
+/* ── COM / OLE Types ────────────────────────────────────────── */
+typedef uint32_t HRESULT;
+typedef uint32_t HGLOBAL;
+
+/* GUID / IID / CLSID */
+typedef struct { DWORD Data1; WORD Data2; WORD Data3; BYTE Data4[8]; } GUID;
+typedef GUID IID;
+typedef GUID CLSID;
+#define REFCLSID const CLSID *
+#define REFIID   const IID *
+
+/* HRESULT constants */
+#define S_OK          ((HRESULT)0x00000000)
+#define S_FALSE       ((HRESULT)0x00000001)
+#define E_NOINTERFACE ((HRESULT)0x80004002)
+#define E_POINTER     ((HRESULT)0x80004003)
+#define E_NOTIMPL     ((HRESULT)0x80004001)
+#define E_FAIL        ((HRESULT)0x80004005)
+#define E_OUTOFMEMORY ((HRESULT)0x8007000E)
+#define CLASS_E_CLASSNOTAVAILABLE ((HRESULT)0x80040111)
+#define REGDB_E_CLASSNOTREG      ((HRESULT)0x80040154)
+#define SUCCEEDED(hr) (((int32_t)(hr)) >= 0)
+#define FAILED(hr)    (((int32_t)(hr)) < 0)
+
+/* COM calling convention */
+#define STDMETHODCALLTYPE WINAPI
+
+/* CSIDL constants for SHGetFolderPath */
+#define CSIDL_DESKTOP           0x0000
+#define CSIDL_PROGRAMS          0x0002
+#define CSIDL_PERSONAL          0x0005
+#define CSIDL_APPDATA           0x001A
+#define CSIDL_LOCAL_APPDATA     0x001C
+#define CSIDL_COMMON_APPDATA    0x0023
+#define CSIDL_WINDOWS           0x0024
+#define CSIDL_SYSTEM            0x0025
+#define CSIDL_PROGRAM_FILES     0x0026
+
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
+
+/* ── W-suffix Structs ───────────────────────────────────────── */
+typedef struct {
+    UINT      cbSize;
+    UINT      style;
+    WNDPROC   lpfnWndProc;
+    INT       cbClsExtra;
+    INT       cbWndExtra;
+    HINSTANCE hInstance;
+    HICON     hIcon;
+    HCURSOR   hCursor;
+    HBRUSH    hbrBackground;
+    LPCWSTR   lpszMenuName;
+    LPCWSTR   lpszClassName;
+    HICON     hIconSm;
+} WNDCLASSEXW;
+
+typedef struct {
+    LONG  lfHeight;
+    LONG  lfWidth;
+    LONG  lfEscapement;
+    LONG  lfOrientation;
+    LONG  lfWeight;
+    BYTE  lfItalic;
+    BYTE  lfUnderline;
+    BYTE  lfStrikeOut;
+    BYTE  lfCharSet;
+    BYTE  lfOutPrecision;
+    BYTE  lfClipPrecision;
+    BYTE  lfQuality;
+    BYTE  lfPitchAndFamily;
+    WCHAR lfFaceName[32];
+} LOGFONTW, *LPLOGFONTW;
+
+typedef struct {
+    DWORD    dwFileAttributes;
+    DWORD    ftCreationTime[2];
+    DWORD    ftLastAccessTime[2];
+    DWORD    ftLastWriteTime[2];
+    DWORD    nFileSizeHigh;
+    DWORD    nFileSizeLow;
+    DWORD    dwReserved0;
+    DWORD    dwReserved1;
+    WCHAR    cFileName[260];
+    WCHAR    cAlternateFileName[14];
+} WIN32_FIND_DATAW, *LPWIN32_FIND_DATAW;
+
+/* ── UTF-8 ↔ UTF-16 helpers (implemented in win32_kernel32.c) ── */
+int win32_utf8_to_wchar(const char *utf8, int utf8_len, WCHAR *out, int out_len);
+int win32_wchar_to_utf8(const WCHAR *wstr, int wstr_len, char *out, int out_len);
+
 /* ── Win32 shim DLL lookup ───────────────────────────────────── */
 typedef struct {
     const char *name;
@@ -458,6 +554,8 @@ extern const win32_dll_shim_t win32_msvcrt;
 extern const win32_dll_shim_t win32_advapi32;
 extern const win32_dll_shim_t win32_ws2_32;
 extern const win32_dll_shim_t win32_gdiplus;
+extern const win32_dll_shim_t win32_ole32;
+extern const win32_dll_shim_t win32_shell32;
 
 /* Registry init (call early to pre-populate keys) */
 void registry_init(void);
