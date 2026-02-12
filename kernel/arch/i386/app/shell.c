@@ -31,6 +31,7 @@
 #include <kernel/rtc.h>
 #include <kernel/beep.h>
 #include <kernel/pe_loader.h>
+#include <kernel/tls.h>
 #include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
@@ -721,14 +722,15 @@ static command_t commands[] = {
     {
         "test", cmd_test,
         "Run regression tests",
-        "test: test\n"
-        "    Run all regression test suites.\n",
+        "test: test [crypto|tls]\n"
+        "    Run all or specific test suites.\n",
         "NAME\n"
         "    test - run regression tests\n\n"
         "SYNOPSIS\n"
-        "    test\n\n"
+        "    test [SUITE]\n\n"
         "DESCRIPTION\n"
-        "    Run all built-in test suites and print results.\n",
+        "    Run all built-in test suites and print results.\n"
+        "    Optional SUITE: crypto, tls\n",
         CMD_FLAG_ROOT
     },
     {
@@ -2786,9 +2788,24 @@ static void cmd_userdel(int argc, char* argv[]) {
     printf("User '%s' deleted\n", username);
 }
 
+/* Forward declarations for individual test suites */
+extern void test_crypto(void);
+extern void test_tls(void);
+
 static void cmd_test(int argc, char* argv[]) {
-    (void)argc;
-    (void)argv;
+    if (argc >= 2) {
+        if (strcmp(argv[1], "crypto") == 0) {
+            test_crypto();
+            return;
+        }
+        if (strcmp(argv[1], "tls") == 0) {
+            test_tls();
+            return;
+        }
+        printf("Unknown test suite: %s\n", argv[1]);
+        printf("Available: crypto, tls (or no args for all)\n");
+        return;
+    }
     test_run_all();
 }
 
@@ -4549,57 +4566,204 @@ static void cmd_petest_gui(int argc, char* argv[]) {
     }
 }
 
+/* Ensure /apps directory exists, cd into it, do work, cd back */
+static void winget_ensure_apps_dir(void) {
+    uint32_t saved_cwd = fs_get_cwd_inode();
+    /* Go to root */
+    fs_change_directory("/");
+    /* Try to enter apps — if it fails, create it */
+    if (fs_change_directory("apps") < 0) {
+        fs_create_file("apps", 1);  /* 1 = directory */
+    }
+    /* Restore cwd */
+    fs_change_directory_by_inode(saved_cwd);
+}
+
 static void cmd_winget(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Usage: winget <command> [package]\n");
+        printf("Usage: winget <command> [args]\n");
         printf("\nCommands:\n");
-        printf("  list      List installed packages\n");
-        printf("  search    Search for packages\n");
-        printf("  install   Install a package\n");
-        printf("  info      Show package info\n");
+        printf("  install <url>   Download and install a package\n");
+        printf("  list            List installed packages\n");
+        printf("  run <name>      Run an installed package\n");
+        printf("  remove <name>   Remove an installed package\n");
+        printf("  info            Show winget info\n");
         return;
     }
 
     if (strcmp(argv[1], "list") == 0) {
-        printf("Name                         Version    Source\n");
-        printf("-------------------------------------------\n");
-        /* List .exe files in current directory */
+        winget_ensure_apps_dir();
+        uint32_t saved_cwd = fs_get_cwd_inode();
+        fs_change_directory("/");
+        if (fs_change_directory("apps") < 0) {
+            printf("No packages installed.\n");
+            fs_change_directory_by_inode(saved_cwd);
+            return;
+        }
+
+        printf("Name                         Size\n");
+        printf("----------------------------------\n");
         fs_dir_entry_info_t entries[32];
         int n = fs_enumerate_directory(entries, 32, 0);
         int found = 0;
         for (int i = 0; i < n; i++) {
-            size_t len = strlen(entries[i].name);
-            if (len > 4 && strcmp(entries[i].name + len - 4, ".exe") == 0) {
-                printf("%-28s 1.0.0      local\n", entries[i].name);
-                found++;
-            }
+            if (entries[i].name[0] == '.') continue;
+            printf("%-28s %u bytes\n", entries[i].name, (unsigned)entries[i].size);
+            found++;
         }
         if (!found)
             printf("No packages installed.\n");
-    } else if (strcmp(argv[1], "search") == 0) {
+
+        fs_change_directory_by_inode(saved_cwd);
+
+    } else if (strcmp(argv[1], "run") == 0) {
         if (argc < 3) {
-            printf("Usage: winget search <query>\n");
+            printf("Usage: winget run <name>\n");
             return;
         }
-        printf("Searching for '%s'...\n", argv[2]);
-        printf("Name                         Id                          Version\n");
-        printf("----------------------------------------------------------------\n");
-        printf("No packages found matching '%s'.\n", argv[2]);
-        printf("\nNote: Package repository requires network access.\n");
-        printf("Use 'dhcp' to obtain an IP address first.\n");
+
+        winget_ensure_apps_dir();
+        uint32_t saved_cwd = fs_get_cwd_inode();
+        fs_change_directory("/");
+        if (fs_change_directory("apps") < 0) {
+            printf("winget: /apps not found\n");
+            fs_change_directory_by_inode(saved_cwd);
+            return;
+        }
+
+        printf("Running %s...\n", argv[2]);
+        pe_run(argv[2]);
+
+        fs_change_directory_by_inode(saved_cwd);
+
+    } else if (strcmp(argv[1], "remove") == 0) {
+        if (argc < 3) {
+            printf("Usage: winget remove <name>\n");
+            return;
+        }
+
+        winget_ensure_apps_dir();
+        uint32_t saved_cwd = fs_get_cwd_inode();
+        fs_change_directory("/");
+        if (fs_change_directory("apps") < 0) {
+            printf("winget: /apps not found\n");
+            fs_change_directory_by_inode(saved_cwd);
+            return;
+        }
+
+        if (fs_delete_file(argv[2]) < 0)
+            printf("winget: '%s' not found\n", argv[2]);
+        else
+            printf("Removed %s\n", argv[2]);
+
+        fs_change_directory_by_inode(saved_cwd);
+
     } else if (strcmp(argv[1], "install") == 0) {
         if (argc < 3) {
-            printf("Usage: winget install <package>\n");
+            printf("Usage: winget install <url>\n");
+            printf("  Example: winget install https://example.com/app.exe\n");
             return;
         }
-        printf("Searching for '%s'...\n", argv[2]);
-        printf("No package found matching '%s' in the repository.\n", argv[2]);
-        printf("\nTo run a local .exe file, use: run <file.exe>\n");
+
+        const char *url = argv[2];
+
+        if (memcmp(url, "https://", 8) != 0) {
+            printf("winget: only https:// URLs are supported\n");
+            return;
+        }
+
+        net_config_t *cfg = net_get_config();
+        if (!cfg || !cfg->link_up || (cfg->ip[0] == 0 && cfg->ip[1] == 0)) {
+            printf("winget: network not configured. Run 'dhcp' first.\n");
+            return;
+        }
+
+        /* Parse URL: https://host/path */
+        char host[256], path[256];
+        const char *hp = url + 8;
+        int hi = 0;
+        while (*hp && *hp != '/' && hi < 255)
+            host[hi++] = *hp++;
+        host[hi] = '\0';
+
+        if (*hp == '/') {
+            int pi = 0;
+            while (*hp && pi < 255)
+                path[pi++] = *hp++;
+            path[pi] = '\0';
+        } else {
+            path[0] = '/'; path[1] = '\0';
+        }
+
+        /* Extract filename from URL path */
+        const char *filename = path;
+        const char *s = path;
+        while (*s) { if (*s == '/') filename = s + 1; s++; }
+        if (!*filename) filename = "download.exe";
+
+        printf("Downloading %s from %s...\n", filename, host);
+
+        static https_async_t dl_req;
+        strncpy(dl_req.host, host, 255); dl_req.host[255] = '\0';
+        dl_req.port = 443;
+        strncpy(dl_req.path, path, 255); dl_req.path[255] = '\0';
+
+        if (https_get_async(&dl_req) < 0) {
+            printf("winget: failed to start download\n");
+            return;
+        }
+
+        while (!dl_req.done) {
+            keyboard_run_idle();
+            task_yield();
+        }
+
+        uint8_t *body = dl_req.body;
+        size_t body_len = dl_req.body_len;
+        if (dl_req.result < 0 || !body || body_len == 0) {
+            printf("winget: download failed\n");
+            if (body) free(body);
+            return;
+        }
+
+        printf("Downloaded %u bytes\n", (unsigned)body_len);
+
+        /* Save into /apps directory */
+        winget_ensure_apps_dir();
+        uint32_t saved_cwd = fs_get_cwd_inode();
+        fs_change_directory("/");
+        fs_change_directory("apps");
+
+        fs_create_file(filename, 0);
+        int ret = fs_write_file(filename, body, body_len);
+        free(body);
+
+        fs_change_directory_by_inode(saved_cwd);
+
+        if (ret < 0) {
+            printf("winget: failed to save %s (file too large?)\n", filename);
+            return;
+        }
+
+        printf("Installed %s to /apps/%s\n", filename, filename);
+
+        /* Run if it's an .exe */
+        size_t flen = strlen(filename);
+        if (flen > 4 && strcmp(filename + flen - 4, ".exe") == 0) {
+            printf("Running %s...\n", filename);
+            /* cd into /apps to run */
+            saved_cwd = fs_get_cwd_inode();
+            fs_change_directory("/");
+            fs_change_directory("apps");
+            pe_run(filename);
+            fs_change_directory_by_inode(saved_cwd);
+        }
+
     } else if (strcmp(argv[1], "info") == 0) {
-        printf("ImposOS WinGet Package Manager v1.0\n");
-        printf("Win32 Compatibility Layer: PE32 loader + API shims\n");
-        printf("Supported DLLs: kernel32.dll, user32.dll, gdi32.dll, msvcrt.dll\n");
-        printf("Subsystems: Windows GUI, Windows Console\n");
+        printf("ImposOS WinGet Package Manager v2.0 (TLS)\n");
+        printf("Install directory: /apps\n");
+        printf("Transport: HTTPS (TLS 1.2)\n");
+        printf("Supported: PE32 executables (.exe)\n");
     } else {
         printf("winget: unknown command '%s'\n", argv[1]);
     }
