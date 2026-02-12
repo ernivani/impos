@@ -1,6 +1,7 @@
 /* TLS 1.2 client — record layer, handshake, HTTPS GET */
 #include <kernel/tls.h>
 #include <kernel/crypto.h>
+#include <kernel/ec.h>
 #include <kernel/socket.h>
 #include <kernel/dns.h>
 #include <kernel/net.h>
@@ -289,14 +290,17 @@ static int tls_send_client_hello(tls_conn_t *conn, const char *hostname) {
     /* Calculate hostname length for SNI */
     size_t host_len = strlen(hostname);
 
-    /* ClientHello body:
-     * version(2) + random(32) + session_id_len(1) + cipher_suites_len(2) +
-     * cipher_suites(2) + compression_len(1) + compression(1) + extensions... */
+    /* Extensions we'll send:
+     * 1. SNI
+     * 2. signature_algorithms
+     * 3. supported_groups (for ECDHE)
+     * 4. ec_point_formats (for ECDHE)
+     */
 
     /* SNI extension: type(2) + len(2) + sni_list_len(2) + type(1) + name_len(2) + name */
     size_t sni_ext_len = 2 + 2 + 2 + 1 + 2 + host_len;
-    /* Signature algorithms extension for TLS 1.2 compatibility */
-    /* type(2) + len(2) + list_len(2) + algorithms... */
+
+    /* Signature algorithms extension */
     uint8_t sig_algs[] = {
         0x00, 0x0d,  /* signature_algorithms extension type */
         0x00, 0x0e,  /* extension length */
@@ -308,9 +312,29 @@ static int tls_send_client_hello(tls_conn_t *conn, const char *hostname) {
         0x04, 0x03,  /* ecdsa_secp256r1_sha256 */
         0x02, 0x03,  /* ecdsa_sha1 */
     };
-    size_t extensions_len = sni_ext_len + sizeof(sig_algs);
 
-    size_t body_len = 2 + 32 + 1 + 2 + 2 + 1 + 1 + 2 + extensions_len;
+    /* supported_groups extension: type(2) + len(2) + list_len(2) + group(2) */
+    uint8_t sup_groups[] = {
+        0x00, 0x0a,  /* supported_groups extension type */
+        0x00, 0x04,  /* extension length */
+        0x00, 0x02,  /* list length */
+        0x00, 0x17,  /* secp256r1 (P-256) */
+    };
+
+    /* ec_point_formats extension: type(2) + len(2) + formats_len(1) + format(1) */
+    uint8_t ec_formats[] = {
+        0x00, 0x0b,  /* ec_point_formats extension type */
+        0x00, 0x02,  /* extension length */
+        0x01,        /* formats length */
+        0x00,        /* uncompressed */
+    };
+
+    size_t extensions_len = sni_ext_len + sizeof(sig_algs) +
+                            sizeof(sup_groups) + sizeof(ec_formats);
+
+    /* Cipher suites: ECDHE first (preferred), then RSA fallback */
+    size_t cipher_len = 4; /* 2 cipher suites × 2 bytes */
+    size_t body_len = 2 + 32 + 1 + 2 + cipher_len + 1 + 1 + 2 + extensions_len;
     uint8_t *body = malloc(body_len);
     if (!body) return -1;
     uint8_t *p = body;
@@ -324,8 +348,9 @@ static int tls_send_client_hello(tls_conn_t *conn, const char *hostname) {
     /* Session ID (empty) */
     *p++ = 0;
 
-    /* Cipher suites: just our one */
-    put_be16(p, 2); p += 2;
+    /* Cipher suites: ECDHE preferred, RSA fallback */
+    put_be16(p, (uint16_t)cipher_len); p += 2;
+    put_be16(p, TLS_ECDHE_RSA_AES128_CBC_SHA256); p += 2;
     put_be16(p, TLS_RSA_AES128_CBC_SHA256); p += 2;
 
     /* Compression methods: null only */
@@ -336,26 +361,32 @@ static int tls_send_client_hello(tls_conn_t *conn, const char *hostname) {
     put_be16(p, (uint16_t)extensions_len); p += 2;
 
     /* SNI extension */
-    put_be16(p, 0x0000); p += 2;  /* extension type: server_name */
-    put_be16(p, (uint16_t)(2 + 1 + 2 + host_len)); p += 2;  /* extension data length */
-    put_be16(p, (uint16_t)(1 + 2 + host_len)); p += 2;  /* server_name_list length */
-    *p++ = 0;  /* host_name type */
+    put_be16(p, 0x0000); p += 2;
+    put_be16(p, (uint16_t)(2 + 1 + 2 + host_len)); p += 2;
+    put_be16(p, (uint16_t)(1 + 2 + host_len)); p += 2;
+    *p++ = 0;
     put_be16(p, (uint16_t)host_len); p += 2;
     memcpy(p, hostname, host_len); p += host_len;
 
     /* Signature algorithms extension */
     memcpy(p, sig_algs, sizeof(sig_algs)); p += sizeof(sig_algs);
 
+    /* Supported groups extension */
+    memcpy(p, sup_groups, sizeof(sup_groups)); p += sizeof(sup_groups);
+
+    /* EC point formats extension */
+    memcpy(p, ec_formats, sizeof(ec_formats)); p += sizeof(ec_formats);
+
     int ret = tls_send_handshake(conn, TLS_HS_CLIENT_HELLO, body, body_len);
     free(body);
     return ret;
 }
 
-/* Process ServerHello, Certificate, ServerHelloDone */
+/* Process ServerHello, Certificate, [ServerKeyExchange], ServerHelloDone */
 static int tls_recv_server_hello(tls_conn_t *conn) {
     uint8_t *buf = malloc(TLS_RECV_BUF);
     if (!buf) return -1;
-    int got_hello = 0, got_cert = 0, got_done = 0;
+    int got_hello = 0, got_cert = 0, got_done = 0, got_ske = 0;
 
     while (!got_done) {
         uint8_t type;
@@ -398,11 +429,13 @@ static int tls_recv_server_hello(tls_conn_t *conn) {
                 size_t off = 35 + sid_len;
                 if (off + 3 > hs_len) { free(buf); return -1; }
                 uint16_t cipher = get_be16(hs_body + off);
-                if (cipher != TLS_RSA_AES128_CBC_SHA256) {
-                    DBG("tls: server chose cipher 0x%x, we need 0x003C", cipher);
+                if (cipher != TLS_RSA_AES128_CBC_SHA256 &&
+                    cipher != TLS_ECDHE_RSA_AES128_CBC_SHA256) {
+                    DBG("tls: server chose unsupported cipher 0x%x", cipher);
                     free(buf);
                     return -1;
                 }
+                conn->cipher_suite = cipher;
                 got_hello = 1;
                 DBG("tls: ServerHello OK, cipher=0x%x", cipher);
                 break;
@@ -431,6 +464,47 @@ static int tls_recv_server_hello(tls_conn_t *conn) {
                 got_cert = 1;
                 break;
             }
+            case TLS_HS_SERVER_KEY_EXCHANGE: {
+                /* ECDHE ServerKeyExchange:
+                 * curve_type(1) + named_curve(2) + pubkey_len(1) + pubkey(65)
+                 * + sig_hash_alg(2) + sig_len(2) + signature(...)
+                 * We only care about the EC public key part. */
+                if (hs_len < 4) { free(buf); return -1; }
+                uint8_t curve_type = hs_body[0];
+                uint16_t named_curve = get_be16(hs_body + 1);
+                uint8_t pubkey_len = hs_body[3];
+
+                DBG("tls: ServerKeyExchange curve_type=%d curve=0x%x pklen=%d",
+                    curve_type, named_curve, pubkey_len);
+
+                if (curve_type != 3) { /* 3 = named_curve */
+                    DBG("tls: unsupported curve type %d", curve_type);
+                    free(buf); return -1;
+                }
+                if (named_curve != 0x0017) { /* 0x0017 = secp256r1 */
+                    DBG("tls: unsupported curve 0x%x", named_curve);
+                    free(buf); return -1;
+                }
+                if (pubkey_len != 65 || hs_len < 4 + 65) {
+                    DBG("tls: bad EC pubkey length %d", pubkey_len);
+                    free(buf); return -1;
+                }
+
+                /* Parse uncompressed point: 0x04 || x(32) || y(32) */
+                const uint8_t *pk = hs_body + 4;
+                if (pk[0] != 0x04) {
+                    DBG("tls: EC point not uncompressed");
+                    free(buf); return -1;
+                }
+                ec_fe_from_bytes(&conn->ecdhe_server_pubkey.x, pk + 1, 32);
+                ec_fe_from_bytes(&conn->ecdhe_server_pubkey.y, pk + 33, 32);
+                conn->ecdhe_server_pubkey.infinity = 0;
+
+                /* We skip signature verification (no cert chain validation in v1) */
+                got_ske = 1;
+                DBG("tls: ECDHE server pubkey parsed");
+                break;
+            }
             case TLS_HS_SERVER_HELLO_DONE:
                 got_done = 1;
                 DBG("tls: ServerHelloDone");
@@ -450,47 +524,95 @@ static int tls_recv_server_hello(tls_conn_t *conn) {
         DBG("tls: missing ServerHello or Certificate");
         return -1;
     }
+    /* ECDHE requires ServerKeyExchange */
+    if (conn->cipher_suite == TLS_ECDHE_RSA_AES128_CBC_SHA256 && !got_ske) {
+        DBG("tls: ECDHE cipher but no ServerKeyExchange");
+        return -1;
+    }
     return 0;
 }
 
 /* Send ClientKeyExchange + ChangeCipherSpec + Finished */
 static int tls_send_client_finish(tls_conn_t *conn) {
-    /* Generate 48-byte pre-master secret: version(2) + random(46) */
     uint8_t pms[48];
-    pms[0] = 0x03; pms[1] = 0x03;  /* TLS 1.2 */
-    prng_random(pms + 2, 46);
 
-    /* RSA encrypt PMS with server's public key */
-    size_t enc_len = conn->server_key.n_bytes;
-    uint8_t *enc_pms = malloc(enc_len);
-    if (!enc_pms) return -1;
+    if (conn->cipher_suite == TLS_ECDHE_RSA_AES128_CBC_SHA256) {
+        /* ECDHE key exchange */
+        DBG("tls: ECDHE key exchange");
 
-    if (rsa_encrypt(&conn->server_key, pms, 48, enc_pms, enc_len) < 0) {
-        DBG("tls: RSA encrypt failed");
+        /* Generate our ephemeral keypair */
+        ec_point_t our_pubkey;
+        ec_generate_keypair(conn->ecdhe_privkey, &our_pubkey);
+
+        /* Compute shared secret: ECDH(our_privkey, server_pubkey).x */
+        ec_fe_t shared_x;
+        ec_compute_shared(&shared_x, conn->ecdhe_privkey,
+                          &conn->ecdhe_server_pubkey);
+
+        /* Pre-master secret = shared_x (32 bytes, big-endian) */
+        uint8_t shared_bytes[32];
+        ec_fe_to_bytes(&shared_x, shared_bytes);
+
+        /* For ECDHE, PMS is the raw x-coordinate (32 bytes) */
+        memset(pms, 0, 48);
+        memcpy(pms, shared_bytes, 32);
+
+        /* ClientKeyExchange: pubkey_len(1) + uncompressed_point(65) */
+        uint8_t cke[66];
+        cke[0] = 65; /* length of uncompressed point */
+        cke[1] = 0x04; /* uncompressed */
+        ec_fe_to_bytes(&our_pubkey.x, cke + 2);
+        ec_fe_to_bytes(&our_pubkey.y, cke + 34);
+
+        if (tls_send_handshake(conn, TLS_HS_CLIENT_KEY_EXCHANGE, cke, 66) < 0)
+            return -1;
+
+        /* Derive master_secret from 32-byte PMS */
+        uint8_t seed[64];
+        memcpy(seed, conn->client_random, 32);
+        memcpy(seed + 32, conn->server_random, 32);
+        tls_prf(shared_bytes, 32, "master secret", seed, 64,
+                conn->master_secret, 48);
+    } else {
+        /* RSA key exchange */
+        DBG("tls: RSA key exchange");
+
+        /* Generate 48-byte pre-master secret: version(2) + random(46) */
+        pms[0] = 0x03; pms[1] = 0x03;
+        prng_random(pms + 2, 46);
+
+        /* RSA encrypt PMS with server's public key */
+        size_t enc_len = conn->server_key.n_bytes;
+        uint8_t *enc_pms = malloc(enc_len);
+        if (!enc_pms) return -1;
+
+        if (rsa_encrypt(&conn->server_key, pms, 48, enc_pms, enc_len) < 0) {
+            DBG("tls: RSA encrypt failed");
+            free(enc_pms);
+            return -1;
+        }
+
+        /* ClientKeyExchange: length(2) + encrypted_pms */
+        size_t cke_len = 2 + enc_len;
+        uint8_t *cke = malloc(cke_len);
+        if (!cke) { free(enc_pms); return -1; }
+        put_be16(cke, (uint16_t)enc_len);
+        memcpy(cke + 2, enc_pms, enc_len);
         free(enc_pms);
-        return -1;
-    }
 
-    /* ClientKeyExchange: length(2) + encrypted_pms */
-    size_t cke_len = 2 + enc_len;
-    uint8_t *cke = malloc(cke_len);
-    if (!cke) { free(enc_pms); return -1; }
-    put_be16(cke, (uint16_t)enc_len);
-    memcpy(cke + 2, enc_pms, enc_len);
-    free(enc_pms);
-
-    if (tls_send_handshake(conn, TLS_HS_CLIENT_KEY_EXCHANGE, cke, cke_len) < 0) {
+        if (tls_send_handshake(conn, TLS_HS_CLIENT_KEY_EXCHANGE, cke, cke_len) < 0) {
+            free(cke);
+            return -1;
+        }
         free(cke);
-        return -1;
-    }
-    free(cke);
 
-    /* Derive master_secret = PRF(pms, "master secret", client_random + server_random) */
-    uint8_t seed[64];
-    memcpy(seed, conn->client_random, 32);
-    memcpy(seed + 32, conn->server_random, 32);
-    tls_prf(pms, 48, "master secret", seed, 64,
-            conn->master_secret, 48);
+        /* Derive master_secret */
+        uint8_t seed[64];
+        memcpy(seed, conn->client_random, 32);
+        memcpy(seed + 32, conn->server_random, 32);
+        tls_prf(pms, 48, "master secret", seed, 64,
+                conn->master_secret, 48);
+    }
 
     /* Derive key_block = PRF(master_secret, "key expansion", server_random + client_random)
      * For TLS_RSA_WITH_AES_128_CBC_SHA256:
