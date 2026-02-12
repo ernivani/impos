@@ -129,6 +129,7 @@ static void cmd_winget(int argc, char* argv[]);
 static void cmd_run(int argc, char* argv[]);
 static void cmd_petest(int argc, char* argv[]);
 static void cmd_petest_gui(int argc, char* argv[]);
+static void cmd_sudo(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -626,6 +627,21 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Switch to another user. Prompts for password unless\n"
         "    the current user is root. Default target is root.\n"
+    },
+    {
+        "sudo", cmd_sudo,
+        "Execute a command as root",
+        "sudo: sudo COMMAND [ARGS...]\n"
+        "    Execute a command as root. Prompts for the current\n"
+        "    user's password (not root's).\n",
+        "NAME\n"
+        "    sudo - execute a command as root\n\n"
+        "SYNOPSIS\n"
+        "    sudo COMMAND [ARGS...]\n\n"
+        "DESCRIPTION\n"
+        "    Run COMMAND with root privileges. Authenticates using\n"
+        "    the current user's password. If already root, runs\n"
+        "    the command without prompting.\n"
     },
     {
         "id", cmd_id,
@@ -2477,6 +2493,66 @@ static void cmd_su(int argc, char* argv[]) {
 
     user_set_current(u->username);
     fs_change_directory(u->home);
+}
+
+static void cmd_sudo(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("usage: sudo <command> [args...]\n");
+        return;
+    }
+
+    const char* current_user = user_get_current();
+    if (!current_user) {
+        printf("sudo: no current user\n");
+        return;
+    }
+
+    /* Root doesn't need password */
+    if (user_get_current_uid() != 0) {
+        printf("[sudo] password for %s: ", current_user);
+        char password[64];
+        size_t len = 0;
+
+        while (len < sizeof(password) - 1) {
+            int c = getchar();
+            if (c == '\n' || c == '\r') break;
+            if (c == '\b' || c == 127) {
+                if (len > 0) {
+                    len--;
+                    printf("\b \b");
+                }
+            } else if (c >= 32 && c < 127) {
+                password[len++] = c;
+                putchar('*');
+            }
+        }
+        password[len] = '\0';
+        printf("\n");
+
+        if (!user_authenticate(current_user, password)) {
+            printf("sudo: Authentication failure\n");
+            return;
+        }
+    }
+
+    /* Reconstruct the command string from argv[1..] */
+    char cmd_buf[256];
+    size_t pos = 0;
+    for (int i = 1; i < argc && pos < sizeof(cmd_buf) - 1; i++) {
+        if (i > 1 && pos < sizeof(cmd_buf) - 1)
+            cmd_buf[pos++] = ' ';
+        size_t alen = strlen(argv[i]);
+        if (pos + alen >= sizeof(cmd_buf) - 1)
+            alen = sizeof(cmd_buf) - 1 - pos;
+        memcpy(cmd_buf + pos, argv[i], alen);
+        pos += alen;
+    }
+    cmd_buf[pos] = '\0';
+
+    /* Switch to root, run command, restore user */
+    user_set_current("root");
+    shell_process_command(cmd_buf);
+    user_set_current(current_user);
 }
 
 static void cmd_id(int argc, char* argv[]) {
