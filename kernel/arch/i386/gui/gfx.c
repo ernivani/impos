@@ -1041,6 +1041,96 @@ void gfx_restore_mouse_cursor(void) {
     cursor_visible = 0;
 }
 
+/* Stamp cursor into backbuffer (so flip includes it) */
+static uint32_t cursor_bb_save[CURSOR_H * CURSOR_W];
+static int cursor_bb_x, cursor_bb_y, cursor_bb_stamped;
+
+void gfx_stamp_cursor_to_backbuf(int x, int y) {
+    if (use_virtio_gpu || !gfx_active) { cursor_bb_stamped = 0; return; }
+    const cursor_shape_t *cs = &cursor_shapes[current_cursor_type];
+    int dx = x - cs->hotspot_x;
+    int dy = y - cs->hotspot_y;
+    uint32_t pitch4 = fb_pitch / 4;
+    cursor_bb_x = dx;
+    cursor_bb_y = dy;
+    cursor_bb_stamped = 1;
+
+    /* Save all pixels under cursor area, then draw bitmap */
+    for (int row = 0; row < CURSOR_H; row++) {
+        int yy = dy + row;
+        if (yy < 0 || (uint32_t)yy >= fb_height) {
+            for (int col = 0; col < CURSOR_W; col++)
+                cursor_bb_save[row * CURSOR_W + col] = 0;
+            continue;
+        }
+        /* Save all CURSOR_W columns */
+        for (int col = 0; col < CURSOR_W; col++) {
+            int xx = dx + col;
+            if (xx >= 0 && (uint32_t)xx < fb_width)
+                cursor_bb_save[row * CURSOR_W + col] = backbuf[yy * pitch4 + xx];
+            else
+                cursor_bb_save[row * CURSOR_W + col] = 0;
+        }
+        /* Draw cursor bitmap (8 bits wide) */
+        uint8_t mask_bits = cs->mask[row];
+        uint8_t bmp_bits  = cs->bitmap[row];
+        for (int col = 0; col < 8; col++) {
+            int xx = dx + col;
+            if (xx >= 0 && (uint32_t)xx < fb_width) {
+                if (mask_bits & (0x80 >> col)) {
+                    uint32_t c = (bmp_bits & (0x80 >> col)) ? GFX_WHITE : GFX_BLACK;
+                    backbuf[yy * pitch4 + xx] = c;
+                }
+            }
+        }
+    }
+}
+
+void gfx_unstamp_cursor_from_backbuf(void) {
+    if (!cursor_bb_stamped) return;
+    cursor_bb_stamped = 0;
+    uint32_t pitch4 = fb_pitch / 4;
+    for (int row = 0; row < CURSOR_H; row++) {
+        int yy = cursor_bb_y + row;
+        if (yy < 0 || (uint32_t)yy >= fb_height) continue;
+        for (int col = 0; col < CURSOR_W; col++) {
+            int xx = cursor_bb_x + col;
+            if (xx >= 0 && (uint32_t)xx < fb_width)
+                backbuf[yy * pitch4 + xx] = cursor_bb_save[row * CURSOR_W + col];
+        }
+    }
+}
+
+/* Sync cursor state after composite (stamp+flip+unstamp).
+   Re-reads clean backbuffer pixels so gfx_draw_mouse_cursor
+   can correctly restore on the next mouse move. */
+void gfx_sync_cursor_after_composite(int x, int y) {
+    if (use_virtio_gpu || !gfx_active) return;
+    const cursor_shape_t *cs = &cursor_shapes[current_cursor_type];
+    int dx = x - cs->hotspot_x;
+    int dy = y - cs->hotspot_y;
+    uint32_t pitch4 = fb_pitch / 4;
+
+    for (int row = 0; row < CURSOR_H; row++) {
+        int yy = dy + row;
+        if (yy < 0 || (uint32_t)yy >= fb_height) {
+            for (int col = 0; col < CURSOR_W; col++)
+                cursor_save[row * CURSOR_W + col] = 0;
+            continue;
+        }
+        for (int col = 0; col < CURSOR_W; col++) {
+            int xx = dx + col;
+            if (xx < 0 || (uint32_t)xx >= fb_width)
+                cursor_save[row * CURSOR_W + col] = 0;
+            else
+                cursor_save[row * CURSOR_W + col] = backbuf[yy * pitch4 + xx];
+        }
+    }
+    cursor_saved_x = dx;
+    cursor_saved_y = dy;
+    cursor_visible = 1;
+}
+
 /* ═══ Text rendering (backbuffer) ═════════════════════════════ */
 
 void gfx_draw_char(int px, int py, char c, uint32_t fg, uint32_t bg) {

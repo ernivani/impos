@@ -64,6 +64,7 @@ typedef struct {
             int cursor;
             int scroll;
             int max_len;
+            int sel_start;      /* selection anchor (-1 = no selection) */
             uint8_t password;
             ui_callback_t on_submit;
         } textinput;

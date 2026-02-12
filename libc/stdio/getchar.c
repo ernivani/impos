@@ -90,6 +90,10 @@ void keyboard_run_idle(void) {
         idle_callback();
 }
 
+int keyboard_get_shift(void) { return shift_pressed; }
+int keyboard_get_ctrl(void)  { return ctrl_pressed; }
+int keyboard_get_alt(void)   { return alt_pressed; }
+
 /* -------------------------------------------------------------------
  * Scancode-to-character tables  (PS/2 Scancode Set 1, indices 0x00-0x58)
  * 89 entries each.  Numpad keys (0x47-0x53) are handled separately.
@@ -391,8 +395,8 @@ char getchar(void) {
             continue;
         }
 
-        /* Alt+Tab */
-        if (alt_pressed && scancode == 0x0F)
+        /* Alt+Tab or Ctrl+Tab */
+        if ((alt_pressed || ctrl_pressed) && scancode == 0x0F)
             return KEY_ALT_TAB;
 
         /* Ctrl+Space — open Finder */
@@ -464,7 +468,9 @@ char getchar(void) {
                 }
                 return c - 'a' + 1;
             }
-            continue;
+            /* Ctrl+non-letter (e.g. ctrl+backspace): return the base key;
+               caller can check keyboard_get_ctrl() for modifier state */
+            if (c != 0) return c;
         } else if (shift_pressed) {
             c = lay->shift[scancode];
         } else {
@@ -563,4 +569,7 @@ int  keyboard_data_available(void) { return 0; }
 int  keyboard_getchar_nb(void) { return 0; }
 int  keyboard_check_double_ctrl(void) { return 0; }
 void keyboard_run_idle(void) { }
+int  keyboard_get_shift(void) { return 0; }
+int  keyboard_get_ctrl(void)  { return 0; }
+int  keyboard_get_alt(void)   { return 0; }
 #endif

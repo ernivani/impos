@@ -28,6 +28,8 @@
 #include <kernel/pipe.h>
 #include <kernel/signal.h>
 #include <kernel/shm.h>
+#include <kernel/rtc.h>
+#include <kernel/beep.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -119,6 +121,8 @@ static void cmd_gfxbench(int argc, char* argv[]);
 static void cmd_fps(int argc, char* argv[]);
 static void cmd_spawn(int argc, char* argv[]);
 static void cmd_shm(int argc, char* argv[]);
+static void cmd_ntpdate(int argc, char* argv[]);
+static void cmd_beep(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -913,6 +917,34 @@ static command_t commands[] = {
         "    list               Show all active shared memory regions.\n"
         "    create NAME SIZE   Create a region with given name and size in bytes.\n"
     },
+    {
+        "ntpdate", cmd_ntpdate,
+        "Synchronize system clock via NTP",
+        "ntpdate: ntpdate\n"
+        "    Sync system clock from pool.ntp.org via NTP.\n",
+        "NAME\n"
+        "    ntpdate - set date and time via NTP\n\n"
+        "SYNOPSIS\n"
+        "    ntpdate\n\n"
+        "DESCRIPTION\n"
+        "    Contacts pool.ntp.org via UDP port 123 to obtain\n"
+        "    the current time and updates the system clock.\n"
+        "    Requires an active network connection.\n"
+    },
+    {
+        "beep", cmd_beep,
+        "Play a tone on the PC speaker",
+        "beep: beep [FREQ MS | startup | error | ok | notify]\n"
+        "    Play a tone on the PC speaker.\n",
+        "NAME\n"
+        "    beep - PC speaker tone generator\n\n"
+        "SYNOPSIS\n"
+        "    beep [FREQ DURATION_MS]\n"
+        "    beep startup|error|ok|notify\n\n"
+        "DESCRIPTION\n"
+        "    Plays a tone using PIT channel 2 and the PC speaker.\n"
+        "    With no arguments, plays a default 880Hz beep.\n"
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -1025,6 +1057,7 @@ int shell_login(void) {
 void shell_initialize_subsystems(void) {
     fs_initialize();
     config_initialize();
+    rtc_init();
     net_initialize();
     env_initialize();
     hostname_initialize();
@@ -4017,4 +4050,38 @@ static void cmd_shm(int argc, char* argv[]) {
     } else {
         printf("Usage: shm [list|create NAME SIZE]\n");
     }
+}
+
+/* ═══ ntpdate: sync time via NTP ════════════════════════════════ */
+
+static void cmd_ntpdate(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    printf("Syncing time via NTP (pool.ntp.org)...\n");
+    if (rtc_ntp_sync() == 0) {
+        datetime_t dt;
+        config_get_datetime(&dt);
+        printf("Time synchronized: %04d-%02d-%02d %02d:%02d:%02d\n",
+               dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+    } else {
+        printf("NTP sync failed (check network connection)\n");
+    }
+}
+
+/* ═══ beep: PC speaker test ════════════════════════════════════ */
+
+static void cmd_beep(int argc, char* argv[]) {
+    if (argc >= 3) {
+        uint32_t freq = (uint32_t)atoi(argv[1]);
+        uint32_t dur  = (uint32_t)atoi(argv[2]);
+        if (freq > 0 && dur > 0) {
+            beep(freq, dur);
+            return;
+        }
+    }
+    if (argc == 2 && strcmp(argv[1], "startup") == 0) { beep_startup(); return; }
+    if (argc == 2 && strcmp(argv[1], "error") == 0)   { beep_error(); return; }
+    if (argc == 2 && strcmp(argv[1], "ok") == 0)      { beep_ok(); return; }
+    if (argc == 2 && strcmp(argv[1], "notify") == 0)   { beep_notify(); return; }
+    /* Default beep */
+    beep(880, 150);
 }

@@ -13,6 +13,7 @@
 #include <kernel/mouse.h>
 #include <kernel/acpi.h>
 #include <kernel/ui_theme.h>
+#include <kernel/beep.h>
 #include <string.h>
 #include <stdio.h>
 

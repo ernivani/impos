@@ -1,6 +1,7 @@
 #include <kernel/config.h>
 #include <kernel/fs.h>
 #include <kernel/shell.h>
+#include <kernel/user.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,7 @@ void config_initialize(void) {
     sys_config.uptime_seconds = 0;
     strcpy(sys_config.timezone, "Europe/Paris");
     sys_config.use_24h_format = 1;
+    sys_config.auto_dst = 1;
 
     config_initialized = 1;
 
@@ -43,7 +45,7 @@ void config_initialize(void) {
 }
 
 int config_load(void) {
-    uint8_t buffer[sizeof(system_config_t)];
+    uint8_t buffer[sizeof(system_config_t) + 64]; /* extra room for old/future formats */
     size_t size;
 
     /* Create /etc directory if it doesn't exist */
@@ -53,15 +55,30 @@ int config_load(void) {
         return -1;
     }
 
-    if (size != sizeof(system_config_t)) {
+    if (size == 0) {
         return -1;
     }
 
-    memcpy(&sys_config, buffer, sizeof(system_config_t));
+    /* Load what we can — if config grew, new fields keep defaults from memset.
+       If config shrunk (unlikely), just load the smaller portion. */
+    size_t copy = size < sizeof(system_config_t) ? size : sizeof(system_config_t);
+    memcpy(&sys_config, buffer, copy);
+
+    /* If struct grew, re-save so disk matches current format */
+    if (size != sizeof(system_config_t)) {
+        config_save();
+    }
+
     return 0;
 }
 
 int config_save(void) {
+    /* Elevate to root for system config writes (config is owned by root) */
+    const char *prev_user = user_get_current();
+    char saved_user[64] = {0};
+    if (prev_user) strncpy(saved_user, prev_user, 63);
+    user_set_current("root");
+
     /* Create /etc directory if it doesn't exist (ignore error if exists) */
     fs_create_file("/etc", 1);
 
@@ -69,13 +86,18 @@ int config_save(void) {
     fs_create_file(CONFIG_FILE, 0);
 
     /* Write new config */
-    if (fs_write_file(CONFIG_FILE, (const uint8_t*)&sys_config, sizeof(system_config_t)) != 0) {
+    int ret = fs_write_file(CONFIG_FILE, (const uint8_t*)&sys_config, sizeof(system_config_t));
+
+    /* Restore original user */
+    if (saved_user[0])
+        user_set_current(saved_user);
+
+    if (ret != 0)
         return -1;
-    }
 
     /* Force sync to disk */
     fs_sync();
-    
+
     return 0;
 }
 
@@ -152,6 +174,12 @@ void config_set_timezone(const char* tz) {
 }
 
 int config_save_history(void) {
+    /* Elevate to root for system file writes */
+    const char *prev_user = user_get_current();
+    char saved_user[64] = {0};
+    if (prev_user) strncpy(saved_user, prev_user, 63);
+    user_set_current("root");
+
     /* Create /etc directory if it doesn't exist */
     fs_create_file("/etc", 1);
 
@@ -160,6 +188,7 @@ int config_save_history(void) {
 
     int count = shell_history_count();
     if (count == 0) {
+        if (saved_user[0]) user_set_current(saved_user);
         return 0;
     }
 
@@ -180,13 +209,17 @@ int config_save_history(void) {
     }
 
     if (offset == 0) {
+        if (saved_user[0]) user_set_current(saved_user);
         return 0;
     }
 
     /* Write history to file */
-    if (fs_write_file(HISTORY_FILE, buffer, offset) != 0) {
-        return -1;
-    }
+    int ret = fs_write_file(HISTORY_FILE, buffer, offset);
+
+    /* Restore original user */
+    if (saved_user[0]) user_set_current(saved_user);
+
+    if (ret != 0) return -1;
 
     fs_sync();
     return 0;
