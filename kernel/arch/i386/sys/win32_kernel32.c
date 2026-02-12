@@ -4,6 +4,8 @@
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <kernel/io.h>
+#include <kernel/pipe.h>
+#include <kernel/pe_loader.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,6 +54,11 @@ typedef struct {
     /* Semaphore state */
     volatile LONG   sem_count;
     LONG            sem_max;
+
+    /* Process state (HTYPE_PROCESS) */
+    int             proc_tid;       /* main thread task slot */
+    DWORD           proc_exit;      /* exit code */
+    volatile int    proc_done;      /* 1 when process finished */
 } win32_handle_t;
 
 static win32_handle_t handle_table[MAX_HANDLES];
@@ -314,13 +321,17 @@ static BOOL WINAPI shim_FindClose(HANDLE hFind) {
 
 /* ── File Attributes & Info ──────────────────────────────────── */
 
-static DWORD WINAPI shim_GetFileAttributesA(LPCSTR lpFileName) {
-    uint8_t tmp[1];
-    size_t sz = 0;
+/* Check if a path exists as a file (non-stdcall, safe to call internally).
+ * Uses a static buffer so fs_read_file overflow won't corrupt the stack. */
+static int file_exists(const char *path) {
+    static uint8_t exist_buf[128];  /* static — overflow-safe */
+    size_t sz = 1;
+    return fs_read_file(path, exist_buf, &sz) >= 0;
+}
 
-    /* Try reading as file */
-    sz = 1;
-    if (fs_read_file(lpFileName, tmp, &sz) >= 0)
+static DWORD WINAPI shim_GetFileAttributesA(LPCSTR lpFileName) {
+    /* Try reading as file — use static buffer helper */
+    if (file_exists(lpFileName))
         return FILE_ATTRIBUTE_NORMAL;
 
     /* Try as directory — save/restore cwd */
@@ -543,10 +554,46 @@ static BOOL WINAPI shim_CancelIo(HANDLE hFile) {
     return TRUE;
 }
 
+/* ── Child process context (needed by ExitProcess + CreateProcessA) ──── */
+
+#define MAX_CHILD_PROCS 16
+typedef struct {
+    int      in_use;
+    char     exe_path[64];
+    HANDLE   proc_handle;
+    HANDLE   thread_handle;
+    volatile int ready;   /* set to 1 after tid is assigned */
+    int      tid;
+} child_ctx_t;
+
+static child_ctx_t child_ctxs[MAX_CHILD_PROCS];
+
 /* ── Process / Module ────────────────────────────────────────── */
 
 static void WINAPI shim_ExitProcess(UINT uExitCode) {
     DBG("ExitProcess(%u)", uExitCode);
+
+    /* If this is a child process, mark its handles as done
+     * BEFORE calling task_exit(), otherwise the parent's
+     * WaitForSingleObject will spin forever. */
+    int tid = task_get_current();
+    for (int i = 0; i < MAX_CHILD_PROCS; i++) {
+        if (child_ctxs[i].in_use && child_ctxs[i].tid == tid) {
+            win32_handle_t *pwh = get_handle(child_ctxs[i].proc_handle);
+            if (pwh && pwh->type == HTYPE_PROCESS) {
+                pwh->proc_exit = uExitCode;
+                pwh->proc_done = 1;
+            }
+            win32_handle_t *twh = get_handle(child_ctxs[i].thread_handle);
+            if (twh && twh->type == HTYPE_THREAD) {
+                twh->thread_exit = uExitCode;
+                twh->thread_done = 1;
+            }
+            child_ctxs[i].in_use = 0;
+            break;
+        }
+    }
+
     task_exit();
 }
 
@@ -581,6 +628,309 @@ static DWORD WINAPI shim_GetCurrentProcessId(void) {
 
 static DWORD WINAPI shim_GetCurrentThreadId(void) {
     return (DWORD)task_get_current();
+}
+
+/* ── Process Creation ────────────────────────────────────────── */
+
+/* Win32 STARTUPINFOA — must match real Windows layout */
+typedef struct {
+    DWORD  cb;
+    LPSTR  lpReserved;
+    LPSTR  lpDesktop;
+    LPSTR  lpTitle;
+    DWORD  dwX, dwY, dwXSize, dwYSize;
+    DWORD  dwXCountChars, dwYCountChars;
+    DWORD  dwFillAttribute;
+    DWORD  dwFlags;
+    WORD   wShowWindow;
+    WORD   cbReserved2;
+    LPBYTE lpReserved2;
+    HANDLE hStdInput;
+    HANDLE hStdOutput;
+    HANDLE hStdError;
+} STARTUPINFOA;
+
+typedef struct {
+    HANDLE hProcess;
+    HANDLE hThread;
+    DWORD  dwProcessId;
+    DWORD  dwThreadId;
+} PROCESS_INFORMATION;
+
+static void child_process_wrapper(void) {
+    int tid = task_get_current();
+    DBG("child_process_wrapper: started, tid=%d", tid);
+
+    /* Spin until parent sets ready flag — parent sets in_use=1 before
+     * spawning us, then sets tid + ready=1 after task_create_thread returns */
+    child_ctx_t *ctx = NULL;
+    int attempts = 0;
+    for (int attempt = 0; attempt < 100000 && !ctx; attempt++) {
+        for (int i = MAX_CHILD_PROCS - 1; i >= 0; i--) {
+            if (child_ctxs[i].in_use && child_ctxs[i].ready &&
+                child_ctxs[i].tid == tid) {
+                ctx = &child_ctxs[i];
+                break;
+            }
+        }
+        if (!ctx) { attempts++; task_yield(); }
+    }
+
+    if (!ctx || !ctx->exe_path[0]) {
+        DBG("child_process_wrapper: no context for tid %d after %d attempts (ctx=%p)", tid, attempts, (void*)ctx);
+        if (ctx) {
+            DBG("  ctx->in_use=%d ready=%d tid=%d exe_path[0]=0x%x",
+                ctx->in_use, ctx->ready, ctx->tid, (unsigned char)ctx->exe_path[0]);
+        }
+        /* Dump all slots */
+        for (int d = 0; d < MAX_CHILD_PROCS; d++) {
+            if (child_ctxs[d].in_use || child_ctxs[d].tid) {
+                DBG("  slot[%d]: in_use=%d ready=%d tid=%d exe='%s'",
+                    d, child_ctxs[d].in_use, child_ctxs[d].ready,
+                    child_ctxs[d].tid, child_ctxs[d].exe_path);
+            }
+        }
+        task_exit();
+        return;
+    }
+
+    DBG("child_process_wrapper: found ctx for tid %d, exe='%s' (after %d yields)", tid, ctx->exe_path, attempts);
+
+    /* Load and run the PE */
+    pe_loaded_image_t child_img;
+    memset(&child_img, 0, sizeof(child_img));
+    int ret = pe_load(ctx->exe_path, &child_img);
+    DBG("child_process_wrapper: pe_load('%s') = %d", ctx->exe_path, ret);
+    if (ret >= 0) ret = pe_apply_relocations(&child_img);
+    if (ret >= 0) ret = pe_resolve_imports(&child_img);
+
+    if (ret >= 0) {
+        DBG("child_process_wrapper: calling entry at 0x%x", (unsigned)child_img.entry_point);
+        void (*entry)(void) = (void (*)(void))child_img.entry_point;
+        entry();
+        DBG("child_process_wrapper: entry returned");
+    } else {
+        DBG("child_process_wrapper: pe_load failed for '%s' (%d)",
+            ctx->exe_path, ret);
+    }
+
+    /* Mark process handle as done */
+    win32_handle_t *wh = get_handle(ctx->proc_handle);
+    if (wh && wh->type == HTYPE_PROCESS) {
+        wh->proc_exit = 0;
+        wh->proc_done = 1;
+    }
+
+    /* Mark thread handle as done */
+    win32_handle_t *th = get_handle(ctx->thread_handle);
+    if (th && th->type == HTYPE_THREAD) {
+        th->thread_exit = 0;
+        th->thread_done = 1;
+    }
+
+    ctx->in_use = 0;
+    task_exit();
+}
+
+static BOOL WINAPI shim_CreateProcessA(
+    LPCSTR lpApplicationName, LPSTR lpCommandLine,
+    LPVOID lpProcessAttributes, LPVOID lpThreadAttributes,
+    BOOL bInheritHandles, DWORD dwCreationFlags,
+    LPVOID lpEnvironment, LPCSTR lpCurrentDirectory,
+    STARTUPINFOA *lpStartupInfo, PROCESS_INFORMATION *lpProcessInformation)
+{
+    (void)lpProcessAttributes; (void)lpThreadAttributes;
+    (void)bInheritHandles; (void)dwCreationFlags;
+    (void)lpEnvironment; (void)lpCurrentDirectory;
+    (void)lpStartupInfo;
+
+    /* Determine exe source string */
+    const char *exe = lpApplicationName;
+    if (!exe || !exe[0])
+        exe = lpCommandLine;
+    if (!exe || !exe[0]) {
+        last_error = 2;
+        return FALSE;
+    }
+
+    /* Find a free child context slot */
+    int slot = -1;
+    for (int s = 0; s < MAX_CHILD_PROCS; s++) {
+        if (!child_ctxs[s].in_use) { slot = s; break; }
+    }
+    if (slot < 0) return FALSE;
+
+    /* Extract exe path directly into static ctx */
+    child_ctx_t *ctx = &child_ctxs[slot];
+    memset(ctx, 0, sizeof(*ctx));
+    {
+        const char *src = exe;
+        if (src[0] == '"') src++;
+        int n = 0;
+        while (src[n] && src[n] != ' ' && src[n] != '"' && n < 63) {
+            ctx->exe_path[n] = src[n];
+            n++;
+        }
+        ctx->exe_path[n] = '\0';
+    }
+
+    DBG("CreateProcessA: exe='%s'", ctx->exe_path);
+
+    /* Verify file exists — use non-stdcall helper (never call stdcall
+     * shims internally — GCC register-passing breaks ret $N cleanup) */
+    if (!file_exists(ctx->exe_path)) {
+        DBG("CreateProcessA: file not found");
+        memset(ctx, 0, sizeof(*ctx));
+        last_error = 2;
+        return FALSE;
+    }
+
+    /* Allocate handles */
+    HANDLE hProc = alloc_handle(HTYPE_PROCESS);
+    if (hProc == INVALID_HANDLE_VALUE) {
+        memset(ctx, 0, sizeof(*ctx));
+        return FALSE;
+    }
+    HANDLE hThread = alloc_handle(HTYPE_THREAD);
+    if (hThread == INVALID_HANDLE_VALUE) {
+        free_handle(hProc);
+        memset(ctx, 0, sizeof(*ctx));
+        return FALSE;
+    }
+
+    /* Fill context and handles */
+    ctx->proc_handle = hProc;
+    ctx->thread_handle = hThread;
+    ctx->ready = 0;
+    ctx->in_use = 1;
+
+    win32_handle_t *pwh = get_handle(hProc);
+    pwh->proc_done = 0;
+    pwh->proc_exit = 259;  /* STILL_ACTIVE */
+
+    win32_handle_t *twh = get_handle(hThread);
+    twh->thread_done = 0;
+    twh->thread_exit = 0;
+
+    /* Spawn the child */
+    int tid = task_create_thread(ctx->exe_path, child_process_wrapper, 1);
+    if (tid < 0) {
+        memset(ctx, 0, sizeof(*ctx));
+        free_handle(hProc);
+        free_handle(hThread);
+        return FALSE;
+    }
+
+    ctx->tid = tid;
+    pwh->proc_tid = tid;
+    twh->tid = tid;
+    ctx->ready = 1;
+
+    /* Fill output struct — use only small stack locals (pointers/ints) */
+    if (lpProcessInformation) {
+        lpProcessInformation->hProcess = hProc;
+        lpProcessInformation->hThread = hThread;
+        lpProcessInformation->dwProcessId = (DWORD)task_get_pid(tid);
+        lpProcessInformation->dwThreadId = (DWORD)tid;
+    }
+
+    DBG("CreateProcessA: '%s' tid=%d hProc=%u hThread=%u",
+        ctx->exe_path, tid, (unsigned)hProc, (unsigned)hThread);
+    return TRUE;
+}
+
+static BOOL WINAPI shim_GetExitCodeProcess(HANDLE hProcess, LPDWORD lpExitCode) {
+    win32_handle_t *wh = get_handle(hProcess);
+    if (!wh || wh->type != HTYPE_PROCESS) return FALSE;
+    if (lpExitCode) {
+        *lpExitCode = wh->proc_done ? wh->proc_exit : 259; /* STILL_ACTIVE */
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI shim_TerminateProcess(HANDLE hProcess, UINT uExitCode) {
+    win32_handle_t *wh = get_handle(hProcess);
+    if (!wh || wh->type != HTYPE_PROCESS) return FALSE;
+    /* Kill the task */
+    int pid = task_get_pid(wh->proc_tid);
+    if (pid > 0) task_kill_by_pid(pid);
+    wh->proc_exit = uExitCode;
+    wh->proc_done = 1;
+    return TRUE;
+}
+
+static HANDLE WINAPI shim_GetCurrentProcess(void) {
+    return (HANDLE)0xFFFFFFFF;  /* pseudo-handle for current process */
+}
+
+static HANDLE WINAPI shim_OpenProcess(DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwProcessId) {
+    (void)dwDesiredAccess; (void)bInheritHandle;
+    /* Find the child process by PID */
+    for (int i = 0; i < MAX_CHILD_PROCS; i++) {
+        if (child_ctxs[i].in_use) {
+            int pid = task_get_pid(child_ctxs[i].tid);
+            if ((DWORD)pid == dwProcessId)
+                return child_ctxs[i].proc_handle;
+        }
+    }
+    return INVALID_HANDLE_VALUE;
+}
+
+static BOOL WINAPI shim_DuplicateHandle(
+    HANDLE hSourceProcess, HANDLE hSourceHandle,
+    HANDLE hTargetProcess, HANDLE *lpTargetHandle,
+    DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwOptions)
+{
+    (void)hSourceProcess; (void)hTargetProcess;
+    (void)dwDesiredAccess; (void)bInheritHandle; (void)dwOptions;
+
+    /* Simple implementation: just copy the handle value.
+     * In our single-address-space OS, handles are global anyway. */
+    if (lpTargetHandle) {
+        *lpTargetHandle = hSourceHandle;
+    }
+    return TRUE;
+}
+
+/* ── Anonymous Pipes (CreatePipe) ────────────────────────────── */
+
+#define HTYPE_PIPE 12  /* extends handle_type_t */
+
+static BOOL WINAPI shim_CreatePipe(
+    HANDLE *hReadPipe, HANDLE *hWritePipe,
+    LPVOID lpPipeAttributes, DWORD nSize)
+{
+    (void)lpPipeAttributes; (void)nSize;
+
+    if (!hReadPipe || !hWritePipe) return FALSE;
+
+    int read_fd, write_fd;
+    int tid = task_get_current();
+    if (pipe_create(&read_fd, &write_fd, tid) < 0) {
+        return FALSE;
+    }
+
+    HANDLE hr = alloc_handle((handle_type_t)HTYPE_PIPE);
+    HANDLE hw = alloc_handle((handle_type_t)HTYPE_PIPE);
+    if (hr == INVALID_HANDLE_VALUE || hw == INVALID_HANDLE_VALUE) {
+        pipe_close(read_fd, tid);
+        pipe_close(write_fd, tid);
+        if (hr != INVALID_HANDLE_VALUE) free_handle(hr);
+        if (hw != INVALID_HANDLE_VALUE) free_handle(hw);
+        return FALSE;
+    }
+
+    win32_handle_t *rh = get_handle(hr);
+    rh->tid = read_fd;  /* reuse tid field for pipe fd */
+    rh->signaled = 0;   /* 0 = read end */
+
+    win32_handle_t *wh_pipe = get_handle(hw);
+    wh_pipe->tid = write_fd;
+    wh_pipe->signaled = 1;  /* 1 = write end */
+
+    *hReadPipe = hr;
+    *hWritePipe = hw;
+    return TRUE;
 }
 
 /* ── Memory — VirtualAlloc with real page-backed allocations ── */
@@ -1352,7 +1702,12 @@ static BOOL WINAPI shim_ReleaseSemaphore(
 
 static DWORD WINAPI shim_WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds) {
     win32_handle_t *wh = get_handle(hHandle);
-    if (!wh) return WAIT_FAILED;
+    if (!wh) {
+        DBG("WaitForSingleObject: invalid handle %u", (unsigned)hHandle);
+        return WAIT_FAILED;
+    }
+
+    DBG("WaitForSingleObject: handle=%u type=%d timeout=%u", (unsigned)hHandle, wh->type, (unsigned)dwMilliseconds);
 
     uint32_t start = pit_get_ticks();
     uint32_t timeout_ticks = (dwMilliseconds == INFINITE)
@@ -1365,6 +1720,19 @@ static DWORD WINAPI shim_WaitForSingleObject(HANDLE hHandle, DWORD dwMillisecond
         switch (wh->type) {
         case HTYPE_THREAD:
             if (wh->thread_done) return WAIT_OBJECT_0;
+            break;
+
+        case HTYPE_PROCESS:
+            if (wh->proc_done) {
+                DBG("WaitForSingleObject: process done, returning");
+                return WAIT_OBJECT_0;
+            }
+            /* Also check if the task is no longer alive */
+            if (task_get(wh->proc_tid) == NULL) {
+                DBG("WaitForSingleObject: proc_tid=%d task dead, marking done", wh->proc_tid);
+                wh->proc_done = 1;
+                return WAIT_OBJECT_0;
+            }
             break;
 
         case HTYPE_EVENT:
@@ -1571,6 +1939,18 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "GetCommandLineW",        (void *)shim_GetCommandLineA },
     { "GetCurrentProcessId",    (void *)shim_GetCurrentProcessId },
     { "GetCurrentThreadId",     (void *)shim_GetCurrentThreadId },
+
+    /* Process creation */
+    { "CreateProcessA",         (void *)shim_CreateProcessA },
+    { "CreateProcessW",         (void *)shim_CreateProcessA },
+    { "GetExitCodeProcess",     (void *)shim_GetExitCodeProcess },
+    { "TerminateProcess",       (void *)shim_TerminateProcess },
+    { "GetCurrentProcess",      (void *)shim_GetCurrentProcess },
+    { "OpenProcess",            (void *)shim_OpenProcess },
+    { "DuplicateHandle",        (void *)shim_DuplicateHandle },
+
+    /* Pipes */
+    { "CreatePipe",             (void *)shim_CreatePipe },
 
     /* Memory — Virtual */
     { "VirtualAlloc",           (void *)shim_VirtualAlloc },

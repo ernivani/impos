@@ -137,6 +137,7 @@ static void cmd_sudo(int argc, char* argv[]);
 static void cmd_threadtest(int argc, char* argv[]);
 static void cmd_memtest(int argc, char* argv[]);
 static void cmd_fstest(int argc, char* argv[]);
+static void cmd_proctest(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -1129,6 +1130,20 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Tests CreateFile, ReadFile, WriteFile, SetFilePointer,\n"
         "    FindFirstFile, CopyFile, DeleteFile, and path queries.\n",
+        CMD_FLAG_ROOT
+    },
+    {
+        "proctest", cmd_proctest,
+        "Run Win32 process creation tests",
+        "proctest: proctest\n"
+        "    Write proc_test.exe to disk and run it.\n",
+        "NAME\n"
+        "    proctest - test Win32 process APIs\n\n"
+        "SYNOPSIS\n"
+        "    proctest\n\n"
+        "DESCRIPTION\n"
+        "    Tests CreateProcessA, WaitForSingleObject on process,\n"
+        "    GetExitCodeProcess, CreatePipe, and DuplicateHandle.\n",
         CMD_FLAG_ROOT
     },
 };
@@ -4667,6 +4682,29 @@ static void cmd_fstest(int argc, char* argv[]) {
             task_yield();
     } else {
         printf("fstest: failed (%d)\n", tid);
+    }
+}
+
+/* ── Embedded proc_test.exe (Win32 process test) ──────────────
+ * PE32 console app: tests CreateProcessA, WaitForSingleObject
+ * on process, GetExitCodeProcess, CreatePipe, DuplicateHandle.
+ */
+#include "proc_test_embed.h"
+
+static void cmd_proctest(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    /* Ensure hello.exe exists — proc_test spawns it as child */
+    fs_create_file("hello.exe", 0);
+    fs_write_file("hello.exe", hello_exe_data, hello_exe_len);
+    /* Write proc_test.exe */
+    fs_create_file("proc_test.exe", 0);
+    fs_write_file("proc_test.exe", proc_test_data, proc_test_data_len);
+    int tid = pe_run("proc_test.exe");
+    if (tid >= 0) {
+        while (task_get(tid) != NULL)
+            task_yield();
+    } else {
+        printf("proctest: failed (%d)\n", tid);
     }
 }
 
