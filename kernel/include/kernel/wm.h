@@ -102,6 +102,9 @@ int  wm_get_dock_hover(void);
 /* Window list accessors */
 int  wm_get_window_count(void);
 wm_window_t* wm_get_window_by_index(int idx);
+
+/* Get z-ordered window index (0=front). Returns internal index or -1. */
+int  wm_get_z_order_index(int z_pos);
 int  wm_get_task_id(int win_id);
 
 /* Canvas drawing API (coordinates relative to content area) */

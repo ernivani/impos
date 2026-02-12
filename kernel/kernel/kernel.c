@@ -308,7 +308,17 @@ int shell_handle_key(char c) {
         return 0;
     }
     if (c == KEY_ALT_TAB) {
-        wm_cycle_focus();
+        alttab_activate();
+        while (alttab_is_visible()) {
+            char tc = getchar();
+            if (tc == KEY_ALT_TAB) {
+                alttab_activate();
+            } else if (tc == KEY_ESCAPE) {
+                alttab_cancel();
+            } else {
+                alttab_confirm();
+            }
+        }
         return 0;
     }
     if (c == KEY_PGUP || c == KEY_PGDN || c == KEY_INS || c == KEY_ESCAPE || c == KEY_SUPER)

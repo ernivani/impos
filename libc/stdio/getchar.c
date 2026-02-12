@@ -395,8 +395,8 @@ char getchar(void) {
             continue;
         }
 
-        /* Alt+Tab */
-        if (alt_pressed && scancode == 0x0F)
+        /* Alt+Tab or Ctrl+Tab */
+        if ((alt_pressed || ctrl_pressed) && scancode == 0x0F)
             return KEY_ALT_TAB;
 
         /* Ctrl+Space — open Finder */

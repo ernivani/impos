@@ -483,6 +483,11 @@ wm_window_t* wm_get_window_by_index(int idx) {
     return &windows[idx];
 }
 
+int wm_get_z_order_index(int z_pos) {
+    if (z_pos < 0 || z_pos >= win_count) return -1;
+    return win_order[z_pos];
+}
+
 int wm_get_task_id(int win_id) {
     wm_window_t *w = find_window(win_id);
     return w ? w->task_id : -1;

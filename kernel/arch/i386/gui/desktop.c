@@ -1272,8 +1272,173 @@ int toast_handle_mouse(int mx, int my, int btn_down, int btn_held, int btn_up) {
     return 0;
 }
 
+/* ═══ Alt-Tab Visual Switcher ═════════════════════════════════════ */
+
+#define ALTTAB_THUMB_W    160
+#define ALTTAB_THUMB_H    100
+#define ALTTAB_ITEM_PAD    12
+#define ALTTAB_OUTER_PAD   20
+#define ALTTAB_TITLE_H     24
+#define ALTTAB_BORDER_R    12
+
+static int alttab_visible = 0;
+static int alttab_selected = 0;   /* z-order index of selected window */
+static int alttab_count = 0;      /* cached count of non-minimized windows */
+
+/* Gather non-minimized windows into a list (z-ordered) */
+static int alttab_gather(int *indices, int max) {
+    int n = 0;
+    int wc = wm_get_window_count();
+    for (int z = 0; z < wc && n < max; z++) {
+        int idx = wm_get_z_order_index(z);
+        if (idx < 0) continue;
+        wm_window_t *w = wm_get_window_by_index(idx);
+        if (!w || (w->flags & WM_WIN_MINIMIZED)) continue;
+        indices[n++] = idx;
+    }
+    return n;
+}
+
+static void alttab_draw(void) {
+    if (!alttab_visible) return;
+
+    int indices[WM_MAX_WINDOWS];
+    int count = alttab_gather(indices, WM_MAX_WINDOWS);
+    if (count == 0) { alttab_visible = 0; return; }
+
+    alttab_count = count;
+    if (alttab_selected >= count) alttab_selected = 0;
+
+    int item_w = ALTTAB_THUMB_W + ALTTAB_ITEM_PAD;
+    int panel_w = count * item_w - ALTTAB_ITEM_PAD + 2 * ALTTAB_OUTER_PAD;
+    int panel_h = ALTTAB_THUMB_H + ALTTAB_TITLE_H + 2 * ALTTAB_OUTER_PAD;
+
+    /* Cap panel width to screen */
+    int fb_w = (int)gfx_width();
+    int fb_h = (int)gfx_height();
+    if (panel_w > fb_w - 40) panel_w = fb_w - 40;
+
+    int px = (fb_w - panel_w) / 2;
+    int py = (fb_h - panel_h) / 2;
+
+    /* Background panel */
+    gfx_rounded_rect_alpha(px, py, panel_w, panel_h,
+                           ALTTAB_BORDER_R, GFX_RGB(30, 30, 40), 220);
+    gfx_draw_rect(px, py, panel_w, panel_h, GFX_RGB(70, 70, 85));
+
+    /* Draw each window thumbnail */
+    for (int i = 0; i < count; i++) {
+        int ix = px + ALTTAB_OUTER_PAD + i * item_w;
+        int iy = py + ALTTAB_OUTER_PAD;
+
+        /* Clip if overflows panel */
+        if (ix + ALTTAB_THUMB_W > px + panel_w - ALTTAB_OUTER_PAD) break;
+
+        wm_window_t *w = wm_get_window_by_index(indices[i]);
+        if (!w) continue;
+
+        /* Selection highlight */
+        if (i == alttab_selected) {
+            gfx_rounded_rect_alpha(ix - 4, iy - 4,
+                                   ALTTAB_THUMB_W + 8, ALTTAB_THUMB_H + ALTTAB_TITLE_H + 8,
+                                   6, ui_theme.accent, 180);
+        }
+
+        /* Thumbnail background */
+        gfx_fill_rect(ix, iy, ALTTAB_THUMB_W, ALTTAB_THUMB_H, GFX_RGB(20, 20, 25));
+
+        /* Draw scaled-down window content from canvas */
+        if (w->canvas && w->canvas_w > 0 && w->canvas_h > 0) {
+            /* Nearest-neighbor scale */
+            for (int ty = 0; ty < ALTTAB_THUMB_H; ty++) {
+                int sy = ty * w->canvas_h / ALTTAB_THUMB_H;
+                if (sy >= w->canvas_h) sy = w->canvas_h - 1;
+                for (int tx = 0; tx < ALTTAB_THUMB_W; tx++) {
+                    int sx = tx * w->canvas_w / ALTTAB_THUMB_W;
+                    if (sx >= w->canvas_w) sx = w->canvas_w - 1;
+                    uint32_t pixel = w->canvas[sy * w->canvas_w + sx];
+                    gfx_put_pixel(ix + tx, iy + ty, pixel);
+                }
+            }
+        }
+
+        /* Thin border around thumbnail */
+        gfx_draw_rect(ix, iy, ALTTAB_THUMB_W, ALTTAB_THUMB_H,
+                       GFX_RGB(55, 55, 65));
+
+        /* Window title below thumbnail */
+        int title_y = iy + ALTTAB_THUMB_H + 4;
+        uint32_t text_color = (i == alttab_selected)
+            ? GFX_RGB(255, 255, 255)
+            : GFX_RGB(170, 170, 180);
+
+        /* Truncate title to fit thumbnail width */
+        char truncated[24];
+        int max_chars = ALTTAB_THUMB_W / 8;
+        if (max_chars > 23) max_chars = 23;
+        strncpy(truncated, w->title, max_chars);
+        truncated[max_chars] = '\0';
+
+        /* Center title */
+        int tw = (int)strlen(truncated) * 8;
+        int ttx = ix + (ALTTAB_THUMB_W - tw) / 2;
+        if (ttx < ix) ttx = ix;
+        gfx_draw_string_nobg(ttx, title_y, truncated, text_color);
+    }
+}
+
+/* Show or advance the Alt-Tab switcher */
+void alttab_activate(void) {
+    int indices[WM_MAX_WINDOWS];
+    int count = alttab_gather(indices, WM_MAX_WINDOWS);
+    if (count < 2) {
+        /* 0 or 1 windows — just cycle directly */
+        wm_cycle_focus();
+        return;
+    }
+
+    if (!alttab_visible) {
+        alttab_visible = 1;
+        alttab_selected = 1;  /* start on the second window (first switch) */
+    } else {
+        alttab_selected++;
+        if (alttab_selected >= count)
+            alttab_selected = 0;
+    }
+    wm_mark_dirty();
+}
+
+/* Confirm the Alt-Tab selection and focus the chosen window */
+void alttab_confirm(void) {
+    if (!alttab_visible) return;
+
+    int indices[WM_MAX_WINDOWS];
+    int count = alttab_gather(indices, WM_MAX_WINDOWS);
+
+    if (alttab_selected >= 0 && alttab_selected < count) {
+        wm_window_t *w = wm_get_window_by_index(indices[alttab_selected]);
+        if (w) {
+            wm_focus_window(w->id);
+        }
+    }
+
+    alttab_visible = 0;
+    wm_mark_dirty();
+}
+
+/* Cancel without switching */
+void alttab_cancel(void) {
+    alttab_visible = 0;
+    wm_mark_dirty();
+}
+
+int alttab_is_visible(void) {
+    return alttab_visible;
+}
+
 static void ctx_post_composite(void) {
     toast_draw_all();
+    alttab_draw();
     ctx_draw_rename();
     if (!ctx_menu.visible) return;
 
@@ -2529,9 +2694,23 @@ int desktop_run(void) {
         if (ev.type == UI_EVENT_KEY_PRESS) {
             char c = ev.key.key;
 
-            /* Alt+Tab */
+            /* Alt+Tab switcher */
             if (c == KEY_ALT_TAB) {
-                wm_cycle_focus();
+                alttab_activate();
+                /* Mini-loop: keep showing switcher until non-Alt+Tab key */
+                while (alttab_visible) {
+                    char tc = getchar();
+                    if (tc == KEY_ALT_TAB) {
+                        alttab_activate();
+                    } else if (tc == '\n' || tc == ' ') {
+                        alttab_confirm();
+                    } else if (tc == KEY_ESCAPE) {
+                        alttab_cancel();
+                    } else {
+                        /* Any other key confirms selection */
+                        alttab_confirm();
+                    }
+                }
                 continue;
             }
 
