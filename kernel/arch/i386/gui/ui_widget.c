@@ -1261,9 +1261,19 @@ int ui_app_run(ui_window_t *win, void (*on_event)(ui_window_t *, ui_event_t *)) 
             return ev.dock.action;
         }
 
-        /* Alt+Tab */
+        /* Alt+Tab visual switcher */
         if (ev.type == UI_EVENT_KEY_PRESS && ev.key.key == KEY_ALT_TAB) {
-            wm_cycle_focus();
+            alttab_activate();
+            while (alttab_is_visible()) {
+                char tc = getchar();
+                if (tc == KEY_ALT_TAB) {
+                    alttab_activate();
+                } else if (tc == KEY_ESCAPE) {
+                    alttab_cancel();
+                } else {
+                    alttab_confirm();
+                }
+            }
             continue;
         }
         /* Super key — return to desktop */

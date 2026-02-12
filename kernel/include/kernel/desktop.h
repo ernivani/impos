@@ -91,4 +91,11 @@ void toast_show(const char *app_name, const char *title, const char *message, in
    Returns 1 if the mouse event was consumed by a toast. */
 int toast_handle_mouse(int mx, int my, int btn_down, int btn_held, int btn_up);
 
+/* ═══ Alt-Tab Visual Switcher ═════════════════════════════════════ */
+
+void alttab_activate(void);
+void alttab_confirm(void);
+void alttab_cancel(void);
+int  alttab_is_visible(void);
+
 #endif
