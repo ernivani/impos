@@ -48,7 +48,6 @@ uint8_t config_get_keyboard_layout(void);
 /* Time/date functions */
 void config_get_datetime(datetime_t* dt);
 void config_set_datetime(const datetime_t* dt);
-void config_update_uptime(void);
 void config_tick_second(void);  /* Called every second to update time */
 const char* config_get_timezone(void);
 void config_set_timezone(const char* tz);

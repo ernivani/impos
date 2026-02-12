@@ -10,6 +10,10 @@
 #define SIGUSR1  10
 #define SIGUSR2  12
 #define SIGPIPE  13
+#define SIGILL    4   /* Invalid opcode */
+#define SIGBUS    7   /* Bus error (double fault, alignment) */
+#define SIGFPE    8   /* Arithmetic exception (div by zero) */
+#define SIGSEGV  11   /* Segmentation fault (page fault, GPF) */
 #define SIGTERM  15
 #define NSIG     16
 
