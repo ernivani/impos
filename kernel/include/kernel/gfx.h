@@ -118,6 +118,9 @@ void gfx_set_cursor_type(int type);
 int  gfx_get_cursor_type(void);
 void gfx_draw_mouse_cursor(int x, int y);
 void gfx_restore_mouse_cursor(void);
+void gfx_stamp_cursor_to_backbuf(int x, int y);
+void gfx_unstamp_cursor_from_backbuf(void);
+void gfx_sync_cursor_after_composite(int x, int y);
 
 /* ═══ RAM detection ════════════════════════════════════════════ */
 

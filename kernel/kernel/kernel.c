@@ -23,6 +23,7 @@
 #include <kernel/sched.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
+#include <kernel/clipboard.h>
 
 #define PROMPT      "$ "
 
@@ -32,6 +33,7 @@
 #define CTRL_K  11
 #define CTRL_L  12
 #define CTRL_U  21
+#define CTRL_V  22
 #define CTRL_W  23
 
 /* --- Line editor state --- */
@@ -162,7 +164,18 @@ int shell_handle_key(char c) {
         return 0;
     }
     if (c == '\b') {
-        if (cursor > 0) {
+        if (keyboard_get_ctrl()) {
+            /* Ctrl+Backspace: delete word backward */
+            if (cursor > 0) {
+                size_t new_cur = cursor;
+                while (new_cur > 0 && buf[new_cur - 1] == ' ') new_cur--;
+                while (new_cur > 0 && buf[new_cur - 1] != ' ') new_cur--;
+                size_t removed = cursor - new_cur;
+                memmove(&buf[new_cur], &buf[cursor], buf_len - cursor);
+                buf_len -= removed; cursor_move(-(int)removed);
+                cursor = new_cur; repaint_tail(removed);
+            }
+        } else if (cursor > 0) {
             memmove(&buf[cursor - 1], &buf[cursor], buf_len - cursor);
             buf_len--; cursor_move(-1); cursor--;
             repaint_tail(1);
@@ -194,6 +207,8 @@ int shell_handle_key(char c) {
     }
     if (c == CTRL_U) {
         if (cursor > 0) {
+            /* Copy killed text to clipboard */
+            clipboard_copy(buf, cursor);
             size_t removed = cursor;
             memmove(buf, &buf[cursor], buf_len - cursor);
             buf_len -= removed; cursor_move(-(int)removed);
@@ -203,8 +218,27 @@ int shell_handle_key(char c) {
     }
     if (c == CTRL_K) {
         if (cursor < buf_len) {
+            /* Copy killed text to clipboard */
+            clipboard_copy(&buf[cursor], buf_len - cursor);
             size_t removed = buf_len - cursor;
             buf_len = cursor; repaint_tail(removed);
+        }
+        return 0;
+    }
+    if (c == CTRL_V) {
+        /* Paste from clipboard */
+        size_t clip_len;
+        const char *clip = clipboard_get(&clip_len);
+        if (clip && clip_len > 0) {
+            for (size_t i = 0; i < clip_len && buf_len < SHELL_CMD_SIZE - 1; i++) {
+                char ch = clip[i];
+                if (ch < 32 || ch >= 127) continue;
+                memmove(&buf[cursor + 1], &buf[cursor], buf_len - cursor);
+                buf[cursor] = ch;
+                cursor++; buf_len++;
+                putchar(ch);
+            }
+            repaint_tail(0);
         }
         return 0;
     }
@@ -274,7 +308,17 @@ int shell_handle_key(char c) {
         return 0;
     }
     if (c == KEY_ALT_TAB) {
-        wm_cycle_focus();
+        alttab_activate();
+        while (alttab_is_visible()) {
+            char tc = getchar();
+            if (tc == KEY_ALT_TAB) {
+                alttab_activate();
+            } else if (tc == KEY_ESCAPE) {
+                alttab_cancel();
+            } else {
+                alttab_confirm();
+            }
+        }
         return 0;
     }
     if (c == KEY_PGUP || c == KEY_PGDN || c == KEY_INS || c == KEY_ESCAPE || c == KEY_SUPER)

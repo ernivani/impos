@@ -40,6 +40,8 @@ run: iso $(DISK_IMAGE)
 		-m 4G \
 		-vga virtio \
 		-display gtk \
+		-audiodev pa,id=snd0 \
+		-machine pcspk-audiodev=snd0 \
 		$(KVM_FLAG)
 
 run-vnc: iso $(DISK_IMAGE)
