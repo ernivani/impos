@@ -1671,14 +1671,25 @@ static void desktop_unified_idle(void) {
         }
     }
 
-    /* Check close request from WM */
-    if (wm_close_was_requested()) {
-        wm_clear_close_request();
-        ui_event_t ev;
-        ev.type = UI_EVENT_CLOSE;
-        ui_push_event(&ev);
-        keyboard_request_force_exit();
-        return;
+    /* Check per-window close request from WM.
+     * Only consume for registered running apps — PE/Win32 windows handle
+     * close_requested in their own GetMessageA loop. */
+    {
+        int fid = wm_get_focused_id();
+        wm_window_t *fw = (fid >= 0) ? wm_get_window(fid) : NULL;
+        if (fw && fw->close_requested) {
+            int ri = find_running_app_by_wm(fid);
+            if (ri >= 0) {
+                DBG("desktop_unified_idle: close_requested on wm_id=%d (running_app %d)", fid, ri);
+                fw->close_requested = 0;
+                ui_event_t ev;
+                ev.type = UI_EVENT_CLOSE;
+                ui_push_event(&ev);
+                keyboard_request_force_exit();
+                return;
+            }
+            /* else: PE/Win32 window — leave close_requested for its GetMessageA */
+        }
     }
 
     /* Check dock action */
@@ -2019,21 +2030,29 @@ static void desktop_idle_terminal(void) {
         }
     }
 
-    /* Check close request from WM */
-    if (wm_close_was_requested()) {
-        wm_clear_close_request();
+    /* Check per-window close request from WM.
+     * Only consume for registered running apps — PE windows handle their own. */
+    {
         int fid = wm_get_focused_id();
-        int ri = (fid >= 0) ? find_running_app_by_wm(fid) : -1;
-        if (ri >= 0 && running_apps[ri].is_terminal) {
-            terminal_close_pending = 1;
-            keyboard_request_force_exit();
-        } else if (ri >= 0) {
-            if (running_apps[ri].on_close && running_apps[ri].ui_win)
-                running_apps[ri].on_close(running_apps[ri].ui_win);
-            if (running_apps[ri].ui_win)
-                ui_window_destroy(running_apps[ri].ui_win);
-            unregister_app(ri);
-            wm_invalidate_bg();
+        wm_window_t *fw = (fid >= 0) ? wm_get_window(fid) : NULL;
+        if (fw && fw->close_requested) {
+            int ri = find_running_app_by_wm(fid);
+            if (ri >= 0) {
+                DBG("desktop_idle_terminal: close_requested on wm_id=%d (running_app %d)", fid, ri);
+                fw->close_requested = 0;
+                if (running_apps[ri].is_terminal) {
+                    terminal_close_pending = 1;
+                    keyboard_request_force_exit();
+                } else {
+                    if (running_apps[ri].on_close && running_apps[ri].ui_win)
+                        running_apps[ri].on_close(running_apps[ri].ui_win);
+                    if (running_apps[ri].ui_win)
+                        ui_window_destroy(running_apps[ri].ui_win);
+                    unregister_app(ri);
+                    wm_invalidate_bg();
+                }
+            }
+            /* else: PE/Win32 window — leave close_requested for its GetMessageA */
         }
     }
 

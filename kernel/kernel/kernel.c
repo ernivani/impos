@@ -24,6 +24,7 @@
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <kernel/clipboard.h>
+#include <kernel/io.h>
 
 #define PROMPT      "$ "
 
@@ -369,6 +370,10 @@ void shell_loop(void) {
 void kernel_main(multiboot_info_t* mbi) {
     gfx_init(mbi);
     terminal_initialize();
+
+    /* Initialize serial debug output */
+    serial_init();
+    DBG("ImposOS booting...");
 
     /* Set up GDT, IDT, PIC, PIT before anything else */
     idt_initialize();

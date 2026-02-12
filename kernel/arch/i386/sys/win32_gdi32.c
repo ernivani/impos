@@ -2,6 +2,7 @@
 #include <kernel/wm.h>
 #include <kernel/gfx.h>
 #include <kernel/task.h>
+#include <kernel/io.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -115,6 +116,16 @@ void win32_gdi_register_hwnd(HWND hwnd, int wm_id) {
         if (hwnd_map[i].hwnd == 0) {
             hwnd_map[i].hwnd = hwnd;
             hwnd_map[i].wm_id = wm_id;
+            return;
+        }
+    }
+}
+
+void win32_gdi_unregister_hwnd(HWND hwnd) {
+    for (int i = 0; i < MAX_HWND_MAP; i++) {
+        if (hwnd_map[i].hwnd == hwnd) {
+            hwnd_map[i].hwnd = 0;
+            hwnd_map[i].wm_id = 0;
             return;
         }
     }

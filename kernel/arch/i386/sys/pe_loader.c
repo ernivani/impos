@@ -4,6 +4,7 @@
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <kernel/task.h>
+#include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -146,27 +147,36 @@ static const win32_dll_shim_t *shim_table[] = {
     NULL
 };
 
-void *win32_resolve_import(const char *dll_name, const char *func_name) {
-    /* Case-insensitive DLL name match */
-    for (int d = 0; shim_table[d] != NULL; d++) {
-        const win32_dll_shim_t *dll = shim_table[d];
-        /* Simple case-insensitive compare */
-        const char *a = dll->dll_name;
-        const char *b = dll_name;
-        int match = 1;
-        while (*a && *b) {
-            char ca = *a, cb = *b;
-            if (ca >= 'A' && ca <= 'Z') ca += 32;
-            if (cb >= 'A' && cb <= 'Z') cb += 32;
-            if (ca != cb) { match = 0; break; }
-            a++; b++;
-        }
-        if (!match || *a != *b) continue;
+static int dll_name_match(const char *a, const char *b) {
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return *a == *b;
+}
 
-        /* Found DLL — search exports */
-        for (int e = 0; e < dll->num_exports; e++) {
-            if (strcmp(dll->exports[e].name, func_name) == 0)
-                return dll->exports[e].func;
+void *win32_resolve_import(const char *dll_name, const char *func_name) {
+    /* First: try the specific DLL requested */
+    for (int d = 0; shim_table[d] != NULL; d++) {
+        if (!dll_name_match(shim_table[d]->dll_name, dll_name))
+            continue;
+        for (int e = 0; e < shim_table[d]->num_exports; e++) {
+            if (strcmp(shim_table[d]->exports[e].name, func_name) == 0)
+                return shim_table[d]->exports[e].func;
+        }
+    }
+    /* Fallback: some Win32 functions live in a different DLL than expected
+     * (e.g. BeginPaint/EndPaint/FillRect are user32 on Windows but we
+     *  implement them in gdi32). Search all DLLs as a fallback. */
+    for (int d = 0; shim_table[d] != NULL; d++) {
+        if (dll_name_match(shim_table[d]->dll_name, dll_name))
+            continue;  /* already searched */
+        for (int e = 0; e < shim_table[d]->num_exports; e++) {
+            if (strcmp(shim_table[d]->exports[e].name, func_name) == 0)
+                return shim_table[d]->exports[e].func;
         }
     }
     return NULL;
@@ -290,12 +300,28 @@ typedef struct {
 static pe_exec_ctx_t exec_ctx;  /* single-instance for now */
 
 static void pe_thread_entry(void) {
-    typedef int (*pe_main_t)(void);
-    pe_main_t entry = (pe_main_t)exec_ctx.entry_point;
+    int ret;
 
-    int ret = entry();
+    DBG("pe_thread_entry: subsystem=%u entry=0x%x tid=%d",
+        exec_ctx.subsystem, exec_ctx.entry_point, task_get_current());
+
+    if (exec_ctx.subsystem == PE_SUBSYSTEM_WINDOWS_GUI) {
+        typedef int (__attribute__((stdcall)) *pe_winmain_t)(
+            uint32_t hInstance, uint32_t hPrevInstance,
+            char *lpCmdLine, int nCmdShow);
+        pe_winmain_t entry = (pe_winmain_t)exec_ctx.entry_point;
+        static char empty_cmdline[] = "";
+        DBG("pe_thread_entry: calling WinMain at 0x%x", exec_ctx.entry_point);
+        ret = entry(0x00400000, 0, empty_cmdline, 5 /* SW_SHOW */);
+    } else {
+        typedef int (*pe_main_t)(void);
+        pe_main_t entry = (pe_main_t)exec_ctx.entry_point;
+        DBG("pe_thread_entry: calling main at 0x%x", exec_ctx.entry_point);
+        ret = entry();
+    }
+
+    DBG("pe_thread_entry: entry returned %d, calling task_exit()", ret);
     (void)ret;
-
     task_exit();
 }
 

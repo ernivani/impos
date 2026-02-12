@@ -7,6 +7,7 @@
 #include <kernel/ui_theme.h>
 #include <kernel/tty.h>
 #include <kernel/task.h>
+#include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1117,7 +1118,8 @@ void wm_mouse_idle(void) {
             wm_focus_window(w->id);
 
             if (hit_close_button(w, mx, my)) {
-                close_requested = 1;
+                DBG("WM: close button clicked on wm_id=%d title='%s'", w->id, w->title);
+                w->close_requested = 1;
                 return;
             }
             if (hit_minimize_button(w, mx, my)) {
