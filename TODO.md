@@ -60,13 +60,13 @@ _Chromium reads configs, caches, temp files, and needs directory enumeration._
 
 ### Phase 4: Process Creation
 _Chromium is multi-process: browser, renderer, GPU, utility, crashpad._
-- [ ] CreateProcessA — spawn child .exe with inherited handles, command line, environment
-- [ ] GetExitCodeProcess / TerminateProcess
-- [ ] WaitForSingleObject on process handle
+- [x] CreateProcessA — spawn child .exe with inherited handles, command line, environment
+- [x] GetExitCodeProcess / TerminateProcess
+- [x] WaitForSingleObject on process handle
 - [ ] Per-process address spaces — each PE gets its own page directory, COW or full copy
-- [ ] Inter-process pipe bridging — child stdout/stderr → parent via anonymous pipes
-- [ ] DuplicateHandle — share handles between processes
-- [ ] GetCurrentProcess / OpenProcess
+- [x] Inter-process pipe bridging — child stdout/stderr → parent via anonymous pipes
+- [x] DuplicateHandle — share handles between processes
+- [x] GetCurrentProcess / OpenProcess
 
 ### Phase 5: DLL Loading
 _Chromium loads 50+ DLLs. Need real DLL file loading, not just hardcoded shim tables._
