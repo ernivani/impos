@@ -155,8 +155,6 @@ static HWND WINAPI shim_CreateWindowExA(
 
     DBG("CreateWindowExA: '%s' → HWND=%u, WM_ID=%d, TID=%d",
         win->title, win->hwnd, win->wm_id, tid);
-    printf("[user32] CreateWindowExA: '%s' → HWND=%u, WM_ID=%d (%dx%d)\n",
-           win->title, win->hwnd, win->wm_id, nWidth, nHeight);
 
     /* Send WM_CREATE */
     if (win->wnd_proc)

@@ -46,14 +46,14 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
     size_t file_size;
     uint8_t *file_data = read_file_to_buffer(filename, &file_size);
     if (!file_data) {
-        printf("[PE] Failed to read file '%s'\n", filename);
+        printf("pe: cannot load '%s'\n", filename);
         return -1;
     }
 
     /* Parse DOS header */
     pe_dos_header_t *dos = (pe_dos_header_t *)file_data;
     if (file_size < sizeof(pe_dos_header_t) || dos->e_magic != PE_DOS_MAGIC) {
-        printf("[PE] Invalid DOS header\n");
+        printf("pe: invalid DOS header\n");
         free(file_data);
         return -2;
     }
@@ -61,7 +61,7 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
     /* Parse PE signature */
     uint32_t *pe_sig = (uint32_t *)(file_data + dos->e_lfanew);
     if (*pe_sig != PE_SIGNATURE) {
-        printf("[PE] Invalid PE signature\n");
+        printf("pe: invalid PE signature\n");
         free(file_data);
         return -3;
     }
@@ -69,7 +69,7 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
     /* Parse COFF + Optional headers */
     pe_coff_header_t *coff = (pe_coff_header_t *)(file_data + dos->e_lfanew + 4);
     if (coff->machine != PE_MACHINE_I386 || !(coff->characteristics & PE_CHAR_EXECUTABLE)) {
-        printf("[PE] Not an i386 executable\n");
+        printf("pe: not an i386 executable\n");
         free(file_data);
         return -4;
     }
@@ -77,7 +77,7 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
     pe_optional_header_t *opt = (pe_optional_header_t *)(
         file_data + dos->e_lfanew + 4 + sizeof(pe_coff_header_t));
     if (opt->magic != PE32_MAGIC) {
-        printf("[PE] Not PE32 format\n");
+        printf("pe: not PE32 format\n");
         free(file_data);
         return -5;
     }
@@ -85,6 +85,9 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
     /* Map image into memory */
     uint32_t image_size = align_up(opt->image_size, 4096);
     uint32_t load_base = pe_next_load_addr;
+
+    DBG("pe_load: '%s' file_size=%u image_size=0x%x load_base=0x%x preferred=0x%x",
+        filename, (unsigned)file_size, image_size, load_base, opt->image_base);
 
     memset((void *)load_base, 0, image_size);
 
@@ -104,6 +107,8 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
             copy_size = file_size - sec->raw_data_offset;
         if (copy_size > 0 && sec->raw_data_offset > 0)
             memcpy((void *)dest, file_data + sec->raw_data_offset, copy_size);
+        DBG("pe_load: section %d → va=0x%x raw_sz=0x%x dest=0x%x",
+            i, sec->virtual_address, copy_size, dest);
     }
 
     /* Fill output structure */
@@ -124,10 +129,8 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
     }
     pe_next_load_addr = align_up(load_base + image_size, 4096);
 
-    printf("[PE] Loaded '%s' at 0x%08x (entry=0x%08x, %s)\n",
-           filename, load_base, out->entry_point,
-           out->subsystem == PE_SUBSYSTEM_WINDOWS_GUI ? "GUI" :
-           out->subsystem == PE_SUBSYSTEM_WINDOWS_CUI ? "Console" : "Unknown");
+    DBG("pe_load: entry=0x%x subsystem=%u import_rva=0x%x reloc_rva=0x%x",
+        out->entry_point, out->subsystem, out->import_dir_rva, out->reloc_dir_rva);
 
     free(file_data);
     return 0;
@@ -184,7 +187,7 @@ void *win32_resolve_import(const char *dll_name, const char *func_name) {
 
 int pe_resolve_imports(pe_loaded_image_t *img) {
     if (img->import_dir_rva == 0 || img->import_dir_size == 0) {
-        printf("[PE] No import directory\n");
+        DBG("pe_resolve_imports: no import directory");
         return 0;  /* No imports — that's OK */
     }
 
@@ -196,7 +199,7 @@ int pe_resolve_imports(pe_loaded_image_t *img) {
     /* Iterate import descriptors (null-terminated) */
     while (imp->name_rva != 0) {
         const char *dll_name = (const char *)(img->image_base + imp->name_rva);
-        printf("[PE] Importing from '%s'\n", dll_name);
+        DBG("pe_resolve_imports: importing from '%s'", dll_name);
 
         /* Walk the import lookup table (ILT) and patch the IAT */
         uint32_t *ilt = (uint32_t *)(img->image_base +
@@ -208,14 +211,11 @@ int pe_resolve_imports(pe_loaded_image_t *img) {
             uint32_t ordinal = 0;
 
             if (ilt[i] & PE_IMPORT_ORDINAL_FLAG) {
-                /* Import by ordinal — we'll try to map common ones */
                 ordinal = ilt[i] & 0xFFFF;
-                /* We don't support ordinal imports well, log and skip */
-                printf("[PE]   Ordinal #%u — not supported\n", ordinal);
+                DBG("pe_resolve_imports: ordinal #%u not supported", ordinal);
                 unresolved++;
                 continue;
             } else {
-                /* Import by name */
                 pe_import_hint_name_t *hint = (pe_import_hint_name_t *)(
                     img->image_base + (ilt[i] & 0x7FFFFFFF));
                 func_name = hint->name;
@@ -224,10 +224,10 @@ int pe_resolve_imports(pe_loaded_image_t *img) {
             void *shim_func = win32_resolve_import(dll_name, func_name);
             if (shim_func) {
                 iat[i] = (uint32_t)shim_func;
+                DBG("pe_resolve_imports:   %s → 0x%x", func_name, (unsigned)shim_func);
                 resolved++;
             } else {
-                printf("[PE]   UNRESOLVED: %s!%s\n", dll_name, func_name);
-                /* Patch with a stub that prints the function name and returns 0 */
+                printf("pe: unresolved import %s!%s\n", dll_name, func_name);
                 iat[i] = 0;
                 unresolved++;
             }
@@ -236,7 +236,7 @@ int pe_resolve_imports(pe_loaded_image_t *img) {
         imp++;
     }
 
-    printf("[PE] Imports: %d resolved, %d unresolved\n", resolved, unresolved);
+    DBG("pe_resolve_imports: %d resolved, %d unresolved", resolved, unresolved);
     return 0;
 }
 
@@ -245,7 +245,7 @@ int pe_resolve_imports(pe_loaded_image_t *img) {
 int pe_apply_relocations(pe_loaded_image_t *img) {
     if (img->reloc_dir_rva == 0 || img->reloc_dir_size == 0) {
         if (img->image_base != img->preferred_base) {
-            printf("[PE] WARNING: No relocations but loaded at different base!\n");
+            printf("pe: no relocations but loaded at different base\n");
             return -1;
         }
         return 0;
@@ -254,7 +254,7 @@ int pe_apply_relocations(pe_loaded_image_t *img) {
     int32_t delta = (int32_t)(img->image_base - img->preferred_base);
     if (delta == 0) return 0;  /* No fixup needed */
 
-    printf("[PE] Applying relocations (delta=0x%x)\n", delta);
+    DBG("pe_apply_relocations: delta=0x%x", delta);
 
     uint8_t *reloc = (uint8_t *)(img->image_base + img->reloc_dir_rva);
     uint8_t *reloc_end = reloc + img->reloc_dir_size;
@@ -285,7 +285,7 @@ int pe_apply_relocations(pe_loaded_image_t *img) {
         reloc += block->block_size;
     }
 
-    printf("[PE] Applied %d relocations\n", count);
+    DBG("pe_apply_relocations: applied %d relocations", count);
     return 0;
 }
 
@@ -335,11 +335,11 @@ int pe_execute(pe_loaded_image_t *img, const char *name) {
 
     int tid = task_create_thread(task_name, pe_thread_entry, 1 /* killable */);
     if (tid < 0) {
-        printf("[PE] Failed to create thread\n");
+        printf("pe: failed to create thread\n");
         return -1;
     }
 
-    printf("[PE] Started '%s' as task %d\n", task_name, tid);
+    DBG("pe_execute: started '%s' as task %d", task_name, tid);
     return tid;
 }
 
