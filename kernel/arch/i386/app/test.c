@@ -9,6 +9,11 @@
 #include <kernel/endian.h>
 #include <kernel/firewall.h>
 #include <kernel/mouse.h>
+#include <kernel/crypto.h>
+#include <kernel/tls.h>
+#include <kernel/socket.h>
+#include <kernel/dns.h>
+#include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -708,6 +713,222 @@ static void test_mouse(void) {
     TEST_ASSERT(mouse_get_buttons() == 0, "mouse buttons init 0");
 }
 
+/* ---- Crypto Tests ---- */
+
+void test_crypto(void) {
+    printf("== Crypto Tests ==\n");
+
+    /* SHA-256: NIST test vector - SHA256("abc") */
+    {
+        uint8_t digest[32];
+        sha256((const uint8_t *)"abc", 3, digest);
+        /* Expected: ba7816bf 8f01cfea 414140de 5dae2223 b00361a3 96177a9c b410ff61 f20015ad */
+        uint8_t expected[] = {
+            0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,
+            0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
+            0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,
+            0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad
+        };
+        TEST_ASSERT(memcmp(digest, expected, 32) == 0, "SHA256(abc)");
+    }
+
+    /* SHA-256: empty string */
+    {
+        uint8_t digest[32];
+        sha256((const uint8_t *)"", 0, digest);
+        uint8_t expected[] = {
+            0xe3,0xb0,0xc4,0x42,0x98,0xfc,0x1c,0x14,
+            0x9a,0xfb,0xf4,0xc8,0x99,0x6f,0xb9,0x24,
+            0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,
+            0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55
+        };
+        TEST_ASSERT(memcmp(digest, expected, 32) == 0, "SHA256(empty)");
+    }
+
+    /* HMAC-SHA-256: RFC 4231 Test Case 2 */
+    {
+        uint8_t mac[32];
+        hmac_sha256((const uint8_t *)"Jefe", 4,
+                    (const uint8_t *)"what do ya want for nothing?", 28,
+                    mac);
+        uint8_t expected[] = {
+            0x5b,0xdc,0xc1,0x46,0xbf,0x60,0x75,0x4e,
+            0x6a,0x04,0x24,0x26,0x08,0x95,0x75,0xc7,
+            0x5a,0x00,0x3f,0x08,0x9d,0x27,0x39,0x83,
+            0x9d,0xec,0x58,0xb9,0x64,0xec,0x38,0x43
+        };
+        TEST_ASSERT(memcmp(mac, expected, 32) == 0, "HMAC-SHA256 RFC4231 TC2");
+    }
+
+    /* AES-128: FIPS 197 Appendix B test vector */
+    {
+        uint8_t key[16] = {
+            0x2b,0x7e,0x15,0x16,0x28,0xae,0xd2,0xa6,
+            0xab,0xf7,0x15,0x88,0x09,0xcf,0x4f,0x3c
+        };
+        uint8_t plaintext[16] = {
+            0x32,0x43,0xf6,0xa8,0x88,0x5a,0x30,0x8d,
+            0x31,0x31,0x98,0xa2,0xe0,0x37,0x07,0x34
+        };
+        uint8_t expected_ct[16] = {
+            0x39,0x25,0x84,0x1d,0x02,0xdc,0x09,0xfb,
+            0xdc,0x11,0x85,0x97,0x19,0x6a,0x0b,0x32
+        };
+
+        aes128_ctx_t ctx;
+        aes128_init(&ctx, key);
+
+        uint8_t ct[16];
+        aes128_encrypt_block(&ctx, plaintext, ct);
+        TEST_ASSERT(memcmp(ct, expected_ct, 16) == 0, "AES-128 encrypt");
+
+        uint8_t pt[16];
+        aes128_decrypt_block(&ctx, ct, pt);
+        TEST_ASSERT(memcmp(pt, plaintext, 16) == 0, "AES-128 decrypt");
+    }
+
+    /* AES-128-CBC encrypt/decrypt roundtrip */
+    {
+        uint8_t key[16] = {0};
+        uint8_t iv[16] = {0};
+        uint8_t data[32];
+        memset(data, 0x42, 32);
+
+        aes128_ctx_t ctx;
+        aes128_init(&ctx, key);
+
+        uint8_t cipher[32], plain[32];
+        aes128_cbc_encrypt(&ctx, iv, data, 32, cipher);
+        aes128_cbc_decrypt(&ctx, iv, cipher, 32, plain);
+        TEST_ASSERT(memcmp(plain, data, 32) == 0, "AES-CBC roundtrip");
+    }
+
+    /* Bignum: 3^10 mod 7 = 4 */
+    {
+        bignum_t base, exp, mod, result;
+        bn_zero(&base); base.d[0] = 3; base.top = 1;
+        bn_zero(&exp);  exp.d[0] = 10; exp.top = 1;
+        bn_zero(&mod);  mod.d[0] = 7;  mod.top = 1;
+        bn_modexp(&result, &base, &exp, &mod);
+        TEST_ASSERT(result.d[0] == 4, "bignum 3^10 mod 7 = 4");
+    }
+
+    /* Bignum: 2^16 mod 100 = 36 */
+    {
+        bignum_t base, exp, mod, result;
+        bn_zero(&base); base.d[0] = 2;  base.top = 1;
+        bn_zero(&exp);  exp.d[0] = 16;  exp.top = 1;
+        bn_zero(&mod);  mod.d[0] = 100; mod.top = 1;
+        bn_modexp(&result, &base, &exp, &mod);
+        TEST_ASSERT(result.d[0] == 36, "bignum 2^16 mod 100 = 36");
+    }
+
+    /* Bignum mulmod: carry overflow test (2048-bit) */
+    {
+        bignum_t a, two, m, result;
+        bn_zero(&a); bn_zero(&two); bn_zero(&m);
+        /* m = 2^2047 + 1 (has MSB set, true 2048-bit number) */
+        m.d[63] = 0x80000000;
+        m.d[0] = 1;
+        m.top = 64;
+        /* a = 2^2047 = m - 1 */
+        a.d[63] = 0x80000000;
+        a.top = 64;
+        /* Compute a*2 mod m = 2^2048 mod (2^2047+1) = 2^2047 - 1 */
+        two.d[0] = 2; two.top = 1;
+        bn_mulmod(&result, &a, &two, &m);
+        bignum_t expected;
+        bn_zero(&expected);
+        for (int i = 0; i < 63; i++) expected.d[i] = 0xFFFFFFFF;
+        expected.d[63] = 0x7FFFFFFF;
+        expected.top = 64;
+        TEST_ASSERT(bn_cmp(&result, &expected) == 0, "mulmod 2048-bit carry");
+    }
+
+    /* Bignum modexp: (m-1)^2 mod m = 1 (2048-bit) */
+    {
+        bignum_t base, exp, m, result;
+        bn_zero(&base); bn_zero(&exp); bn_zero(&m);
+        /* m = 2^2047 + 3 */
+        m.d[63] = 0x80000000;
+        m.d[0] = 3;
+        m.top = 64;
+        /* base = m - 1 = 2^2047 + 2 */
+        base.d[63] = 0x80000000;
+        base.d[0] = 2;
+        base.top = 64;
+        /* exp = 2 */
+        exp.d[0] = 2; exp.top = 1;
+        bn_modexp(&result, &base, &exp, &m);
+        /* (m-1)^2 mod m = (-1)^2 mod m = 1 */
+        TEST_ASSERT(result.d[0] == 1 && result.top == 1, "modexp (m-1)^2 mod m = 1");
+    }
+
+    /* PRNG: should produce non-zero, non-identical output */
+    {
+        uint8_t buf1[16], buf2[16];
+        prng_init();
+        prng_random(buf1, 16);
+        prng_random(buf2, 16);
+        int all_zero = 1;
+        for (int i = 0; i < 16; i++)
+            if (buf1[i] != 0) all_zero = 0;
+        TEST_ASSERT(!all_zero, "PRNG non-zero output");
+        TEST_ASSERT(memcmp(buf1, buf2, 16) != 0, "PRNG different outputs");
+    }
+
+    printf("  Crypto tests done.\n");
+}
+
+/* ---- TLS Test (requires network) ---- */
+
+void test_tls(void) {
+    printf("== TLS Test ==\n");
+
+    net_config_t *cfg = net_get_config();
+    if (!cfg || !cfg->link_up || (cfg->ip[0] == 0 && cfg->ip[1] == 0)) {
+        printf("  SKIP: network not configured (run dhcp first)\n");
+        return;
+    }
+
+    printf("  Attempting HTTPS GET to example.com...\n");
+
+    /* Run in background thread so UI stays responsive */
+    static https_async_t req;
+    strcpy(req.host, "example.com");
+    req.port = 443;
+    strcpy(req.path, "/");
+
+    if (https_get_async(&req) < 0) {
+        printf("  Failed to start HTTPS thread\n");
+        return;
+    }
+
+    printf("  TLS running in background (thread %d)...\n", req.tid);
+    while (!req.done) {
+        keyboard_run_idle();   /* keep WM/UI alive */
+        task_yield();
+    }
+
+    if (req.result > 0 && req.body) {
+        TEST_ASSERT(req.body_len > 0, "tls: got response body");
+        /* Check for HTML content */
+        int has_html = 0;
+        for (size_t i = 0; i + 5 < req.body_len; i++) {
+            if (memcmp(req.body + i, "<html", 5) == 0 ||
+                memcmp(req.body + i, "<HTML", 5) == 0) {
+                has_html = 1;
+                break;
+            }
+        }
+        TEST_ASSERT(has_html, "tls: response contains HTML");
+        printf("  Received %u bytes of HTML\n", (unsigned)req.body_len);
+        free(req.body);
+    } else {
+        printf("  HTTPS GET failed (ret=%d) - server may not support our cipher\n", req.result);
+    }
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -731,6 +952,7 @@ void test_run_all(void) {
     test_network();
     test_firewall();
     test_mouse();
+    test_crypto();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

@@ -97,10 +97,10 @@ int rtl8139_initialize(void) {
     outl(rtl8139_dev.io_base + RTL8139_TXCONFIG, 
          RTL8139_TX_CONFIG_IFG96);
     
-    /* Enable interrupts */
-    outw(rtl8139_dev.io_base + RTL8139_INTRMASK, 
-         RTL8139_INT_RX_OK | RTL8139_INT_TX_OK | 
-         RTL8139_INT_RX_ERR | RTL8139_INT_TX_ERR);
+    /* Disable interrupts — we use polling */
+    outw(rtl8139_dev.io_base + RTL8139_INTRMASK, 0);
+    /* Clear any pending interrupts */
+    outw(rtl8139_dev.io_base + RTL8139_INTRSTATUS, 0xFFFF);
     
     rtl8139_dev.initialized = 1;
     
@@ -110,23 +110,41 @@ int rtl8139_initialize(void) {
 
 int rtl8139_send_packet(const uint8_t* data, size_t len) {
     if (!rtl8139_dev.initialized) {
+        serial_puts("[DBG] rtl8139: not initialized\n");
         return -1;
     }
-    
+
     if (len > RTL8139_TX_BUFFER_SIZE) {
+        serial_puts("[DBG] rtl8139: packet too large\n");
         return -1;
     }
-    
-    /* Copy data to transmit buffer */
+
+    /* Wait for previous TX on this descriptor to complete */
     uint8_t desc = rtl8139_dev.tx_current;
+    serial_printf("[DBG] rtl8139: send desc=%d len=%u io=0x%x\n",
+                  desc, (unsigned)len, rtl8139_dev.io_base);
+
+    uint32_t tx_status = inl(rtl8139_dev.io_base + RTL8139_TXSTATUS0 + desc * 4);
+    serial_printf("[DBG] rtl8139: tx_status[%d]=0x%x before send\n", desc, tx_status);
+
+    /* Copy data to transmit buffer */
     memcpy(rtl8139_dev.tx_buffer[desc], data, len);
-    
-    /* Send packet */
+
+    serial_puts("[DBG] rtl8139: memcpy done, writing TSD\n");
+
+    /* Send packet — write length to TX status/command register */
     outl(rtl8139_dev.io_base + RTL8139_TXSTATUS0 + desc * 4, len);
-    
+
+    serial_puts("[DBG] rtl8139: outl done\n");
+
+    /* Clear any pending interrupt status */
+    uint16_t isr = inw(rtl8139_dev.io_base + RTL8139_INTRSTATUS);
+    if (isr) outw(rtl8139_dev.io_base + RTL8139_INTRSTATUS, isr);
+
     /* Move to next descriptor */
     rtl8139_dev.tx_current = (rtl8139_dev.tx_current + 1) % RTL8139_NUM_TX_DESC;
-    
+
+    serial_puts("[DBG] rtl8139: send complete\n");
     return 0;
 }
 

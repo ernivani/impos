@@ -24,6 +24,7 @@
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <kernel/clipboard.h>
+#include <kernel/crypto.h>
 #include <kernel/io.h>
 
 #define PROMPT      "$ "
@@ -390,6 +391,9 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Initialize UI theme */
     ui_theme_init();
+
+    /* Initialize CSPRNG (needs PIT + RTC + RDTSC) */
+    prng_init();
 
     /* Initialize PS/2 mouse and firewall */
     mouse_initialize();
