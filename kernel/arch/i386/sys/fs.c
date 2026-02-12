@@ -2,6 +2,7 @@
 #include <kernel/ata.h>
 #include <kernel/user.h>
 #include <kernel/group.h>
+#include <kernel/rtc.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -471,6 +472,12 @@ int fs_create_file(const char* filename, uint8_t is_directory) {
     inodes[idx].owner_uid = user_get_current_uid();
     inodes[idx].owner_gid = user_get_current_gid();
 
+    /* Set timestamps */
+    uint32_t now = rtc_get_epoch();
+    inodes[idx].created_at = now;
+    inodes[idx].modified_at = now;
+    inodes[idx].accessed_at = now;
+
     if (dir_add_entry(parent, name, idx) < 0) {
         /* clean up allocated blocks */
         for (uint8_t b = 0; b < inodes[idx].num_blocks; b++)
@@ -554,6 +561,7 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
     }
 
     inode->size = size;
+    inode->modified_at = rtc_get_epoch();
     fs_dirty = 1;
 
     /* Auto-sync if disk available */
@@ -610,6 +618,7 @@ int fs_read_file(const char* filename, uint8_t* buffer, size_t* size) {
     }
 
     *size = inode->size;
+    inode->accessed_at = rtc_get_epoch();
     fs_rd_ops++;
     fs_rd_bytes += (uint32_t)(*size);
     return 0;
@@ -699,7 +708,9 @@ static void print_long_entry(const char* name, uint32_t ino) {
     user_t* u = user_get_by_uid(node->owner_uid);
     if (u) owner = u->username;
 
-    printf("%s  %s  %d  %s", perm, owner, (int)node->size, name);
+    char timebuf[16];
+    rtc_format_epoch(node->modified_at, timebuf, sizeof(timebuf));
+    printf("%s  %s  %5d  %s  %s", perm, owner, (int)node->size, timebuf, name);
 
     /* Print symlink target */
     if (node->type == INODE_SYMLINK && node->num_blocks > 0) {
@@ -759,9 +770,11 @@ int fs_enumerate_directory(fs_dir_entry_info_t *out, int max, int show_dot) {
             if (ino < NUM_INODES) {
                 out[count].type = inodes[ino].type;
                 out[count].size = inodes[ino].size;
+                out[count].modified_at = inodes[ino].modified_at;
             } else {
                 out[count].type = 0;
                 out[count].size = 0;
+                out[count].modified_at = 0;
             }
             count++;
         }

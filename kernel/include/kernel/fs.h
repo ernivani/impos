@@ -50,6 +50,9 @@ typedef struct __attribute__((packed)) {
     uint32_t blocks[DIRECT_BLOCKS];
     uint8_t  num_blocks;
     uint32_t indirect_block; /* single-indirect block pointer, 0 = none */
+    uint32_t created_at;    /* epoch: seconds since 2000-01-01 */
+    uint32_t modified_at;
+    uint32_t accessed_at;
 } inode_t;
 
 typedef struct {
@@ -91,6 +94,7 @@ typedef struct {
     uint8_t  type;       /* INODE_FILE, INODE_DIR, etc */
     uint32_t size;
     uint32_t inode;
+    uint32_t modified_at; /* epoch: seconds since 2000-01-01 */
 } fs_dir_entry_info_t;
 
 int fs_enumerate_directory(fs_dir_entry_info_t *out, int max, int show_dot);

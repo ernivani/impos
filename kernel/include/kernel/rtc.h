@@ -24,6 +24,12 @@ int rtc_ntp_sync(void);
 /* Get a monotonic timestamp (seconds since 2000-01-01) */
 uint32_t rtc_get_epoch(void);
 
+/* Convert epoch back to datetime */
+void epoch_to_datetime(uint32_t epoch, datetime_t *dt);
+
+/* Format epoch as "Mon DD HH:MM" into buf (at least 13 bytes) */
+void rtc_format_epoch(uint32_t epoch, char *buf, int bufsize);
+
 /* Get timezone database (returns pointer, sets *count) */
 const tz_entry_t *rtc_get_tz_db(int *count);
 

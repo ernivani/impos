@@ -1,16 +1,15 @@
 # ImposOS — Missing Features TODO
 
 ## Tier 1 — High Impact & Visual
-- [ ] Clipboard (copy/paste) — Ctrl+C/V system-wide
-- [ ] Right-click context menus — desktop, file manager, everywhere
-- [ ] Desktop icons — files/folders/shortcuts on desktop background
-- [ ] Alt-Tab visual switcher — overlay showing open windows
-- [ ] Window animations — minimize/maximize/open transitions
-- [ ] Notifications/toasts — system-wide popup messages
-- [ ] Tab completion in shell — filenames and commands
-- [ ] File timestamps — created/modified times in inode
-- [ ] Sound driver (PC speaker or AC97) — beeps, startup sound
-- [ ] RTC (real-time clock) — read time from CMOS, persist across reboots
+- [x] Clipboard (copy/paste) — Ctrl+C/V system-wide
+- [x] Right-click context menus — desktop, file manager, everywhere
+- [x] Desktop icons — files/folders/shortcuts on desktop background
+- [x] Alt-Tab visual switcher — Ctrl+Tab overlay showing open windows
+- [x] Notifications/toasts — system-wide popup messages with swipe-to-dismiss
+- [x] Tab completion in shell — filenames and commands
+- [x] File timestamps — created/modified/accessed times in inode, shown in ls -l
+- [x] Sound driver (PC speaker) — beeps
+- [x] RTC (real-time clock) — read time from CMOS, persist across reboots
 
 ## Tier 2 — Functional Gaps
 - [ ] Shell output redirection (>, >>)

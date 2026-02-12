@@ -248,7 +248,7 @@ static uint32_t datetime_to_epoch(const datetime_t *dt) {
 }
 
 /* Convert epoch (seconds since 2000-01-01) back to datetime */
-static void epoch_to_datetime(uint32_t epoch, datetime_t *dt) {
+void epoch_to_datetime(uint32_t epoch, datetime_t *dt) {
     uint32_t days = epoch / 86400;
     uint32_t rem  = epoch % 86400;
     dt->hour   = rem / 3600;
@@ -277,6 +277,22 @@ static void epoch_to_datetime(uint32_t epoch, datetime_t *dt) {
     }
     dt->month = month + 1;
     dt->day   = days + 1;
+}
+
+void rtc_format_epoch(uint32_t epoch, char *buf, int bufsize) {
+    static const char *months[] = {
+        "Jan","Feb","Mar","Apr","May","Jun",
+        "Jul","Aug","Sep","Oct","Nov","Dec"
+    };
+    if (epoch == 0) {
+        snprintf(buf, bufsize, "           -");
+        return;
+    }
+    datetime_t dt;
+    epoch_to_datetime(epoch, &dt);
+    int mi = dt.month >= 1 && dt.month <= 12 ? dt.month - 1 : 0;
+    snprintf(buf, bufsize, "%s %2d %02d:%02d",
+             months[mi], dt.day, dt.hour, dt.minute);
 }
 
 void rtc_init(void) {
