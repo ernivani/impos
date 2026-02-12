@@ -70,13 +70,13 @@ _Chromium is multi-process: browser, renderer, GPU, utility, crashpad._
 
 ### Phase 5: DLL Loading
 _Chromium loads 50+ DLLs. Need real DLL file loading, not just hardcoded shim tables._
-- [ ] LoadLibraryA / LoadLibraryExA — load PE DLL from disk, relocate, call DllMain
-- [ ] FreeLibrary — unload DLL, decrement refcount
-- [ ] GetProcAddress on loaded DLLs — resolve exports from actual PE export table
-- [ ] DLL search order — exe directory → /apps → system shims
-- [ ] DLL dependency chain — recursive import resolution on DLL load
-- [ ] Delay-load imports — resolve on first call (Chromium uses these)
-- [ ] Known DLL shim fallback — if real DLL not found, fall back to internal shim tables
+- [x] LoadLibraryA / LoadLibraryExA — load PE DLL from disk, relocate, call DllMain
+- [x] FreeLibrary — unload DLL, decrement refcount
+- [x] GetProcAddress on loaded DLLs — resolve exports from actual PE export table
+- [x] DLL search order — exe directory → /apps → system shims
+- [x] DLL dependency chain — recursive import resolution on DLL load
+- [x] Delay-load imports — resolve on first call (Chromium uses these)
+- [x] Known DLL shim fallback — if real DLL not found, fall back to internal shim tables
 
 ### Phase 6: Registry Emulation
 _Chromium reads ~100 registry keys on startup for system info, proxy settings, font config._

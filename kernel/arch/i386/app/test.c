@@ -1,4 +1,5 @@
 #include <kernel/test.h>
+#include <kernel/win32_types.h>
 #include <kernel/fs.h>
 #include <kernel/user.h>
 #include <kernel/group.h>
@@ -929,6 +930,95 @@ void test_tls(void) {
     }
 }
 
+/* ---- Win32 DLL Loading Tests ---- */
+
+static void test_win32_dll(void) {
+    printf("== Win32 DLL Loading Tests ==\n");
+
+    /* Resolve LoadLibraryA, GetProcAddress, FreeLibrary via shim tables */
+    typedef uint32_t (__attribute__((stdcall)) *pfn_LoadLibraryA)(const char *);
+    typedef void *   (__attribute__((stdcall)) *pfn_GetProcAddress)(uint32_t, const char *);
+    typedef int      (__attribute__((stdcall)) *pfn_FreeLibrary)(uint32_t);
+
+    pfn_LoadLibraryA  pLoadLibraryA  = (pfn_LoadLibraryA)win32_resolve_import("kernel32.dll", "LoadLibraryA");
+    pfn_GetProcAddress pGetProcAddress = (pfn_GetProcAddress)win32_resolve_import("kernel32.dll", "GetProcAddress");
+    pfn_FreeLibrary   pFreeLibrary   = (pfn_FreeLibrary)win32_resolve_import("kernel32.dll", "FreeLibrary");
+
+    TEST_ASSERT(pLoadLibraryA != NULL,  "dll: LoadLibraryA resolved");
+    TEST_ASSERT(pGetProcAddress != NULL, "dll: GetProcAddress resolved");
+    TEST_ASSERT(pFreeLibrary != NULL,    "dll: FreeLibrary resolved");
+
+    if (!pLoadLibraryA || !pGetProcAddress || !pFreeLibrary) return;
+
+    /* LoadLibraryA("kernel32.dll") should return a non-null shim handle */
+    uint32_t hKernel32 = pLoadLibraryA("kernel32.dll");
+    TEST_ASSERT(hKernel32 != 0, "dll: LoadLibraryA(kernel32.dll) non-null");
+
+    /* GetProcAddress on the loaded handle should find ExitProcess */
+    void *pExitProcess = pGetProcAddress(hKernel32, "ExitProcess");
+    TEST_ASSERT(pExitProcess != NULL, "dll: GetProcAddress(ExitProcess) found");
+
+    /* GetProcAddress should find GetLastError too */
+    void *pGetLastError = pGetProcAddress(hKernel32, "GetLastError");
+    TEST_ASSERT(pGetLastError != NULL, "dll: GetProcAddress(GetLastError) found");
+
+    /* Verify it matches the direct shim resolution */
+    void *pDirect = win32_resolve_import("kernel32.dll", "ExitProcess");
+    TEST_ASSERT(pExitProcess == pDirect, "dll: GetProcAddress matches direct resolve");
+
+    /* LoadLibraryA for a different shim DLL */
+    uint32_t hMsvcrt = pLoadLibraryA("msvcrt.dll");
+    TEST_ASSERT(hMsvcrt != 0, "dll: LoadLibraryA(msvcrt.dll) non-null");
+
+    void *pPrintf = pGetProcAddress(hMsvcrt, "printf");
+    TEST_ASSERT(pPrintf != NULL, "dll: GetProcAddress(printf) from msvcrt");
+
+    /* Loading same DLL twice should bump refcount and return same handle */
+    uint32_t hKernel32_2 = pLoadLibraryA("kernel32.dll");
+    TEST_ASSERT(hKernel32_2 == hKernel32, "dll: repeated LoadLibrary same handle");
+
+    /* Case-insensitive loading */
+    uint32_t hKernel32_upper = pLoadLibraryA("KERNEL32.DLL");
+    TEST_ASSERT(hKernel32_upper == hKernel32, "dll: case-insensitive LoadLibrary");
+
+    /* GetProcAddress for non-existent function should return NULL */
+    void *pBogus = pGetProcAddress(hKernel32, "ThisFunctionDoesNotExist12345");
+    TEST_ASSERT(pBogus == NULL, "dll: GetProcAddress(bogus) returns NULL");
+
+    /* FreeLibrary should succeed */
+    int freed = pFreeLibrary(hKernel32);
+    TEST_ASSERT(freed != 0, "dll: FreeLibrary(kernel32) succeeds");
+
+    /* Free the extra refs */
+    pFreeLibrary(hKernel32);
+    pFreeLibrary(hKernel32);
+    pFreeLibrary(hMsvcrt);
+
+    /* LoadLibraryA with NULL should return 0 */
+    uint32_t hNull = pLoadLibraryA(NULL);
+    TEST_ASSERT(hNull == 0, "dll: LoadLibraryA(NULL) returns 0");
+
+    /* api-ms-win-crt-* should map to ucrtbase/msvcrt shims */
+    uint32_t hApiMs = pLoadLibraryA("api-ms-win-crt-runtime-l1-1-0.dll");
+    TEST_ASSERT(hApiMs != 0, "dll: LoadLibraryA(api-ms-win-crt-*) non-null");
+
+    void *pMalloc = pGetProcAddress(hApiMs, "malloc");
+    TEST_ASSERT(pMalloc != NULL, "dll: GetProcAddress(malloc) from api-ms-win-crt");
+
+    pFreeLibrary(hApiMs);
+
+    /* LoadLibraryExA should also work */
+    typedef uint32_t (__attribute__((stdcall)) *pfn_LoadLibraryExA)(const char *, uint32_t, uint32_t);
+    pfn_LoadLibraryExA pLoadLibraryExA = (pfn_LoadLibraryExA)win32_resolve_import("kernel32.dll", "LoadLibraryExA");
+    TEST_ASSERT(pLoadLibraryExA != NULL, "dll: LoadLibraryExA resolved");
+
+    if (pLoadLibraryExA) {
+        uint32_t hEx = pLoadLibraryExA("user32.dll", 0, 0);
+        TEST_ASSERT(hEx != 0, "dll: LoadLibraryExA(user32.dll) non-null");
+        pFreeLibrary(hEx);
+    }
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -953,6 +1043,7 @@ void test_run_all(void) {
     test_firewall();
     test_mouse();
     test_crypto();
+    test_win32_dll();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

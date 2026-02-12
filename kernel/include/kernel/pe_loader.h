@@ -150,6 +150,21 @@ typedef struct __attribute__((packed)) {
     char     name[];                /* null-terminated function name */
 } pe_import_hint_name_t;
 
+/* ── Export Directory ────────────────────────────────────────── */
+typedef struct __attribute__((packed)) {
+    uint32_t characteristics;
+    uint32_t timestamp;
+    uint16_t major_version;
+    uint16_t minor_version;
+    uint32_t name_rva;
+    uint32_t ordinal_base;
+    uint32_t num_functions;
+    uint32_t num_names;
+    uint32_t addr_table_rva;
+    uint32_t name_table_rva;
+    uint32_t ordinal_table_rva;
+} pe_export_directory_t;
+
 /* ── Base Relocation ─────────────────────────────────────────── */
 typedef struct __attribute__((packed)) {
     uint32_t page_rva;
@@ -177,6 +192,10 @@ typedef struct {
     /* Relocation info */
     uint32_t reloc_dir_rva;
     uint32_t reloc_dir_size;
+
+    /* Export directory info */
+    uint32_t export_dir_rva;
+    uint32_t export_dir_size;
 } pe_loaded_image_t;
 
 /* ── API ─────────────────────────────────────────────────────── */
