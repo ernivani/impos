@@ -48,6 +48,8 @@ typedef struct {
     uint8_t opacity;
     /* Dirty flag for dirty-rect tracking */
     uint8_t dirty;
+    /* Per-window close request (set by close button click) */
+    uint8_t close_requested;
 } wm_window_t;
 
 void wm_initialize(void);
