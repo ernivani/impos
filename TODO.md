@@ -26,15 +26,15 @@
 
 ### Phase 1: Threading & Synchronization
 _Chromium spawns 20+ threads on startup. Nothing complex runs without this._
-- [ ] CreateThread / ExitThread / TerminateThread — map to task_create_thread()
-- [ ] Thread Local Storage — TlsAlloc, TlsFree, TlsGetValue, TlsSetValue
-- [ ] Critical sections — InitializeCriticalSection, EnterCriticalSection, LeaveCriticalSection, DeleteCriticalSection
-- [ ] Events — CreateEventA, SetEvent, ResetEvent, WaitForSingleObject
-- [ ] Mutexes — CreateMutexA, ReleaseMutex, WaitForSingleObject
-- [ ] Semaphores — CreateSemaphoreA, ReleaseSemaphore
-- [ ] WaitForSingleObject / WaitForMultipleObjects — central dispatcher for all sync primitives
-- [ ] Interlocked functions — InterlockedIncrement, InterlockedDecrement, InterlockedExchange, InterlockedCompareExchange
-- [ ] _beginthreadex / _endthreadex (msvcrt wrappers)
+- [x] CreateThread / ExitThread / TerminateThread — map to task_create_thread()
+- [x] Thread Local Storage — TlsAlloc, TlsFree, TlsGetValue, TlsSetValue
+- [x] Critical sections — InitializeCriticalSection, EnterCriticalSection, LeaveCriticalSection, DeleteCriticalSection
+- [x] Events — CreateEventA, SetEvent, ResetEvent, WaitForSingleObject
+- [x] Mutexes — CreateMutexA, ReleaseMutex, WaitForSingleObject
+- [x] Semaphores — CreateSemaphoreA, ReleaseSemaphore
+- [x] WaitForSingleObject / WaitForMultipleObjects — central dispatcher for all sync primitives
+- [x] Interlocked functions — InterlockedIncrement, InterlockedDecrement, InterlockedExchange, InterlockedCompareExchange
+- [x] _beginthreadex / _endthreadex (msvcrt wrappers)
 
 ### Phase 2: Memory Management
 _Chromium uses ~200MB+ and relies on virtual memory protection._

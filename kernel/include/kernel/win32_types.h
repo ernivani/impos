@@ -246,6 +246,42 @@ typedef struct {
 #define MEM_RELEASE   0x8000
 #define PAGE_READWRITE 0x04
 
+/* Wait constants */
+#define WAIT_OBJECT_0   0x00000000
+#define WAIT_TIMEOUT    0x00000102
+#define WAIT_FAILED     0xFFFFFFFF
+#define INFINITE        0xFFFFFFFF
+
+/* Thread creation flags */
+#define CREATE_SUSPENDED 0x00000004
+
+/* Event flags */
+#define EVENT_MODIFY_STATE 0x0002
+
+/* Synchronization */
+typedef struct {
+    volatile LONG LockCount;
+    LONG          RecursionCount;
+    DWORD         OwningThread;
+    DWORD         SpinCount;
+} CRITICAL_SECTION, *LPCRITICAL_SECTION;
+
+/* Security attributes stub */
+typedef struct {
+    DWORD  nLength;
+    LPVOID lpSecurityDescriptor;
+    BOOL   bInheritHandle;
+} SECURITY_ATTRIBUTES, *LPSECURITY_ATTRIBUTES;
+
+/* Thread entry point */
+typedef DWORD (WINAPI *LPTHREAD_START_ROUTINE)(LPVOID);
+
+/* Large integer for QueryPerformanceCounter */
+typedef union {
+    struct { DWORD LowPart; LONG HighPart; } u;
+    int64_t QuadPart;
+} LARGE_INTEGER, *PLARGE_INTEGER;
+
 /* COLORREF */
 typedef DWORD COLORREF;
 #define RGB(r,g,b) ((COLORREF)(((BYTE)(r)|((WORD)((BYTE)(g))<<8))|(((DWORD)(BYTE)(b))<<16)))

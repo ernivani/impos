@@ -160,6 +160,34 @@ static void *shim__crt_at_quick_exit(void *func) { (void)func; return NULL; }
 static int shim_errno_val = 0;
 static int *shim__errno(void) { return &shim_errno_val; }
 
+/* ── Threading (msvcrt wrappers around kernel32) ───────────── */
+
+/* Forward-declare the kernel32 shim functions we need */
+extern HANDLE WINAPI shim_CreateThread(
+    LPVOID lpThreadAttributes, DWORD dwStackSize,
+    LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter,
+    DWORD dwCreationFlags, LPDWORD lpThreadId);
+extern void WINAPI shim_ExitThread(DWORD dwExitCode);
+
+/* _beginthreadex returns a handle (cast to uintptr_t), 0 on failure */
+static unsigned int shim__beginthreadex(
+    void *security, unsigned stack_size,
+    unsigned int (__attribute__((stdcall)) *start_address)(void *),
+    void *arglist, unsigned initflag, unsigned *thrdaddr)
+{
+    DWORD tid = 0;
+    HANDLE h = shim_CreateThread(
+        security, stack_size,
+        (LPTHREAD_START_ROUTINE)start_address,
+        arglist, initflag, &tid);
+    if (thrdaddr) *thrdaddr = tid;
+    return (unsigned int)h;
+}
+
+static void shim__endthreadex(unsigned retval) {
+    shim_ExitThread((DWORD)retval);
+}
+
 /* ── Export Table ─────────────────────────────────────────────── */
 
 static const win32_export_entry_t msvcrt_exports[] = {
@@ -244,6 +272,10 @@ static const win32_export_entry_t msvcrt_exports[] = {
     /* Random */
     { "rand",           (void *)rand },
     { "srand",          (void *)srand },
+
+    /* Threading */
+    { "_beginthreadex", (void *)shim__beginthreadex },
+    { "_endthreadex",   (void *)shim__endthreadex },
 };
 
 const win32_dll_shim_t win32_msvcrt = {
