@@ -224,6 +224,318 @@ static HANDLE WINAPI shim_GetStdHandle(DWORD nStdHandle) {
     }
 }
 
+/* ── Directory Enumeration (FindFirstFile/FindNextFile) ───────── */
+
+#define HTYPE_FINDFILE 11  /* extends handle_type_t */
+#define MAX_PATH 260
+
+typedef struct {
+    DWORD    dwFileAttributes;
+    DWORD    nFileSizeHigh;
+    DWORD    nFileSizeLow;
+    char     cFileName[MAX_PATH];
+    char     cAlternateFileName[14];
+} WIN32_FIND_DATAA;
+
+#define FILE_ATTRIBUTE_NORMAL    0x00000080
+#define FILE_ATTRIBUTE_DIRECTORY 0x00000010
+#define FILE_ATTRIBUTE_ARCHIVE   0x00000020
+#define FILE_ATTRIBUTE_READONLY  0x00000001
+
+static HANDLE WINAPI shim_FindFirstFileA(LPCSTR lpFileName, WIN32_FIND_DATAA *lpFindData) {
+    (void)lpFileName;
+    if (!lpFindData) return INVALID_HANDLE_VALUE;
+
+    /* Use fs_enumerate_directory to get all entries */
+    HANDLE h = alloc_handle((handle_type_t)HTYPE_FINDFILE);
+    if (h == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
+
+    win32_handle_t *wh = get_handle(h);
+
+    /* Allocate buffer for directory listing */
+    fs_dir_entry_info_t *entries = (fs_dir_entry_info_t *)malloc(
+        sizeof(fs_dir_entry_info_t) * 64);
+    if (!entries) { free_handle(h); return INVALID_HANDLE_VALUE; }
+
+    int count = fs_enumerate_directory(entries, 64, 0);
+    if (count <= 0) {
+        free(entries);
+        free_handle(h);
+        last_error = 18;  /* ERROR_NO_MORE_FILES */
+        return INVALID_HANDLE_VALUE;
+    }
+
+    wh->buffer = (uint8_t *)entries;
+    wh->size = (size_t)count;
+    wh->pos = 0;
+
+    /* Fill first result */
+    memset(lpFindData, 0, sizeof(WIN32_FIND_DATAA));
+    strncpy(lpFindData->cFileName, entries[0].name, MAX_PATH - 1);
+    lpFindData->nFileSizeLow = entries[0].size;
+    lpFindData->dwFileAttributes = (entries[0].type == INODE_DIR)
+        ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    wh->pos = 1;
+
+    return h;
+}
+
+static BOOL WINAPI shim_FindNextFileA(HANDLE hFind, WIN32_FIND_DATAA *lpFindData) {
+    win32_handle_t *wh = get_handle(hFind);
+    if (!wh || wh->type != (handle_type_t)HTYPE_FINDFILE || !lpFindData)
+        return FALSE;
+
+    if (wh->pos >= wh->size) {
+        last_error = 18;  /* ERROR_NO_MORE_FILES */
+        return FALSE;
+    }
+
+    fs_dir_entry_info_t *entries = (fs_dir_entry_info_t *)wh->buffer;
+    memset(lpFindData, 0, sizeof(WIN32_FIND_DATAA));
+    strncpy(lpFindData->cFileName, entries[wh->pos].name, MAX_PATH - 1);
+    lpFindData->nFileSizeLow = entries[wh->pos].size;
+    lpFindData->dwFileAttributes = (entries[wh->pos].type == INODE_DIR)
+        ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    wh->pos++;
+
+    return TRUE;
+}
+
+static BOOL WINAPI shim_FindClose(HANDLE hFind) {
+    return shim_CloseHandle(hFind);
+}
+
+/* ── File Attributes & Info ──────────────────────────────────── */
+
+static DWORD WINAPI shim_GetFileAttributesA(LPCSTR lpFileName) {
+    uint8_t tmp[1];
+    size_t sz = 0;
+
+    /* Try reading as file */
+    sz = 1;
+    if (fs_read_file(lpFileName, tmp, &sz) >= 0)
+        return FILE_ATTRIBUTE_NORMAL;
+
+    /* Try as directory — save/restore cwd */
+    uint32_t saved = fs_get_cwd_inode();
+    if (fs_change_directory(lpFileName) >= 0) {
+        fs_change_directory_by_inode(saved);
+        return FILE_ATTRIBUTE_DIRECTORY;
+    }
+    fs_change_directory_by_inode(saved);
+
+    last_error = 2;  /* ERROR_FILE_NOT_FOUND */
+    return (DWORD)-1;  /* INVALID_FILE_ATTRIBUTES */
+}
+
+static DWORD WINAPI shim_GetFileSize(HANDLE hFile, LPDWORD lpFileSizeHigh) {
+    win32_handle_t *wh = get_handle(hFile);
+    if (!wh || wh->type != HTYPE_FILE) return (DWORD)-1;
+    if (lpFileSizeHigh) *lpFileSizeHigh = 0;
+    return (DWORD)wh->size;
+}
+
+static DWORD WINAPI shim_GetFileType(HANDLE hFile) {
+    win32_handle_t *wh = get_handle(hFile);
+    if (!wh) return 0;  /* FILE_TYPE_UNKNOWN */
+    if (wh->type == HTYPE_CONSOLE) return 2;  /* FILE_TYPE_CHAR */
+    if (wh->type == HTYPE_FILE) return 1;     /* FILE_TYPE_DISK */
+    return 0;
+}
+
+/* ── File Pointer (random access) ────────────────────────────── */
+
+#define FILE_BEGIN   0
+#define FILE_CURRENT 1
+#define FILE_END     2
+
+static DWORD WINAPI shim_SetFilePointer(
+    HANDLE hFile, LONG lDistanceToMove, LONG *lpDistHigh, DWORD dwMoveMethod)
+{
+    (void)lpDistHigh;
+    win32_handle_t *wh = get_handle(hFile);
+    if (!wh || wh->type != HTYPE_FILE) return (DWORD)-1;
+
+    long new_pos;
+    switch (dwMoveMethod) {
+        case FILE_BEGIN:   new_pos = lDistanceToMove; break;
+        case FILE_CURRENT: new_pos = (long)wh->pos + lDistanceToMove; break;
+        case FILE_END:     new_pos = (long)wh->size + lDistanceToMove; break;
+        default: return (DWORD)-1;
+    }
+    if (new_pos < 0) new_pos = 0;
+    if ((size_t)new_pos > wh->size) wh->size = (size_t)new_pos;
+    wh->pos = (size_t)new_pos;
+    return (DWORD)wh->pos;
+}
+
+static BOOL WINAPI shim_SetEndOfFile(HANDLE hFile) {
+    win32_handle_t *wh = get_handle(hFile);
+    if (!wh || wh->type != HTYPE_FILE) return FALSE;
+    wh->size = wh->pos;
+    return TRUE;
+}
+
+/* ── Directory Operations ────────────────────────────────────── */
+
+static BOOL WINAPI shim_CreateDirectoryA(LPCSTR lpPathName, LPVOID lpSecAttr) {
+    (void)lpSecAttr;
+    return fs_create_file(lpPathName, 1) >= 0 ? TRUE : FALSE;
+}
+
+static BOOL WINAPI shim_RemoveDirectoryA(LPCSTR lpPathName) {
+    return fs_delete_file(lpPathName) >= 0 ? TRUE : FALSE;
+}
+
+/* ── Temp Files ──────────────────────────────────────────────── */
+
+static DWORD WINAPI shim_GetTempPathA(DWORD nBufferLength, LPSTR lpBuffer) {
+    const char *tmp = "/tmp";
+    size_t len = 4;
+    if (lpBuffer && nBufferLength > len) {
+        memcpy(lpBuffer, tmp, len);
+        lpBuffer[len] = '\0';
+    }
+    return (DWORD)len;
+}
+
+static UINT WINAPI shim_GetTempFileNameA(
+    LPCSTR lpPathName, LPCSTR lpPrefixString, UINT uUnique, LPSTR lpTempFileName)
+{
+    (void)lpPathName; (void)uUnique;
+    /* Generate a simple temp filename */
+    static int temp_counter = 0;
+    char prefix[4] = "tmp";
+    if (lpPrefixString) {
+        prefix[0] = lpPrefixString[0] ? lpPrefixString[0] : 't';
+        prefix[1] = lpPrefixString[1] ? lpPrefixString[1] : 'm';
+        prefix[2] = lpPrefixString[2] ? lpPrefixString[2] : 'p';
+    }
+    snprintf(lpTempFileName, MAX_PATH, "/tmp/%c%c%c%04X.tmp",
+             prefix[0], prefix[1], prefix[2], ++temp_counter);
+    return temp_counter;
+}
+
+/* ── File Operations (Delete/Move/Copy) ──────────────────────── */
+
+static BOOL WINAPI shim_DeleteFileA(LPCSTR lpFileName) {
+    return fs_delete_file(lpFileName) >= 0 ? TRUE : FALSE;
+}
+
+static BOOL WINAPI shim_MoveFileA(LPCSTR lpExistingFileName, LPCSTR lpNewFileName) {
+    return fs_rename(lpExistingFileName, lpNewFileName) >= 0 ? TRUE : FALSE;
+}
+
+static BOOL WINAPI shim_CopyFileA(LPCSTR lpSrc, LPCSTR lpDst, BOOL bFailIfExists) {
+    uint8_t *buf = malloc(MAX_FILE_SIZE);
+    if (!buf) return FALSE;
+
+    size_t sz = MAX_FILE_SIZE;
+    if (fs_read_file(lpSrc, buf, &sz) < 0) {
+        free(buf);
+        return FALSE;
+    }
+
+    if (bFailIfExists) {
+        size_t check = 1;
+        uint8_t tmp;
+        if (fs_read_file(lpDst, &tmp, &check) >= 0) {
+            free(buf);
+            last_error = 80;  /* ERROR_FILE_EXISTS */
+            return FALSE;
+        }
+    }
+
+    fs_create_file(lpDst, 0);
+    int ret = fs_write_file(lpDst, buf, sz);
+    free(buf);
+    return ret >= 0 ? TRUE : FALSE;
+}
+
+/* ── Module / Path Queries ───────────────────────────────────── */
+
+static DWORD WINAPI shim_GetModuleFileNameA(HMODULE hModule, LPSTR lpFilename, DWORD nSize) {
+    (void)hModule;
+    const char *name = "C:\\app.exe";
+    size_t len = strlen(name);
+    if (len >= nSize) len = nSize - 1;
+    memcpy(lpFilename, name, len);
+    lpFilename[len] = '\0';
+    return (DWORD)len;
+}
+
+static DWORD WINAPI shim_GetCurrentDirectoryA(DWORD nBufferLength, LPSTR lpBuffer) {
+    const char *cwd = fs_get_cwd();
+    size_t len = strlen(cwd);
+    if (lpBuffer && nBufferLength > len) {
+        memcpy(lpBuffer, cwd, len);
+        lpBuffer[len] = '\0';
+    }
+    return (DWORD)len;
+}
+
+static BOOL WINAPI shim_SetCurrentDirectoryA(LPCSTR lpPathName) {
+    return fs_change_directory(lpPathName) >= 0 ? TRUE : FALSE;
+}
+
+static DWORD WINAPI shim_GetFullPathNameA(
+    LPCSTR lpFileName, DWORD nBufferLength, LPSTR lpBuffer, LPSTR *lpFilePart)
+{
+    /* Simple: prepend cwd if path doesn't start with / */
+    const char *cwd = fs_get_cwd();
+    size_t len;
+
+    if (lpFileName[0] == '/' || lpFileName[0] == '\\') {
+        len = strlen(lpFileName);
+        if (lpBuffer && nBufferLength > len) {
+            memcpy(lpBuffer, lpFileName, len);
+            lpBuffer[len] = '\0';
+        }
+    } else {
+        size_t cwd_len = strlen(cwd);
+        size_t name_len = strlen(lpFileName);
+        len = cwd_len + 1 + name_len;
+        if (lpBuffer && nBufferLength > len) {
+            memcpy(lpBuffer, cwd, cwd_len);
+            lpBuffer[cwd_len] = '/';
+            memcpy(lpBuffer + cwd_len + 1, lpFileName, name_len);
+            lpBuffer[len] = '\0';
+        }
+    }
+
+    if (lpFilePart && lpBuffer) {
+        char *last_sep = strrchr(lpBuffer, '/');
+        *lpFilePart = last_sep ? last_sep + 1 : lpBuffer;
+    }
+    return (DWORD)len;
+}
+
+static DWORD WINAPI shim_GetLongPathNameA(LPCSTR lpszShort, LPSTR lpszLong, DWORD cchBuffer) {
+    /* Our FS doesn't have short names — just copy */
+    size_t len = strlen(lpszShort);
+    if (lpszLong && cchBuffer > len) {
+        memcpy(lpszLong, lpszShort, len);
+        lpszLong[len] = '\0';
+    }
+    return (DWORD)len;
+}
+
+/* ── Overlapped I/O stubs ────────────────────────────────────── */
+/* Chromium may reference these but we run everything synchronously */
+
+static BOOL WINAPI shim_GetOverlappedResult(
+    HANDLE hFile, LPVOID lpOverlapped, LPDWORD lpBytes, BOOL bWait)
+{
+    (void)hFile; (void)lpOverlapped; (void)bWait;
+    if (lpBytes) *lpBytes = 0;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_CancelIo(HANDLE hFile) {
+    (void)hFile;
+    return TRUE;
+}
+
 /* ── Process / Module ────────────────────────────────────────── */
 
 static void WINAPI shim_ExitProcess(UINT uExitCode) {
@@ -1200,6 +1512,48 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "WriteFile",              (void *)shim_WriteFile },
     { "CloseHandle",            (void *)shim_CloseHandle },
     { "GetStdHandle",           (void *)shim_GetStdHandle },
+
+    /* Directory enumeration */
+    { "FindFirstFileA",         (void *)shim_FindFirstFileA },
+    { "FindNextFileA",          (void *)shim_FindNextFileA },
+    { "FindClose",              (void *)shim_FindClose },
+
+    /* File attributes & info */
+    { "GetFileAttributesA",     (void *)shim_GetFileAttributesA },
+    { "GetFileAttributesW",     (void *)shim_GetFileAttributesA },
+    { "GetFileSize",            (void *)shim_GetFileSize },
+    { "GetFileType",            (void *)shim_GetFileType },
+
+    /* Random access */
+    { "SetFilePointer",         (void *)shim_SetFilePointer },
+    { "SetEndOfFile",           (void *)shim_SetEndOfFile },
+
+    /* Directory ops */
+    { "CreateDirectoryA",       (void *)shim_CreateDirectoryA },
+    { "CreateDirectoryW",       (void *)shim_CreateDirectoryA },
+    { "RemoveDirectoryA",       (void *)shim_RemoveDirectoryA },
+
+    /* Temp files */
+    { "GetTempPathA",           (void *)shim_GetTempPathA },
+    { "GetTempFileNameA",       (void *)shim_GetTempFileNameA },
+
+    /* File operations */
+    { "DeleteFileA",            (void *)shim_DeleteFileA },
+    { "DeleteFileW",            (void *)shim_DeleteFileA },
+    { "MoveFileA",              (void *)shim_MoveFileA },
+    { "CopyFileA",              (void *)shim_CopyFileA },
+
+    /* Module / path queries */
+    { "GetModuleFileNameA",     (void *)shim_GetModuleFileNameA },
+    { "GetModuleFileNameW",     (void *)shim_GetModuleFileNameA },
+    { "GetCurrentDirectoryA",   (void *)shim_GetCurrentDirectoryA },
+    { "SetCurrentDirectoryA",   (void *)shim_SetCurrentDirectoryA },
+    { "GetFullPathNameA",       (void *)shim_GetFullPathNameA },
+    { "GetLongPathNameA",       (void *)shim_GetLongPathNameA },
+
+    /* Overlapped I/O stubs */
+    { "GetOverlappedResult",    (void *)shim_GetOverlappedResult },
+    { "CancelIo",              (void *)shim_CancelIo },
 
     /* Process / Module */
     { "ExitProcess",            (void *)shim_ExitProcess },

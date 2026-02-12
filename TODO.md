@@ -47,16 +47,16 @@ _Chromium uses ~200MB+ and relies on virtual memory protection._
 
 ### Phase 3: File System & I/O
 _Chromium reads configs, caches, temp files, and needs directory enumeration._
-- [ ] FindFirstFileA / FindNextFileA / FindClose — directory enumeration
-- [ ] GetFileAttributesA / GetFileSize / GetFileType
-- [ ] SetFilePointer / SetEndOfFile — random access
-- [ ] CreateDirectoryA / RemoveDirectoryA
-- [ ] GetTempPathA / GetTempFileNameA
-- [ ] DeleteFileA / MoveFileA / CopyFileA
-- [ ] GetModuleFileNameA — exe path query
-- [ ] GetCurrentDirectoryA / SetCurrentDirectoryA
-- [ ] GetFullPathNameA / GetLongPathNameA
-- [ ] Overlapped I/O stubs — ReadFile/WriteFile with OVERLAPPED (can stub as sync)
+- [x] FindFirstFileA / FindNextFileA / FindClose — directory enumeration
+- [x] GetFileAttributesA / GetFileSize / GetFileType
+- [x] SetFilePointer / SetEndOfFile — random access
+- [x] CreateDirectoryA / RemoveDirectoryA
+- [x] GetTempPathA / GetTempFileNameA
+- [x] DeleteFileA / MoveFileA / CopyFileA
+- [x] GetModuleFileNameA — exe path query
+- [x] GetCurrentDirectoryA / SetCurrentDirectoryA
+- [x] GetFullPathNameA / GetLongPathNameA
+- [x] Overlapped I/O stubs — ReadFile/WriteFile with OVERLAPPED (can stub as sync)
 
 ### Phase 4: Process Creation
 _Chromium is multi-process: browser, renderer, GPU, utility, crashpad._
