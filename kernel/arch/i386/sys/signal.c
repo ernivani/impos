@@ -24,7 +24,11 @@ __asm__(
 /* Default action table: 1 = kill, 0 = ignore */
 static const int sig_default_kill[NSIG] = {
     [SIGINT]  = 1,
+    [SIGILL]  = 1,
+    [SIGBUS]  = 1,
+    [SIGFPE]  = 1,
     [SIGKILL] = 1,
+    [SIGSEGV] = 1,
     [SIGUSR1] = 0,
     [SIGUSR2] = 0,
     [SIGPIPE] = 1,

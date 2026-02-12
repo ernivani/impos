@@ -229,7 +229,7 @@ void pit_sleep_ms(uint32_t ms) {
     task_set_current(TASK_IDLE);
     uint32_t target = pit_ticks + (ms * TARGET_HZ / 1000);
     if (ms * TARGET_HZ % 1000) target++;
-    while (pit_ticks < target) {
+    while ((int32_t)(pit_ticks - target) < 0) {
         cpu_halting = 1;
         __asm__ volatile ("hlt");
     }
@@ -306,33 +306,80 @@ registers_t* isr_handler(registers_t* regs) {
     } else if (int_no == 0x80) {
         /* Syscall: dispatch based on EAX, may invoke scheduler */
         regs = syscall_handler(regs);
-    } else if (int_no == 14) {
-        /* Page Fault — detailed handler */
-        uint32_t cr2;
-        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
-        uint32_t err = regs->err_code;
-        printf("\n=== PAGE FAULT ===\n");
-        printf("Faulting address: 0x%x\n", cr2);
-        printf("Error code: 0x%x [%s %s %s%s%s]\n", err,
-               (err & 1) ? "protection" : "not-present",
-               (err & 2) ? "write" : "read",
-               (err & 4) ? "user" : "kernel",
-               (err & 8) ? " reserved-bit" : "",
-               (err & 16) ? " instruction-fetch" : "");
-        printf("EIP=0x%x CS=0x%x EFLAGS=0x%x\n", regs->eip, regs->cs, regs->eflags);
-        printf("EAX=0x%x EBX=0x%x ECX=0x%x EDX=0x%x\n",
-               regs->eax, regs->ebx, regs->ecx, regs->edx);
-        printf("ESP=0x%x EBP=0x%x ESI=0x%x EDI=0x%x\n",
-               regs->esp, regs->ebp, regs->esi, regs->edi);
-        printf("System halted.\n");
-        __asm__ volatile ("cli; hlt");
     } else if (int_no < 32) {
-        /* CPU Exception */
-        if (int_no == 13 || int_no == 8 || int_no == 6) {
-            printf("EXCEPTION %d: err=0x%x eip=0x%x\n",
-                   int_no, regs->err_code, regs->eip);
-            printf("System halted.\n");
-            __asm__ volatile ("cli; hlt");
+        /* CPU Exception — map to signal */
+        int signum = 0;
+        const char *name = NULL;
+        switch (int_no) {
+            case 0:  signum = SIGFPE;  name = "Division by zero"; break;
+            case 6:  signum = SIGILL;  name = "Invalid opcode";   break;
+            case 8:  signum = SIGBUS;  name = "Double fault";     break;
+            case 13: signum = SIGSEGV; name = "General protection fault"; break;
+            case 14: signum = SIGSEGV; name = "Page fault";       break;
+            default: break; /* INT 1-5, 7, 9-12, 15-31: ignore */
+        }
+
+        if (signum) {
+            int tid = task_get_current();
+            task_info_t *t = task_get_raw(tid);
+
+            /* Read CR2 for page faults */
+            uint32_t cr2 = 0;
+            if (int_no == 14)
+                __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+
+            /* Diagnostic output to serial and console */
+            serial_printf("[EXCEPTION] %s (INT %d) in task %d '%s'\n",
+                          name, int_no, tid, (t && t->name[0]) ? t->name : "?");
+            serial_printf("  EIP=0x%x CS=0x%x ERR=0x%x EFLAGS=0x%x\n",
+                          regs->eip, regs->cs, regs->err_code, regs->eflags);
+            serial_printf("  EAX=0x%x EBX=0x%x ECX=0x%x EDX=0x%x\n",
+                          regs->eax, regs->ebx, regs->ecx, regs->edx);
+            serial_printf("  ESP=0x%x EBP=0x%x ESI=0x%x EDI=0x%x\n",
+                          regs->esp, regs->ebp, regs->esi, regs->edi);
+            if (int_no == 14) {
+                uint32_t err = regs->err_code;
+                serial_printf("  CR2=0x%x [%s %s %s%s%s]\n", cr2,
+                              (err & 1) ? "protection" : "not-present",
+                              (err & 2) ? "write" : "read",
+                              (err & 4) ? "user" : "kernel",
+                              (err & 8) ? " reserved-bit" : "",
+                              (err & 16) ? " instruction-fetch" : "");
+            }
+
+            /* Check if this task is recoverable */
+            int recoverable = t && tid >= 4 && t->killable &&
+                              (t->stack_base || t->is_user);
+
+            if (recoverable) {
+                printf("%s in task '%s' (PID %d) — killed\n",
+                       name, t->name, t->pid);
+
+                if (t->is_user && !t->sig.in_handler) {
+                    /* Ring 3 user thread: set pending signal for delivery */
+                    t->sig.pending |= (1 << signum);
+                    /* Skip faulting instruction won't help — let sig_deliver
+                       handle it (default action = kill, or user handler) */
+                } else {
+                    /* Kernel thread, or user handler itself faulted:
+                       force-kill immediately and reschedule */
+                    sig_send(tid, SIGKILL);
+                    regs = schedule(regs);
+                }
+            } else {
+                /* Core task (0-3) or non-recoverable: halt system */
+                printf("\n=== %s (INT %d) in core task %d ===\n", name, int_no, tid);
+                printf("EIP=0x%x CS=0x%x ERR=0x%x EFLAGS=0x%x\n",
+                       regs->eip, regs->cs, regs->err_code, regs->eflags);
+                printf("EAX=0x%x EBX=0x%x ECX=0x%x EDX=0x%x\n",
+                       regs->eax, regs->ebx, regs->ecx, regs->edx);
+                printf("ESP=0x%x EBP=0x%x ESI=0x%x EDI=0x%x\n",
+                       regs->esp, regs->ebp, regs->esi, regs->edi);
+                if (int_no == 14)
+                    printf("CR2=0x%x\n", cr2);
+                printf("System halted.\n");
+                __asm__ volatile ("cli; hlt");
+            }
         }
     }
 

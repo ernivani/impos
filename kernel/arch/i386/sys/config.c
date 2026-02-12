@@ -127,10 +127,6 @@ void config_set_datetime(const datetime_t* dt) {
     }
 }
 
-void config_update_uptime(void) {
-    sys_config.uptime_seconds++;
-}
-
 void config_tick_second(void) {
     sys_config.uptime_seconds++;
     

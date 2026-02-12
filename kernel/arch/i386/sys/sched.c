@@ -97,7 +97,7 @@ registers_t* schedule(registers_t* regs) {
     for (int i = 0; i < TASK_MAX; i++) {
         task_info_t *t = task_get(i);
         if (t && t->state == TASK_STATE_SLEEPING) {
-            if (pit_ticks >= t->sleep_until)
+            if ((int32_t)(pit_ticks - t->sleep_until) >= 0)
                 t->state = TASK_STATE_READY;
         }
     }
