@@ -1217,6 +1217,130 @@ static void test_win32_registry(void) {
     #undef HKCU
 }
 
+/* ---- Winsock Tests ---- */
+
+static void test_winsock(void) {
+    printf("== Winsock Tests ==\n");
+
+    /* Resolve Winsock functions via shim tables */
+    typedef int      (__attribute__((stdcall)) *pfn_WSAStartup)(uint16_t, void *);
+    typedef int      (__attribute__((stdcall)) *pfn_WSACleanup)(void);
+    typedef int      (__attribute__((stdcall)) *pfn_WSAGetLastError)(void);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_socket)(int, int, int);
+    typedef int      (__attribute__((stdcall)) *pfn_closesocket)(uint32_t);
+    typedef int      (__attribute__((stdcall)) *pfn_gethostname)(char *, int);
+    typedef int      (__attribute__((stdcall)) *pfn_getaddrinfo)(const char *, const char *, const void *, void **);
+    typedef void     (__attribute__((stdcall)) *pfn_freeaddrinfo)(void *);
+    typedef int      (__attribute__((stdcall)) *pfn_setsockopt)(uint32_t, int, int, const char *, int);
+    typedef int      (__attribute__((stdcall)) *pfn_select)(int, void *, void *, void *, const void *);
+    typedef uint16_t (__attribute__((stdcall)) *pfn_htons)(uint16_t);
+    typedef uint32_t (__attribute__((stdcall)) *pfn_inet_addr)(const char *);
+
+    pfn_WSAStartup     pWSAStartup     = (pfn_WSAStartup)win32_resolve_import("ws2_32.dll", "WSAStartup");
+    pfn_WSACleanup     pWSACleanup     = (pfn_WSACleanup)win32_resolve_import("ws2_32.dll", "WSACleanup");
+    pfn_WSAGetLastError pWSAGetLastError = (pfn_WSAGetLastError)win32_resolve_import("ws2_32.dll", "WSAGetLastError");
+    pfn_socket         pSocket         = (pfn_socket)win32_resolve_import("ws2_32.dll", "socket");
+    pfn_closesocket    pClosesocket    = (pfn_closesocket)win32_resolve_import("ws2_32.dll", "closesocket");
+    pfn_gethostname    pGethostname    = (pfn_gethostname)win32_resolve_import("ws2_32.dll", "gethostname");
+    pfn_getaddrinfo    pGetaddrinfo    = (pfn_getaddrinfo)win32_resolve_import("ws2_32.dll", "getaddrinfo");
+    pfn_freeaddrinfo   pFreeaddrinfo   = (pfn_freeaddrinfo)win32_resolve_import("ws2_32.dll", "freeaddrinfo");
+    pfn_setsockopt     pSetsockopt     = (pfn_setsockopt)win32_resolve_import("ws2_32.dll", "setsockopt");
+    pfn_select         pSelect         = (pfn_select)win32_resolve_import("ws2_32.dll", "select");
+    pfn_htons          pHtons          = (pfn_htons)win32_resolve_import("ws2_32.dll", "htons");
+    pfn_inet_addr      pInet_addr      = (pfn_inet_addr)win32_resolve_import("ws2_32.dll", "inet_addr");
+
+    TEST_ASSERT(pWSAStartup != NULL,     "ws: WSAStartup resolved");
+    TEST_ASSERT(pWSACleanup != NULL,     "ws: WSACleanup resolved");
+    TEST_ASSERT(pWSAGetLastError != NULL, "ws: WSAGetLastError resolved");
+    TEST_ASSERT(pSocket != NULL,         "ws: socket resolved");
+    TEST_ASSERT(pClosesocket != NULL,    "ws: closesocket resolved");
+    TEST_ASSERT(pGethostname != NULL,    "ws: gethostname resolved");
+    TEST_ASSERT(pGetaddrinfo != NULL,    "ws: getaddrinfo resolved");
+    TEST_ASSERT(pFreeaddrinfo != NULL,   "ws: freeaddrinfo resolved");
+    TEST_ASSERT(pSetsockopt != NULL,     "ws: setsockopt resolved");
+    TEST_ASSERT(pSelect != NULL,         "ws: select resolved");
+    TEST_ASSERT(pHtons != NULL,          "ws: htons resolved");
+    TEST_ASSERT(pInet_addr != NULL,      "ws: inet_addr resolved");
+
+    if (!pWSAStartup || !pSocket || !pClosesocket) return;
+
+    /* Test 1: WSAStartup returns 0 and fills WSADATA */
+    uint8_t wsadata[400];
+    memset(wsadata, 0, sizeof(wsadata));
+    int ret = pWSAStartup(0x0202, wsadata);
+    TEST_ASSERT(ret == 0, "ws: WSAStartup returns 0");
+    /* Check version field (first 2 bytes) */
+    uint16_t ver = *(uint16_t *)wsadata;
+    TEST_ASSERT(ver == 0x0202, "ws: WSADATA version is 2.2");
+
+    /* Test 2: socket(AF_INET, SOCK_STREAM, 0) returns valid handle */
+    uint32_t s = pSocket(2, 1, 0);  /* AF_INET=2, SOCK_STREAM=1 */
+    TEST_ASSERT(s != ~0u, "ws: socket returns valid handle");
+    TEST_ASSERT(s >= 0x100, "ws: socket handle >= SOCK_HANDLE_BASE");
+
+    /* Test 3: closesocket succeeds */
+    if (s != ~0u) {
+        ret = pClosesocket(s);
+        TEST_ASSERT(ret == 0, "ws: closesocket returns 0");
+    }
+
+    /* Test 4: gethostname returns non-empty string */
+    if (pGethostname) {
+        char hostname[64];
+        memset(hostname, 0, sizeof(hostname));
+        ret = pGethostname(hostname, sizeof(hostname));
+        TEST_ASSERT(ret == 0, "ws: gethostname returns 0");
+        TEST_ASSERT(strlen(hostname) > 0, "ws: hostname non-empty");
+    }
+
+    /* Test 5: getaddrinfo("localhost") / freeaddrinfo round-trip */
+    if (pGetaddrinfo && pFreeaddrinfo) {
+        void *result = NULL;
+        ret = pGetaddrinfo("localhost", NULL, NULL, &result);
+        TEST_ASSERT(ret == 0, "ws: getaddrinfo(localhost) returns 0");
+        TEST_ASSERT(result != NULL, "ws: getaddrinfo result non-NULL");
+        if (result) {
+            pFreeaddrinfo(result);
+            TEST_ASSERT(1, "ws: freeaddrinfo no crash");
+        }
+    }
+
+    /* Test 6: setsockopt stub returns 0 */
+    if (pSetsockopt) {
+        int optval = 1;
+        ret = pSetsockopt(0x100, 0xFFFF, 0x0004, (const char *)&optval, sizeof(optval));
+        TEST_ASSERT(ret == 0, "ws: setsockopt stub returns 0");
+    }
+
+    /* Test 7: select(0, NULL, NULL, NULL, &tv) returns 0 */
+    if (pSelect) {
+        struct { int32_t tv_sec; int32_t tv_usec; } tv = {0, 0};
+        ret = pSelect(0, NULL, NULL, NULL, &tv);
+        TEST_ASSERT(ret == 0, "ws: select with NULL sets returns 0");
+    }
+
+    /* Test 8: htons/ntohs byte swap */
+    if (pHtons) {
+        uint16_t swapped = pHtons(0x1234);
+        TEST_ASSERT(swapped == 0x3412, "ws: htons byte swap");
+    }
+
+    /* Test 9: inet_addr */
+    if (pInet_addr) {
+        uint32_t addr = pInet_addr("127.0.0.1");
+        TEST_ASSERT(addr == 0x0100007F, "ws: inet_addr(127.0.0.1)");
+    }
+
+    /* Test 10: WSAGetLastError after clean state */
+    if (pWSAGetLastError) {
+        int err = pWSAGetLastError();
+        TEST_ASSERT(err == 0, "ws: WSAGetLastError returns 0 initially");
+    }
+
+    /* Cleanup */
+    if (pWSACleanup) pWSACleanup();
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -1243,6 +1367,7 @@ void test_run_all(void) {
     test_crypto();
     test_win32_dll();
     test_win32_registry();
+    test_winsock();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

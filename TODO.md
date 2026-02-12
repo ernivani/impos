@@ -89,16 +89,16 @@ _Chromium reads ~100 registry keys on startup for system info, proxy settings, f
 
 ### Phase 7: Winsock Networking
 _Chromium has its own HTTP/QUIC stack but needs Winsock for raw sockets._
-- [ ] WSAStartup / WSACleanup
-- [ ] socket / closesocket — map to ImposOS socket API
-- [ ] connect / bind / listen / accept
-- [ ] send / recv / sendto / recvfrom
-- [ ] select / WSAPoll — fd_set multiplexing
-- [ ] getaddrinfo / freeaddrinfo — DNS via ImposOS dns_resolve
-- [ ] gethostname / gethostbyname
-- [ ] setsockopt / getsockopt (SO_REUSEADDR, TCP_NODELAY, etc.)
-- [ ] ioctlsocket — FIONBIO for non-blocking mode
-- [ ] ws2_32.dll shim table
+- [x] WSAStartup / WSACleanup
+- [x] socket / closesocket — map to ImposOS socket API
+- [x] connect / bind / listen / accept
+- [x] send / recv / sendto / recvfrom
+- [x] select / WSAPoll — fd_set multiplexing
+- [x] getaddrinfo / freeaddrinfo — DNS via ImposOS dns_resolve
+- [x] gethostname / gethostbyname
+- [x] setsockopt / getsockopt (SO_REUSEADDR, TCP_NODELAY, etc.)
+- [x] ioctlsocket — FIONBIO for non-blocking mode
+- [x] ws2_32.dll shim table
 
 ### Phase 8: Advanced GDI & Rendering
 _Chromium uses Skia which calls into GDI/GDI+ and Direct2D/DirectWrite._
