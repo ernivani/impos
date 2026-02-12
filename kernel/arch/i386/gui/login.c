@@ -1104,9 +1104,8 @@ int login_run(void) {
             }
         }
 
-        /* Wrong password — shake + error + beep */
+        /* Wrong password — shake + error */
         shake_field(pl);
-        beep_error();
         strcpy(err, "Incorrect password");
         continue;
 
