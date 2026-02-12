@@ -38,12 +38,12 @@ _Chromium spawns 20+ threads on startup. Nothing complex runs without this._
 
 ### Phase 2: Memory Management
 _Chromium uses ~200MB+ and relies on virtual memory protection._
-- [ ] VirtualAlloc with real page protection — PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_NOACCESS via paging PTE flags
-- [ ] VirtualProtect — change page permissions after allocation
-- [ ] VirtualQuery — query region info (used by allocators to introspect)
-- [ ] Memory-mapped files — CreateFileMappingA, MapViewOfFile, UnmapViewOfFile
-- [ ] Heap improvements — HeapAlloc alignment guarantees, large block support
-- [ ] GlobalAlloc / GlobalFree / GlobalLock / GlobalUnlock (legacy clipboard/OLE)
+- [x] VirtualAlloc with real page protection — PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_NOACCESS via paging PTE flags
+- [x] VirtualProtect — change page permissions after allocation
+- [x] VirtualQuery — query region info (used by allocators to introspect)
+- [x] Memory-mapped files — CreateFileMappingA, MapViewOfFile, UnmapViewOfFile
+- [x] Heap improvements — HeapAlloc alignment guarantees, large block support
+- [x] GlobalAlloc / GlobalFree / GlobalLock / GlobalUnlock (legacy clipboard/OLE)
 
 ### Phase 3: File System & I/O
 _Chromium reads configs, caches, temp files, and needs directory enumeration._

@@ -244,7 +244,14 @@ typedef struct {
 #define MEM_COMMIT    0x1000
 #define MEM_RESERVE   0x2000
 #define MEM_RELEASE   0x8000
-#define PAGE_READWRITE 0x04
+#define MEM_FREE      0x10000
+
+/* Page protection */
+#define PAGE_NOACCESS          0x01
+#define PAGE_READONLY          0x02
+#define PAGE_READWRITE         0x04
+#define PAGE_EXECUTE_READ      0x20
+#define PAGE_EXECUTE_READWRITE 0x40
 
 /* Wait constants */
 #define WAIT_OBJECT_0   0x00000000

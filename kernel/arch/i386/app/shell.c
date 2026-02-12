@@ -135,6 +135,7 @@ static void cmd_petest(int argc, char* argv[]);
 static void cmd_petest_gui(int argc, char* argv[]);
 static void cmd_sudo(int argc, char* argv[]);
 static void cmd_threadtest(int argc, char* argv[]);
+static void cmd_memtest(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -1099,6 +1100,20 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Tests CreateThread, CriticalSection, Events,\n"
         "    and Interlocked operations via a Win32 PE .exe.\n",
+        CMD_FLAG_ROOT
+    },
+    {
+        "memtest", cmd_memtest,
+        "Run Win32 memory management tests",
+        "memtest: memtest\n"
+        "    Write mem_test.exe to disk and run it.\n",
+        "NAME\n"
+        "    memtest - test Win32 memory APIs\n\n"
+        "SYNOPSIS\n"
+        "    memtest\n\n"
+        "DESCRIPTION\n"
+        "    Tests VirtualAlloc, VirtualProtect, VirtualQuery,\n"
+        "    VirtualFree, and GlobalAlloc via a Win32 PE .exe.\n",
         CMD_FLAG_ROOT
     },
 };
@@ -4599,6 +4614,25 @@ static void cmd_threadtest(int argc, char* argv[]) {
             task_yield();
     } else {
         printf("threadtest: failed (%d)\n", tid);
+    }
+}
+
+/* ── Embedded mem_test.exe (Win32 memory test) ────────────────
+ * PE32 console app: tests VirtualAlloc, VirtualProtect,
+ * VirtualQuery, VirtualFree, and GlobalAlloc.
+ */
+#include "mem_test_embed.h"
+
+static void cmd_memtest(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    fs_create_file("mem_test.exe", 0);
+    fs_write_file("mem_test.exe", mem_test_data, mem_test_data_len);
+    int tid = pe_run("mem_test.exe");
+    if (tid >= 0) {
+        while (task_get(tid) != NULL)
+            task_yield();
+    } else {
+        printf("memtest: failed (%d)\n", tid);
     }
 }
 
