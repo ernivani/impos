@@ -6,6 +6,7 @@
 #include <kernel/desktop.h>
 #include <kernel/mouse.h>
 #include <kernel/idt.h>
+#include <kernel/clipboard.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -87,6 +88,7 @@ int ui_add_textinput(ui_window_t *win, int x, int y, int w, int h,
     wg->flags |= UI_FLAG_FOCUSABLE;
     if (placeholder) strncpy(wg->textinput.placeholder, placeholder, 47);
     wg->textinput.max_len = (max_len > 0 && max_len < UI_TEXT_MAX) ? max_len : UI_TEXT_MAX - 1;
+    wg->textinput.sel_start = -1;
     wg->textinput.password = is_password ? 1 : 0;
     win->dirty = 1;
     return idx;
@@ -415,6 +417,7 @@ static void draw_list(ui_window_t *win, ui_widget_t *wg, int focused) {
 static void draw_textinput(ui_window_t *win, ui_widget_t *wg, int focused) {
     uint32_t bg = ui_theme.input_bg;
     uint32_t border_c = focused ? ui_theme.input_border_focus : ui_theme.input_border;
+    uint32_t sel_bg = ui_theme.accent;
 
     wm_fill_rect(win->wm_id, wg->x, wg->y, wg->w, wg->h, bg);
     wm_draw_rect(win->wm_id, wg->x, wg->y, wg->w, wg->h, border_c);
@@ -423,6 +426,15 @@ static void draw_textinput(ui_window_t *win, ui_widget_t *wg, int focused) {
     int ty = wg->y + (wg->h - FONT_H) / 2;
     int len = (int)strlen(wg->textinput.text);
     int max_chars = (wg->w - 16) / FONT_W;
+
+    /* Compute selection range */
+    int sel_lo = -1, sel_hi = -1;
+    if (wg->textinput.sel_start >= 0 && wg->textinput.sel_start != wg->textinput.cursor) {
+        sel_lo = wg->textinput.sel_start < wg->textinput.cursor ?
+                 wg->textinput.sel_start : wg->textinput.cursor;
+        sel_hi = wg->textinput.sel_start > wg->textinput.cursor ?
+                 wg->textinput.sel_start : wg->textinput.cursor;
+    }
 
     if (len == 0 && !focused) {
         /* Placeholder */
@@ -433,23 +445,32 @@ static void draw_textinput(ui_window_t *win, ui_widget_t *wg, int focused) {
         int vis = len - wg->textinput.scroll;
         if (vis > max_chars) vis = max_chars;
         for (int i = 0; i < vis; i++) {
+            int char_idx = wg->textinput.scroll + i;
+            int in_sel = (sel_lo >= 0 && char_idx >= sel_lo && char_idx < sel_hi);
+            if (in_sel)
+                wm_fill_rect(win->wm_id, tx + i * 12, ty, 12, FONT_H, sel_bg);
             int dx = tx + i * 12 + 4;
             int dy = wg->y + wg->h / 2;
-            /* Small filled circle */
-            for (int cy = -3; cy <= 3; cy++)
-                for (int cx = -3; cx <= 3; cx++)
-                    if (cx*cx + cy*cy <= 9)
-                        wm_put_pixel(win->wm_id, dx + cx, dy + cy, ui_theme.text_primary);
+            uint32_t dot_c = in_sel ? 0xFFFFFF : ui_theme.text_primary;
+            for (int cy2 = -3; cy2 <= 3; cy2++)
+                for (int cx2 = -3; cx2 <= 3; cx2++)
+                    if (cx2*cx2 + cy2*cy2 <= 9)
+                        wm_put_pixel(win->wm_id, dx + cx2, dy + cy2, dot_c);
         }
     } else {
-        /* Normal text */
+        /* Normal text with selection highlight */
         int start = wg->textinput.scroll;
         int vis = len - start;
         if (vis > max_chars) vis = max_chars;
         for (int i = 0; i < vis; i++) {
+            int char_idx = start + i;
+            int in_sel = (sel_lo >= 0 && char_idx >= sel_lo && char_idx < sel_hi);
+            uint32_t char_bg = in_sel ? sel_bg : bg;
+            uint32_t char_fg = in_sel ? 0xFFFFFF : ui_theme.text_primary;
+            if (in_sel)
+                wm_fill_rect(win->wm_id, tx + i * FONT_W, ty, FONT_W, FONT_H, sel_bg);
             wm_draw_char(win->wm_id, tx + i * FONT_W, ty,
-                         wg->textinput.text[start + i],
-                         ui_theme.text_primary, bg);
+                         wg->textinput.text[char_idx], char_fg, char_bg);
         }
     }
 
@@ -644,11 +665,46 @@ static int point_in_widget(ui_widget_t *wg, int wx, int wy) {
             wy >= wg->y && wy < wg->y + wg->h);
 }
 
-static void handle_textinput_key(ui_window_t *win, ui_widget_t *wg, int idx, char key) {
+/* Helper: delete the selected range, returns 1 if something was deleted */
+static int textinput_delete_selection(ui_widget_t *wg) {
+    if (wg->textinput.sel_start < 0 || wg->textinput.sel_start == wg->textinput.cursor)
+        return 0;
+    int lo = wg->textinput.sel_start < wg->textinput.cursor ?
+             wg->textinput.sel_start : wg->textinput.cursor;
+    int hi = wg->textinput.sel_start > wg->textinput.cursor ?
+             wg->textinput.sel_start : wg->textinput.cursor;
+    int len = (int)strlen(wg->textinput.text);
+    memmove(&wg->textinput.text[lo], &wg->textinput.text[hi], len - hi + 1);
+    wg->textinput.cursor = lo;
+    wg->textinput.sel_start = -1;
+    if (wg->textinput.scroll > wg->textinput.cursor)
+        wg->textinput.scroll = wg->textinput.cursor;
+    return 1;
+}
+
+/* Helper: get selected text range */
+static void textinput_get_selection(ui_widget_t *wg, int *lo, int *hi) {
+    if (wg->textinput.sel_start < 0 || wg->textinput.sel_start == wg->textinput.cursor) {
+        *lo = *hi = -1;
+        return;
+    }
+    *lo = wg->textinput.sel_start < wg->textinput.cursor ?
+          wg->textinput.sel_start : wg->textinput.cursor;
+    *hi = wg->textinput.sel_start > wg->textinput.cursor ?
+          wg->textinput.sel_start : wg->textinput.cursor;
+}
+
+static void handle_textinput_key(ui_window_t *win, ui_widget_t *wg, int idx, ui_event_t *ev) {
+    char key = ev->key.key;
+    int ctrl = ev->key.ctrl;
+    int shift = ev->key.shift;
     int len = (int)strlen(wg->textinput.text);
     int max_chars = (wg->w - 16) / FONT_W;
+    int has_sel = (wg->textinput.sel_start >= 0 &&
+                   wg->textinput.sel_start != wg->textinput.cursor);
 
     if (key == '\n') {
+        wg->textinput.sel_start = -1;
         wg->flags &= ~UI_FLAG_CAPTURING;
         if (wg->textinput.on_submit)
             wg->textinput.on_submit(win, idx);
@@ -656,12 +712,94 @@ static void handle_textinput_key(ui_window_t *win, ui_widget_t *wg, int idx, cha
         return;
     }
     if (key == KEY_ESCAPE) {
+        wg->textinput.sel_start = -1;
         wg->flags &= ~UI_FLAG_CAPTURING;
         win->dirty = 1;
         return;
     }
+
+    /* Ctrl+A = select all */
+    if (ctrl && (key == 1 || key == 'a')) {
+        wg->textinput.sel_start = 0;
+        wg->textinput.cursor = len;
+        if (wg->textinput.cursor - wg->textinput.scroll > max_chars)
+            wg->textinput.scroll = wg->textinput.cursor - max_chars;
+        win->dirty = 1;
+        return;
+    }
+
+    /* Ctrl+C = copy selection */
+    if (ctrl && (key == 3 || key == 'c')) {
+        int lo, hi;
+        textinput_get_selection(wg, &lo, &hi);
+        if (lo >= 0)
+            clipboard_copy(&wg->textinput.text[lo], hi - lo);
+        win->dirty = 1;
+        return;
+    }
+
+    /* Ctrl+X = cut selection */
+    if (ctrl && (key == 24 || key == 'x')) {
+        int lo, hi;
+        textinput_get_selection(wg, &lo, &hi);
+        if (lo >= 0) {
+            clipboard_copy(&wg->textinput.text[lo], hi - lo);
+            textinput_delete_selection(wg);
+        }
+        win->dirty = 1;
+        return;
+    }
+
+    /* Ctrl+V = paste (replace selection if any) */
+    if (ctrl && (key == 22 || key == 'v')) {
+        if (has_sel) textinput_delete_selection(wg);
+        size_t clip_len;
+        const char *clip = clipboard_get(&clip_len);
+        if (clip && clip_len > 0) {
+            for (size_t i = 0; i < clip_len; i++) {
+                char ch = clip[i];
+                if (ch < 32 || ch >= 127) continue;
+                int cur_len = (int)strlen(wg->textinput.text);
+                if (cur_len >= wg->textinput.max_len) break;
+                memmove(&wg->textinput.text[wg->textinput.cursor + 1],
+                        &wg->textinput.text[wg->textinput.cursor],
+                        cur_len - wg->textinput.cursor + 1);
+                wg->textinput.text[wg->textinput.cursor] = ch;
+                wg->textinput.cursor++;
+            }
+            if (wg->textinput.cursor - wg->textinput.scroll > max_chars)
+                wg->textinput.scroll = wg->textinput.cursor - max_chars;
+        }
+        win->dirty = 1;
+        return;
+    }
+
+    /* Ctrl+Backspace = delete word backward */
+    if (ctrl && key == '\b') {
+        if (has_sel) {
+            textinput_delete_selection(wg);
+        } else if (wg->textinput.cursor > 0) {
+            int new_cur = wg->textinput.cursor;
+            while (new_cur > 0 && wg->textinput.text[new_cur - 1] == ' ') new_cur--;
+            while (new_cur > 0 && wg->textinput.text[new_cur - 1] != ' ') new_cur--;
+            int removed = wg->textinput.cursor - new_cur;
+            memmove(&wg->textinput.text[new_cur],
+                    &wg->textinput.text[wg->textinput.cursor],
+                    len - wg->textinput.cursor + 1);
+            wg->textinput.cursor = new_cur;
+            if (wg->textinput.scroll > wg->textinput.cursor)
+                wg->textinput.scroll = wg->textinput.cursor;
+        }
+        wg->textinput.sel_start = -1;
+        win->dirty = 1;
+        return;
+    }
+
+    /* Backspace */
     if (key == '\b') {
-        if (wg->textinput.cursor > 0) {
+        if (has_sel) {
+            textinput_delete_selection(wg);
+        } else if (wg->textinput.cursor > 0) {
             memmove(&wg->textinput.text[wg->textinput.cursor - 1],
                     &wg->textinput.text[wg->textinput.cursor],
                     len - wg->textinput.cursor + 1);
@@ -669,32 +807,135 @@ static void handle_textinput_key(ui_window_t *win, ui_widget_t *wg, int idx, cha
             if (wg->textinput.scroll > 0 && wg->textinput.cursor < wg->textinput.scroll)
                 wg->textinput.scroll--;
         }
+        wg->textinput.sel_start = -1;
         win->dirty = 1;
         return;
     }
+
+    /* Delete key */
+    if (key == KEY_DEL) {
+        if (has_sel) {
+            textinput_delete_selection(wg);
+        } else {
+            int cur_len = (int)strlen(wg->textinput.text);
+            if (wg->textinput.cursor < cur_len) {
+                memmove(&wg->textinput.text[wg->textinput.cursor],
+                        &wg->textinput.text[wg->textinput.cursor + 1],
+                        cur_len - wg->textinput.cursor);
+            }
+        }
+        wg->textinput.sel_start = -1;
+        win->dirty = 1;
+        return;
+    }
+
+    /* Left arrow: Shift=extend selection, Ctrl=word jump */
     if (key == KEY_LEFT) {
-        if (wg->textinput.cursor > 0) {
-            wg->textinput.cursor--;
-            if (wg->textinput.cursor < wg->textinput.scroll)
-                wg->textinput.scroll = wg->textinput.cursor;
+        if (shift) {
+            if (wg->textinput.sel_start < 0)
+                wg->textinput.sel_start = wg->textinput.cursor;
+        } else {
+            /* If there was a selection, jump to its start */
+            if (has_sel) {
+                int lo = wg->textinput.sel_start < wg->textinput.cursor ?
+                         wg->textinput.sel_start : wg->textinput.cursor;
+                wg->textinput.cursor = lo;
+                wg->textinput.sel_start = -1;
+                if (wg->textinput.cursor < wg->textinput.scroll)
+                    wg->textinput.scroll = wg->textinput.cursor;
+                win->dirty = 1;
+                return;
+            }
+            wg->textinput.sel_start = -1;
         }
+        if (ctrl) {
+            /* Jump to previous word boundary */
+            while (wg->textinput.cursor > 0 &&
+                   wg->textinput.text[wg->textinput.cursor - 1] == ' ')
+                wg->textinput.cursor--;
+            while (wg->textinput.cursor > 0 &&
+                   wg->textinput.text[wg->textinput.cursor - 1] != ' ')
+                wg->textinput.cursor--;
+        } else {
+            if (wg->textinput.cursor > 0)
+                wg->textinput.cursor--;
+        }
+        if (wg->textinput.cursor < wg->textinput.scroll)
+            wg->textinput.scroll = wg->textinput.cursor;
         win->dirty = 1;
         return;
     }
+
+    /* Right arrow: Shift=extend selection, Ctrl=word jump */
     if (key == KEY_RIGHT) {
-        if (wg->textinput.cursor < len) {
-            wg->textinput.cursor++;
-            if (wg->textinput.cursor - wg->textinput.scroll > max_chars)
-                wg->textinput.scroll++;
+        if (shift) {
+            if (wg->textinput.sel_start < 0)
+                wg->textinput.sel_start = wg->textinput.cursor;
+        } else {
+            /* If there was a selection, jump to its end */
+            if (has_sel) {
+                int hi = wg->textinput.sel_start > wg->textinput.cursor ?
+                         wg->textinput.sel_start : wg->textinput.cursor;
+                wg->textinput.cursor = hi;
+                wg->textinput.sel_start = -1;
+                if (wg->textinput.cursor - wg->textinput.scroll > max_chars)
+                    wg->textinput.scroll = wg->textinput.cursor - max_chars;
+                win->dirty = 1;
+                return;
+            }
+            wg->textinput.sel_start = -1;
         }
+        if (ctrl) {
+            /* Jump to next word boundary */
+            while (wg->textinput.cursor < len &&
+                   wg->textinput.text[wg->textinput.cursor] != ' ')
+                wg->textinput.cursor++;
+            while (wg->textinput.cursor < len &&
+                   wg->textinput.text[wg->textinput.cursor] == ' ')
+                wg->textinput.cursor++;
+        } else {
+            if (wg->textinput.cursor < len)
+                wg->textinput.cursor++;
+        }
+        if (wg->textinput.cursor - wg->textinput.scroll > max_chars)
+            wg->textinput.scroll = wg->textinput.cursor - max_chars;
         win->dirty = 1;
         return;
     }
+
+    /* Home: Shift=extend selection to start */
+    if (key == KEY_HOME) {
+        if (shift && wg->textinput.sel_start < 0)
+            wg->textinput.sel_start = wg->textinput.cursor;
+        else if (!shift)
+            wg->textinput.sel_start = -1;
+        wg->textinput.cursor = 0;
+        wg->textinput.scroll = 0;
+        win->dirty = 1;
+        return;
+    }
+
+    /* End: Shift=extend selection to end */
+    if (key == KEY_END) {
+        if (shift && wg->textinput.sel_start < 0)
+            wg->textinput.sel_start = wg->textinput.cursor;
+        else if (!shift)
+            wg->textinput.sel_start = -1;
+        wg->textinput.cursor = len;
+        if (wg->textinput.cursor - wg->textinput.scroll > max_chars)
+            wg->textinput.scroll = wg->textinput.cursor - max_chars;
+        win->dirty = 1;
+        return;
+    }
+
     /* Filter special keys */
-    if ((unsigned char)key >= 0xB0 && (unsigned char)key <= 0xBB) return;
+    if ((unsigned char)key >= 0xB0 && (unsigned char)key <= 0xBC) return;
     if (key < 32 || key >= 127) return;
 
-    /* Insert character */
+    /* Printable character: replace selection if any */
+    if (has_sel) textinput_delete_selection(wg);
+    len = (int)strlen(wg->textinput.text);
+
     if (len < wg->textinput.max_len) {
         memmove(&wg->textinput.text[wg->textinput.cursor + 1],
                 &wg->textinput.text[wg->textinput.cursor],
@@ -703,8 +944,9 @@ static void handle_textinput_key(ui_window_t *win, ui_widget_t *wg, int idx, cha
         wg->textinput.cursor++;
         if (wg->textinput.cursor - wg->textinput.scroll > max_chars)
             wg->textinput.scroll++;
-        win->dirty = 1;
     }
+    wg->textinput.sel_start = -1;
+    win->dirty = 1;
 }
 
 static void handle_list_key(ui_window_t *win, ui_widget_t *wg, int idx, char key) {
@@ -748,7 +990,7 @@ void ui_dispatch_event(ui_window_t *win, ui_event_t *ev) {
             int idx = win->focused_widget;
 
             if (wg->type == UI_TEXTINPUT && (wg->flags & UI_FLAG_CAPTURING)) {
-                handle_textinput_key(win, wg, idx, key);
+                handle_textinput_key(win, wg, idx, ev);
                 return;
             }
 
@@ -765,7 +1007,7 @@ void ui_dispatch_event(ui_window_t *win, ui_event_t *ev) {
                 if (key == '\n' || (key >= 32 && key < 127)) {
                     wg->flags |= UI_FLAG_CAPTURING;
                     if (key >= 32 && key < 127)
-                        handle_textinput_key(win, wg, idx, key);
+                        handle_textinput_key(win, wg, idx, ev);
                     win->dirty = 1;
                 }
                 break;
@@ -865,9 +1107,20 @@ void ui_dispatch_event(ui_window_t *win, ui_event_t *ev) {
                 case UI_BUTTON:
                     wg->button.pressed = 1;
                     break;
-                case UI_TEXTINPUT:
+                case UI_TEXTINPUT: {
                     wg->flags |= UI_FLAG_CAPTURING;
+                    /* Position cursor from mouse click */
+                    int tx2 = wg->x + 8;
+                    int click_x = wx - tx2;
+                    int char_w = wg->textinput.password ? 12 : FONT_W;
+                    int click_pos = wg->textinput.scroll + (click_x + char_w / 2) / char_w;
+                    int tlen = (int)strlen(wg->textinput.text);
+                    if (click_pos < 0) click_pos = 0;
+                    if (click_pos > tlen) click_pos = tlen;
+                    wg->textinput.cursor = click_pos;
+                    wg->textinput.sel_start = click_pos; /* start drag anchor */
                     break;
+                }
                 case UI_LIST: {
                     int row = (wy - wg->y) / ui_theme.row_height;
                     int idx = wg->list.scroll + row;
@@ -924,6 +1177,36 @@ void ui_dispatch_event(ui_window_t *win, ui_event_t *ev) {
                 }
             }
             return;
+        }
+    }
+
+    /* Mouse move: drag selection for text inputs */
+    if (ev->type == UI_EVENT_MOUSE_MOVE) {
+        if (win->focused_widget >= 0) {
+            ui_widget_t *wg = &win->widgets[win->focused_widget];
+            if (wg->type == UI_TEXTINPUT && (wg->flags & UI_FLAG_CAPTURING) &&
+                wg->textinput.sel_start >= 0) {
+                wm_window_t *wmw = wm_get_window(win->wm_id);
+                if (wmw) {
+                    int wx = ev->mouse.x - wmw->x - WM_BORDER;
+                    int tx2 = wg->x + 8;
+                    int click_x = wx - tx2;
+                    int char_w = wg->textinput.password ? 12 : FONT_W;
+                    int drag_pos = wg->textinput.scroll + (click_x + char_w / 2) / char_w;
+                    int tlen = (int)strlen(wg->textinput.text);
+                    if (drag_pos < 0) drag_pos = 0;
+                    if (drag_pos > tlen) drag_pos = tlen;
+                    if (drag_pos != wg->textinput.cursor) {
+                        wg->textinput.cursor = drag_pos;
+                        int max_chars = (wg->w - 16) / char_w;
+                        if (wg->textinput.cursor < wg->textinput.scroll)
+                            wg->textinput.scroll = wg->textinput.cursor;
+                        if (wg->textinput.cursor - wg->textinput.scroll > max_chars)
+                            wg->textinput.scroll = wg->textinput.cursor - max_chars;
+                        win->dirty = 1;
+                    }
+                }
+            }
         }
     }
 }

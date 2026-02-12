@@ -56,6 +56,9 @@ int  keyboard_data_available(void);
 int  keyboard_getchar_nb(void);     /* non-blocking: returns char or 0 */
 int  keyboard_check_double_ctrl(void);
 void keyboard_run_idle(void);
+int  keyboard_get_shift(void);
+int  keyboard_get_ctrl(void);
+int  keyboard_get_alt(void);
 
 /* FILE I/O */
 FILE* fopen(const char* path, const char* mode);

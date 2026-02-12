@@ -66,12 +66,12 @@ int ui_poll_event(ui_event_t *out) {
         return 1;
     }
 
-    /* Wrap key press */
+    /* Wrap key press with modifier state */
     out->type = UI_EVENT_KEY_PRESS;
     out->key.key = c;
-    out->key.ctrl = 0;
-    out->key.alt = 0;
-    out->key.shift = 0;
+    out->key.ctrl = keyboard_get_ctrl();
+    out->key.shift = keyboard_get_shift();
+    out->key.alt = keyboard_get_alt();
     return 1;
 }
 
@@ -127,6 +127,24 @@ void ui_idle_handler(void) {
         ev.mouse.buttons = btns;
         ui_push_event(&ev);
         keyboard_request_force_exit();
+    }
+
+    /* Mouse drag while left button held */
+    if ((btns & MOUSE_BTN_LEFT) && (prev_mouse_buttons & MOUSE_BTN_LEFT)) {
+        static int prev_mx, prev_my;
+        if (mx != prev_mx || my != prev_my) {
+            ui_event_t ev;
+            ev.type = UI_EVENT_MOUSE_MOVE;
+            ev.mouse.x = mx;
+            ev.mouse.y = my;
+            ev.mouse.wx = 0;
+            ev.mouse.wy = 0;
+            ev.mouse.buttons = btns;
+            ui_push_event(&ev);
+            keyboard_request_force_exit();
+            prev_mx = mx;
+            prev_my = my;
+        }
     }
 
     prev_mouse_buttons = btns;
