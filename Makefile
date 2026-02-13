@@ -3,7 +3,7 @@ export PATH := $(HOME)/opt/cross/bin:$(PATH)
 
 # Disk configuration
 DISK_IMAGE := impos_disk.img
-DISK_SIZE := 10M
+DISK_SIZE := 40M
 
 # Use KVM if available and accessible, otherwise fall back to TCG
 KVM_FLAG := $(shell if [ -w /dev/kvm ] 2>/dev/null; then echo "$(KVM_FLAG)"; fi)
@@ -15,11 +15,23 @@ all: iso
 build:
 	./build.sh
 
-iso: build
+initrd.tar:
+	@echo "Creating initrd.tar..."
+	@rm -rf initrd_staging
+	@mkdir -p initrd_staging/etc
+	@mkdir -p initrd_staging/bin
+	@mkdir -p initrd_staging/usr/bin
+	@mkdir -p initrd_staging/tmp
+	@echo "Welcome to ImposOS!" > initrd_staging/etc/motd
+	@cd initrd_staging && tar cf ../initrd.tar --format=ustar .
+	@rm -rf initrd_staging
+
+iso: build initrd.tar
 	mkdir -p isodir/boot/grub
 	cp sysroot/boot/myos.kernel isodir/boot/myos.kernel
 	@if [ -f doom1.wad ]; then cp doom1.wad isodir/boot/doom1.wad; fi
-	@printf 'set gfxmode=1024x768x32,auto\nset gfxpayload=keep\nmenuentry "myos" {\n\tmultiboot /boot/myos.kernel\n\tmodule /boot/doom1.wad\n}\n' > isodir/boot/grub/grub.cfg
+	cp initrd.tar isodir/boot/initrd.tar
+	@printf 'set gfxmode=1024x768x32,auto\nset gfxpayload=keep\nmenuentry "myos" {\n\tmultiboot /boot/myos.kernel\n\tmodule /boot/doom1.wad\n\tmodule /boot/initrd.tar\n}\n' > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o myos.iso isodir
 
 $(DISK_IMAGE):
@@ -93,6 +105,8 @@ run-gtk: iso
 
 clean:
 	./clean.sh
+	rm -f initrd.tar
+	rm -rf initrd_staging
 
 clean-disk:
 	@echo "Removing disk image: $(DISK_IMAGE)"

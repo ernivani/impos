@@ -573,14 +573,14 @@ _The single most impressive milestone. No Linux compat needed. doomgeneric requi
 ### Phase 2: Filesystem Expansion & Initrd
 _Current FS: 64 inodes, 128KB total — way too small. Need 32MB+ for Linux binaries._
 
-- [ ] GRUB multiboot module support — parse multiboot info struct for module address + size
-- [ ] Initrd loader — load tar/cpio archive from GRUB module into memory at boot
-- [ ] Tar parser — read tar headers (512-byte blocks), extract file names, sizes, data pointers (~100 lines)
-- [ ] Overlay mount — initrd files accessible alongside existing FS (read-only overlay)
-- [ ] `/bin`, `/usr/bin` directories — standard Unix layout for Linux binaries
-- [ ] `/dev/null`, `/dev/zero`, `/dev/tty`, `/dev/urandom` — minimal device nodes (special-cased in open/read/write)
-- [ ] Expand existing FS — increase to 256+ inodes, 4KB blocks, 8192+ blocks (~32MB) for user-writable storage
-- [ ] Update `make clean-disk` and disk format version
+- [x] GRUB multiboot module support — parse multiboot info struct for module address + size
+- [x] Initrd loader — load tar/cpio archive from GRUB module into memory at boot
+- [x] Tar parser — read tar headers (512-byte blocks), extract file names, sizes, data pointers (~100 lines)
+- [x] Overlay mount — initrd files materialized into real FS at boot (files already on disk silently skipped)
+- [x] `/bin`, `/usr/bin` directories — standard Unix layout for Linux binaries
+- [x] `/dev/null`, `/dev/zero`, `/dev/tty`, `/dev/urandom` — minimal device nodes (INODE_CHARDEV with major/minor dispatch)
+- [x] Expand existing FS — 256 inodes, 4KB blocks, 8192 blocks (32MB), dirty-block tracking
+- [x] Update `make clean-disk` and disk format version (FS_VERSION 2, DISK_SIZE 40M)
 
 ### Phase 3: Static ELF Loader + First Linux Syscalls
 _Prove Linux binary compat works. Run a static musl hello world._
