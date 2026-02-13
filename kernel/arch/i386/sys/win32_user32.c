@@ -610,6 +610,227 @@ static BOOL WINAPI shim_PostMessageW(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
     return shim_PostMessageA(hWnd, msg, wParam, lParam);
 }
 
+/* ── Character Classification (user32) ────────────────────────── */
+
+/* Latin-1-aware upper/lower */
+static WCHAR u32_towupper(WCHAR c) {
+    if (c >= 'a' && c <= 'z') return c - 32;
+    if (c >= 0x00E0 && c <= 0x00FE && c != 0x00F7) return c - 0x20;
+    return c;
+}
+
+static WCHAR u32_towlower(WCHAR c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    if (c >= 0x00C0 && c <= 0x00DE && c != 0x00D7) return c + 0x20;
+    return c;
+}
+
+static LPWSTR WINAPI shim_CharUpperW(LPWSTR lpsz) {
+    if (!lpsz) return NULL;
+    /* If high word is zero, it's a single character */
+    if (((uintptr_t)lpsz & 0xFFFF0000) == 0) {
+        WCHAR c = (WCHAR)(uintptr_t)lpsz;
+        return (LPWSTR)(uintptr_t)u32_towupper(c);
+    }
+    for (WCHAR *p = lpsz; *p; p++)
+        *p = u32_towupper(*p);
+    return lpsz;
+}
+
+static LPWSTR WINAPI shim_CharLowerW(LPWSTR lpsz) {
+    if (!lpsz) return NULL;
+    if (((uintptr_t)lpsz & 0xFFFF0000) == 0) {
+        WCHAR c = (WCHAR)(uintptr_t)lpsz;
+        return (LPWSTR)(uintptr_t)u32_towlower(c);
+    }
+    for (WCHAR *p = lpsz; *p; p++)
+        *p = u32_towlower(*p);
+    return lpsz;
+}
+
+static LPSTR WINAPI shim_CharUpperA(LPSTR lpsz) {
+    if (!lpsz) return NULL;
+    if (((uintptr_t)lpsz & 0xFFFF0000) == 0) {
+        char c = (char)(uintptr_t)lpsz;
+        if (c >= 'a' && c <= 'z') c -= 32;
+        return (LPSTR)(uintptr_t)(unsigned char)c;
+    }
+    for (char *p = lpsz; *p; p++)
+        if (*p >= 'a' && *p <= 'z') *p -= 32;
+    return lpsz;
+}
+
+static LPSTR WINAPI shim_CharLowerA(LPSTR lpsz) {
+    if (!lpsz) return NULL;
+    if (((uintptr_t)lpsz & 0xFFFF0000) == 0) {
+        char c = (char)(uintptr_t)lpsz;
+        if (c >= 'A' && c <= 'Z') c += 32;
+        return (LPSTR)(uintptr_t)(unsigned char)c;
+    }
+    for (char *p = lpsz; *p; p++)
+        if (*p >= 'A' && *p <= 'Z') *p += 32;
+    return lpsz;
+}
+
+static LPCWSTR WINAPI shim_CharNextW(LPCWSTR lpsz) {
+    if (!lpsz || !*lpsz) return lpsz;
+    /* Surrogate-aware: skip high surrogate + low surrogate pair */
+    if (*lpsz >= 0xD800 && *lpsz <= 0xDBFF && lpsz[1] >= 0xDC00 && lpsz[1] <= 0xDFFF)
+        return lpsz + 2;
+    return lpsz + 1;
+}
+
+static LPCSTR WINAPI shim_CharNextA(LPCSTR lpsz) {
+    if (!lpsz || !*lpsz) return lpsz;
+    return lpsz + 1;
+}
+
+static BOOL WINAPI shim_IsCharAlphaW(WCHAR ch) {
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) return TRUE;
+    if (ch >= 0x00C0 && ch <= 0x00FF && ch != 0x00D7 && ch != 0x00F7) return TRUE;
+    return FALSE;
+}
+
+static BOOL WINAPI shim_IsCharAlphaNumericW(WCHAR ch) {
+    if (shim_IsCharAlphaW(ch)) return TRUE;
+    if (ch >= '0' && ch <= '9') return TRUE;
+    return FALSE;
+}
+
+static BOOL WINAPI shim_IsCharUpperW(WCHAR ch) {
+    if (ch >= 'A' && ch <= 'Z') return TRUE;
+    if (ch >= 0x00C0 && ch <= 0x00DE && ch != 0x00D7) return TRUE;
+    return FALSE;
+}
+
+static BOOL WINAPI shim_IsCharLowerW(WCHAR ch) {
+    if (ch >= 'a' && ch <= 'z') return TRUE;
+    if (ch >= 0x00E0 && ch <= 0x00FE && ch != 0x00F7) return TRUE;
+    return FALSE;
+}
+
+/* ── wsprintfW / wvsprintfW ──────────────────────────────────── */
+
+static int WINAPI shim_wvsprintfW(LPWSTR buf, LPCWSTR fmt, __builtin_va_list ap) {
+    if (!buf || !fmt) return 0;
+    int out = 0;
+    const int maxout = 1024;
+
+    while (*fmt && out < maxout - 1) {
+        if (*fmt != '%') {
+            buf[out++] = *fmt++;
+            continue;
+        }
+        fmt++; /* skip '%' */
+
+        /* Flags */
+        int zero_pad = 0;
+        if (*fmt == '0') { zero_pad = 1; fmt++; }
+
+        /* Width */
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') {
+            width = width * 10 + (*fmt - '0');
+            fmt++;
+        }
+
+        /* Length modifier */
+        int is_long = 0;
+        if (*fmt == 'l') { is_long = 1; fmt++; }
+
+        switch (*fmt) {
+            case 'd': case 'i': {
+                long val = is_long ? __builtin_va_arg(ap, long) : (long)__builtin_va_arg(ap, int);
+                char tmp[20];
+                int neg = 0;
+                unsigned long uval;
+                if (val < 0) { neg = 1; uval = (unsigned long)(-val); } else uval = (unsigned long)val;
+                int ti = 0;
+                do { tmp[ti++] = '0' + (uval % 10); uval /= 10; } while (uval);
+                if (neg) tmp[ti++] = '-';
+                int pad = width - ti;
+                while (pad-- > 0) buf[out++] = zero_pad ? '0' : ' ';
+                while (ti > 0 && out < maxout - 1) buf[out++] = tmp[--ti];
+                break;
+            }
+            case 'u': {
+                unsigned long val = is_long ? __builtin_va_arg(ap, unsigned long) : (unsigned long)__builtin_va_arg(ap, unsigned int);
+                char tmp[20]; int ti = 0;
+                do { tmp[ti++] = '0' + (val % 10); val /= 10; } while (val);
+                int pad = width - ti;
+                while (pad-- > 0) buf[out++] = zero_pad ? '0' : ' ';
+                while (ti > 0 && out < maxout - 1) buf[out++] = tmp[--ti];
+                break;
+            }
+            case 'x': case 'X': {
+                unsigned long val = is_long ? __builtin_va_arg(ap, unsigned long) : (unsigned long)__builtin_va_arg(ap, unsigned int);
+                const char *digits = (*fmt == 'X') ? "0123456789ABCDEF" : "0123456789abcdef";
+                char tmp[20]; int ti = 0;
+                do { tmp[ti++] = digits[val & 0xF]; val >>= 4; } while (val);
+                int pad = width - ti;
+                while (pad-- > 0) buf[out++] = zero_pad ? '0' : ' ';
+                while (ti > 0 && out < maxout - 1) buf[out++] = tmp[--ti];
+                break;
+            }
+            case 'p': {
+                unsigned long val = (unsigned long)__builtin_va_arg(ap, void *);
+                buf[out++] = '0'; if (out < maxout - 1) buf[out++] = 'x';
+                char tmp[20]; int ti = 0;
+                do { tmp[ti++] = "0123456789abcdef"[val & 0xF]; val >>= 4; } while (val);
+                while (ti > 0 && out < maxout - 1) buf[out++] = tmp[--ti];
+                break;
+            }
+            case 's': { /* Wide string (WCHAR*) */
+                const WCHAR *ws = __builtin_va_arg(ap, const WCHAR *);
+                if (!ws) ws = (const WCHAR *)L"(null)";
+                while (*ws && out < maxout - 1) buf[out++] = *ws++;
+                break;
+            }
+            case 'S': { /* Narrow string (char*) */
+                const char *ns = __builtin_va_arg(ap, const char *);
+                if (!ns) ns = "(null)";
+                while (*ns && out < maxout - 1) buf[out++] = (WCHAR)(unsigned char)*ns++;
+                break;
+            }
+            case 'c': {
+                WCHAR c = (WCHAR)__builtin_va_arg(ap, int);
+                buf[out++] = c;
+                break;
+            }
+            case '%':
+                buf[out++] = '%';
+                break;
+            default:
+                buf[out++] = '%';
+                if (out < maxout - 1) buf[out++] = *fmt;
+                break;
+        }
+        fmt++;
+    }
+    buf[out] = 0;
+    return out;
+}
+
+static int WINAPI shim_wsprintfW(LPWSTR buf, LPCWSTR fmt, ...) {
+    __builtin_va_list ap;
+    __builtin_va_start(ap, fmt);
+    int ret = shim_wvsprintfW(buf, fmt, ap);
+    __builtin_va_end(ap);
+    return ret;
+}
+
+static int WINAPI shim_wvsprintfA(LPSTR buf, LPCSTR fmt, __builtin_va_list ap) {
+    return vsnprintf(buf, 1024, fmt, ap);
+}
+
+static int WINAPI shim_wsprintfA(LPSTR buf, LPCSTR fmt, ...) {
+    __builtin_va_list ap;
+    __builtin_va_start(ap, fmt);
+    int ret = vsnprintf(buf, 1024, fmt, ap);
+    __builtin_va_end(ap);
+    return ret;
+}
+
 /* ── Export Table ─────────────────────────────────────────────── */
 
 static const win32_export_entry_t user32_exports[] = {
@@ -645,6 +866,24 @@ static const win32_export_entry_t user32_exports[] = {
     { "GetSystemMetrics",   (void *)shim_GetSystemMetrics },
     { "SetTimer",           (void *)shim_SetTimer },
     { "KillTimer",          (void *)shim_KillTimer },
+
+    /* Character classification */
+    { "CharUpperW",         (void *)shim_CharUpperW },
+    { "CharLowerW",         (void *)shim_CharLowerW },
+    { "CharUpperA",         (void *)shim_CharUpperA },
+    { "CharLowerA",         (void *)shim_CharLowerA },
+    { "CharNextW",          (void *)shim_CharNextW },
+    { "CharNextA",          (void *)shim_CharNextA },
+    { "IsCharAlphaW",       (void *)shim_IsCharAlphaW },
+    { "IsCharAlphaNumericW", (void *)shim_IsCharAlphaNumericW },
+    { "IsCharUpperW",       (void *)shim_IsCharUpperW },
+    { "IsCharLowerW",       (void *)shim_IsCharLowerW },
+
+    /* wsprintf */
+    { "wsprintfW",          (void *)shim_wsprintfW },
+    { "wvsprintfW",         (void *)shim_wvsprintfW },
+    { "wsprintfA",          (void *)shim_wsprintfA },
+    { "wvsprintfA",         (void *)shim_wvsprintfA },
 };
 
 const win32_dll_shim_t win32_user32 = {

@@ -14,6 +14,7 @@
 #define PTE_DIRTY       0x040
 #define PTE_4MB         0x080
 #define PTE_GLOBAL      0x100
+#define PTE_GUARD       0x200  /* AVL bit 9: OS-defined guard page marker */
 
 #define PAGE_SIZE       4096
 #define PAGE_MASK       (~0xFFF)
@@ -45,5 +46,13 @@ uint32_t vmm_map_user_page(uint32_t pd_phys, uint32_t virt, uint32_t phys, uint3
 
 /* Free a per-process page directory frame */
 void vmm_destroy_user_pagedir(uint32_t pd_phys);
+
+/* Guard page support: mark a page as guard (removes PRESENT, sets PTE_GUARD).
+ * Returns 1 on success, 0 on failure. */
+int vmm_set_guard_page(uint32_t virt);
+
+/* Check if a faulting address is a guard page. If so, removes guard flag,
+ * restores PRESENT, and returns 1. Returns 0 if not a guard page. */
+int vmm_check_guard_page(uint32_t virt);
 
 #endif

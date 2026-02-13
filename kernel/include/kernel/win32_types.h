@@ -10,6 +10,7 @@ typedef uint8_t  BYTE;
 typedef int32_t  LONG;
 typedef int32_t  INT;
 typedef uint32_t UINT;
+typedef uint32_t ULONG;
 typedef int      BOOL;
 typedef char     CHAR;
 typedef uint16_t WCHAR;
