@@ -37,6 +37,11 @@ int elf_detect(const uint8_t *data, size_t size) {
 /* ── ELF Loader ──────────────────────────────────────────────── */
 
 int elf_run(const char *filename) {
+    const char *argv[] = { filename };
+    return elf_run_argv(filename, 1, argv);
+}
+
+int elf_run_argv(const char *filename, int argc, const char **argv) {
     /* Read file into buffer */
     uint8_t *file_data = malloc(MAX_FILE_SIZE);
     if (!file_data) {
@@ -219,16 +224,67 @@ int elf_run(const char *filename) {
     }
     memset((void *)kstack, 0, PAGE_SIZE);
 
-    /* User stack pointer: top of user stack page minus a small alignment gap.
-     * Linux ABI requires 16-byte aligned stack before call. */
-    uint32_t user_esp = USER_SPACE_BASE + PAGE_SIZE - 16;
+    /* ── Build argc/argv/envp/auxv on user stack ───────────────── */
+    /* Stack layout (grows downward):
+     *   [strings: argv[0]\0 argv[1]\0 ...]
+     *   [padding for 16-byte alignment]
+     *   [auxv terminator: 0, 0]
+     *   [envp terminator: NULL]
+     *   [argv terminator: NULL]
+     *   [argv[n-1] ptr] ... [argv[0] ptr]
+     *   [argc]               ← user_esp points here
+     */
+    uint8_t *stack_top = (uint8_t *)(ustack + PAGE_SIZE);
+    uint32_t vstack_top = USER_SPACE_BASE + PAGE_SIZE;
 
-    /* Write argc=0, argv=NULL, envp=NULL on user stack (musl expects these) */
-    uint32_t *usp = (uint32_t *)(ustack + PAGE_SIZE - 16);
-    usp[0] = 0;  /* argc */
-    usp[1] = 0;  /* argv */
-    usp[2] = 0;  /* envp */
-    usp[3] = 0;  /* aux terminator */
+    /* Default: argv[0] = filename if no argv provided */
+    int real_argc = argc;
+    const char *default_argv[1];
+    const char **real_argv = argv;
+    if (!argv || argc <= 0) {
+        default_argv[0] = filename;
+        real_argv = default_argv;
+        real_argc = 1;
+    }
+
+    /* Phase 1: Copy strings to top of stack, record virtual addresses */
+    uint32_t str_vaddrs[32]; /* max 32 args */
+    if (real_argc > 32) real_argc = 32;
+
+    uint8_t *str_ptr = stack_top;
+    uint32_t str_vptr = vstack_top;
+    for (int i = 0; i < real_argc; i++) {
+        size_t slen = strlen(real_argv[i]) + 1;
+        str_ptr -= slen;
+        str_vptr -= slen;
+        memcpy(str_ptr, real_argv[i], slen);
+        str_vaddrs[i] = str_vptr;
+    }
+
+    /* Phase 2: Build the pointer table below the strings */
+    /* Align down to 4-byte boundary */
+    str_ptr = (uint8_t *)((uint32_t)str_ptr & ~3u);
+    str_vptr = str_vptr & ~3u;
+
+    /* Count entries: argc + argv ptrs + NULL + envp NULL + auxv(0,0) */
+    int table_words = 1 + real_argc + 1 + 1 + 2;
+    uint32_t *tbl = (uint32_t *)str_ptr - table_words;
+    uint32_t vtbl = str_vptr - table_words * 4;
+
+    /* Align to 16 bytes */
+    vtbl &= ~15u;
+    tbl = (uint32_t *)(ustack + (vtbl - USER_SPACE_BASE));
+
+    int idx = 0;
+    tbl[idx++] = real_argc;                  /* argc */
+    for (int i = 0; i < real_argc; i++)
+        tbl[idx++] = str_vaddrs[i];          /* argv[i] */
+    tbl[idx++] = 0;                          /* argv terminator */
+    tbl[idx++] = 0;                          /* envp terminator */
+    tbl[idx++] = 0;                          /* auxv type = AT_NULL */
+    tbl[idx++] = 0;                          /* auxv value */
+
+    uint32_t user_esp = vtbl;
 
     /* Build ring 3 iret frame on kernel stack */
     uint32_t *ksp = (uint32_t *)(kstack + PAGE_SIZE);
@@ -289,6 +345,12 @@ int elf_run(const char *filename) {
     task->tls_base = 0;
 
     sig_init(&task->sig);
+
+    /* Auto-open fd 0 (stdin), 1 (stdout), 2 (stderr) as TTY */
+    memset(task->fds, 0, sizeof(task->fds));
+    task->fds[0] = (fd_entry_t){ .type = FD_TTY, .flags = LINUX_O_RDONLY };
+    task->fds[1] = (fd_entry_t){ .type = FD_TTY, .flags = LINUX_O_WRONLY };
+    task->fds[2] = (fd_entry_t){ .type = FD_TTY, .flags = LINUX_O_WRONLY };
 
     task->pid = task_assign_pid(tid);
 

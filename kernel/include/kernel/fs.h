@@ -121,6 +121,18 @@ uint32_t fs_get_cwd_inode(void);
 int fs_read_inode(uint32_t inode_num, inode_t* out_inode);
 int fs_read_block(uint32_t block_num, uint8_t* out_data);
 
+/* Block-level partial read: read 'count' bytes starting at 'offset' from inode.
+ * Returns bytes read, or <0 on error. */
+int fs_read_at(uint32_t inode_num, uint8_t *buffer, uint32_t offset, uint32_t count);
+
+/* Resolve a path to its parent inode and final name component.
+ * Returns inode index of the final component (or -1 if not found).
+ * out_parent receives the parent directory inode, out_name receives the final name. */
+int fs_resolve_path(const char *path, uint32_t *out_parent, char *out_name);
+
+/* Lookup a name within a directory inode. Returns child inode or -1. */
+int fs_dir_lookup(uint32_t dir_inode, const char *name);
+
 /* Rename a file/directory in the current directory */
 int fs_rename(const char* old_name, const char* new_name);
 

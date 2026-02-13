@@ -360,6 +360,64 @@ int fs_read_block(uint32_t block_num, uint8_t* out_data) {
     return 0;
 }
 
+/* ---- block-level partial read ---- */
+
+int fs_read_at(uint32_t inode_num, uint8_t *buffer, uint32_t offset, uint32_t count) {
+    if (inode_num >= NUM_INODES) return -1;
+    inode_t *node = &inodes[inode_num];
+
+    if (node->type != INODE_FILE) return -1;
+
+    /* Clamp to file size */
+    if (offset >= node->size) return 0;
+    if (offset + count > node->size)
+        count = node->size - offset;
+    if (count == 0) return 0;
+
+    uint32_t bytes_read = 0;
+
+    while (bytes_read < count) {
+        uint32_t pos = offset + bytes_read;
+        uint32_t block_index = pos / BLOCK_SIZE;
+        uint32_t block_offset = pos % BLOCK_SIZE;
+        uint32_t chunk = BLOCK_SIZE - block_offset;
+        if (chunk > count - bytes_read)
+            chunk = count - bytes_read;
+
+        /* Determine physical block number */
+        uint32_t phys_block;
+        if (block_index < DIRECT_BLOCKS) {
+            if (block_index >= node->num_blocks) break;
+            phys_block = node->blocks[block_index];
+        } else {
+            /* Indirect block */
+            uint32_t ind_index = block_index - DIRECT_BLOCKS;
+            if (node->indirect_block == 0 || ind_index >= INDIRECT_PTRS) break;
+            uint32_t *ptrs = (uint32_t *)BLOCK_PTR(node->indirect_block);
+            phys_block = ptrs[ind_index];
+            if (phys_block == 0) break;
+        }
+
+        memcpy(buffer + bytes_read, BLOCK_PTR(phys_block) + block_offset, chunk);
+        bytes_read += chunk;
+    }
+
+    node->accessed_at = rtc_get_epoch();
+    fs_rd_ops++;
+    fs_rd_bytes += bytes_read;
+    return (int)bytes_read;
+}
+
+/* ---- public wrappers for internal functions ---- */
+
+int fs_resolve_path(const char *path, uint32_t *out_parent, char *out_name) {
+    return resolve_path(path, out_parent, out_name);
+}
+
+int fs_dir_lookup(uint32_t dir_inode_num, const char *name) {
+    return dir_lookup(dir_inode_num, name);
+}
+
 /* ---- disk persistence ---- */
 
 int fs_sync(void) {
@@ -1225,6 +1283,19 @@ int fs_mount_initrd(const uint8_t* data, uint32_t size) {
             int existing = resolve_path(abspath, &parent, dname);
             if (existing < 0) {
                 fs_create_file(abspath, 1);
+            }
+        } else if (typeflag == '2') {
+            /* Symlink — link target is at tar offset 157, 100 bytes */
+            char link_target[100];
+            memcpy(link_target, ptr - 512 + 157, 100);
+            link_target[99] = '\0';
+
+            uint32_t parent;
+            char dname[MAX_NAME_LEN];
+            int existing = resolve_path(abspath, &parent, dname);
+            if (existing < 0 && link_target[0] != '\0') {
+                fs_create_symlink(link_target, abspath);
+                files_loaded++;
             }
         } else if (typeflag == '0' || typeflag == '\0') {
             /* Regular file */

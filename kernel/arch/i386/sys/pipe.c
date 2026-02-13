@@ -179,8 +179,11 @@ void pipe_cleanup_task(int tid) {
     if (!t) return;
 
     for (int i = 0; i < MAX_FDS; i++) {
-        if (t->fds[i].type != FD_NONE) {
-            /* Inline close logic using task_get_raw since task may be dying */
+        if (t->fds[i].type == FD_NONE)
+            continue;
+
+        /* Close pipe ends with proper refcount management */
+        if (t->fds[i].type == FD_PIPE_R || t->fds[i].type == FD_PIPE_W) {
             int pipe_id = t->fds[i].pipe_id;
             if (pipe_id >= 0 && pipe_id < MAX_PIPES && pipes[pipe_id].active) {
                 pipe_t *p = &pipes[pipe_id];
@@ -190,7 +193,7 @@ void pipe_cleanup_task(int tid) {
                         task_unblock(p->write_tid);
                         p->write_tid = -1;
                     }
-                } else if (t->fds[i].type == FD_PIPE_W) {
+                } else {
                     p->writers--;
                     if (p->writers == 0 && p->read_tid >= 0) {
                         task_unblock(p->read_tid);
@@ -200,8 +203,23 @@ void pipe_cleanup_task(int tid) {
                 if (p->readers == 0 && p->writers == 0)
                     p->active = 0;
             }
-            t->fds[i].type = FD_NONE;
-            t->fds[i].pipe_id = 0;
         }
+        /* FD_FILE, FD_DEV, FD_DIR, FD_TTY: no extra cleanup needed */
+
+        t->fds[i].type = FD_NONE;
+        t->fds[i].pipe_id = 0;
+        t->fds[i].inode = 0;
+        t->fds[i].offset = 0;
+        t->fds[i].flags = 0;
     }
+}
+
+int fd_alloc(int tid) {
+    task_info_t *t = task_get(tid);
+    if (!t) return -1;
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (t->fds[i].type == FD_NONE)
+            return i;
+    }
+    return -1;
 }

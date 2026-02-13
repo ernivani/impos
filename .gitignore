@@ -1,12 +1,16 @@
 *.iso
 *.img
-isodir
-sysroot
-
+*.o
 *.log
-
 *.exe
+*.png
+
+isodir/
+sysroot/
+initrd_staging/
+initrd.tar
 
 .vscode/
-initrd.tar
-initrd_staging/
+
+# Downloaded BusyBox binary (use 'make download-busybox' to fetch)
+test_programs/busybox

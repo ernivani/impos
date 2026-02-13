@@ -10,6 +10,11 @@
 
 #include "vga.h"
 
+/* Forward declarations for ANSI parser */
+static void terminal_scroll_up(void);
+void terminal_putentryat(unsigned char c, uint8_t color, size_t x, size_t y);
+void terminal_clear(void);
+
 static size_t VGA_WIDTH = 80;
 static size_t VGA_HEIGHT = 25;
 static uint16_t* const VGA_MEMORY = (uint16_t*) 0xB8000;
@@ -38,12 +43,152 @@ static int canvas_pw = 0, canvas_ph = 0;
 static int canvas_cur_px = -1, canvas_cur_py = -1;
 static uint32_t canvas_cur_save[8 * 2]; /* FONT_W * 2 rows */
 
+/* ---- ANSI escape sequence parser ---- */
+
+#define ANSI_NORMAL  0
+#define ANSI_ESC     1  /* received ESC (0x1B) */
+#define ANSI_CSI     2  /* received ESC [ */
+
+#define ANSI_MAX_PARAMS 8
+
+static int    ansi_state = ANSI_NORMAL;
+static int    ansi_params[ANSI_MAX_PARAMS];
+static int    ansi_param_count = 0;
+static int    ansi_bold = 0;
+static uint8_t ansi_fg = VGA_COLOR_LIGHT_GREY;
+static uint8_t ansi_bg = VGA_COLOR_BLACK;
+
+/* ANSI color index (0-7) → VGA color index (0-7) */
+static const uint8_t ansi_to_vga[8] = {
+	0, /* 0 black   → VGA 0 */
+	4, /* 1 red     → VGA 4 */
+	2, /* 2 green   → VGA 2 */
+	6, /* 3 yellow  → VGA 6 (brown) */
+	1, /* 4 blue    → VGA 1 */
+	5, /* 5 magenta → VGA 5 */
+	3, /* 6 cyan    → VGA 3 */
+	7, /* 7 white   → VGA 7 (light grey) */
+};
+
+static void ansi_apply_sgr(void) {
+	if (ansi_param_count == 0) {
+		/* ESC[m with no params = reset */
+		ansi_params[0] = 0;
+		ansi_param_count = 1;
+	}
+	for (int i = 0; i < ansi_param_count; i++) {
+		int p = ansi_params[i];
+		if (p == 0) {
+			ansi_bold = 0;
+			ansi_fg = VGA_COLOR_LIGHT_GREY;
+			ansi_bg = VGA_COLOR_BLACK;
+		} else if (p == 1) {
+			ansi_bold = 1;
+			if (ansi_fg < 8) ansi_fg |= 8;
+		} else if (p == 2 || p == 22) {
+			ansi_bold = 0;
+			if (ansi_fg >= 8) ansi_fg &= 7;
+		} else if (p == 7) {
+			/* Reverse video */
+			uint8_t tmp = ansi_fg;
+			ansi_fg = ansi_bg;
+			ansi_bg = tmp;
+		} else if (p >= 30 && p <= 37) {
+			ansi_fg = ansi_to_vga[p - 30];
+			if (ansi_bold) ansi_fg |= 8;
+		} else if (p == 39) {
+			ansi_fg = ansi_bold ? VGA_COLOR_WHITE : VGA_COLOR_LIGHT_GREY;
+		} else if (p >= 40 && p <= 47) {
+			ansi_bg = ansi_to_vga[p - 40];
+		} else if (p == 49) {
+			ansi_bg = VGA_COLOR_BLACK;
+		} else if (p >= 90 && p <= 97) {
+			ansi_fg = ansi_to_vga[p - 90] | 8;
+		} else if (p >= 100 && p <= 107) {
+			ansi_bg = ansi_to_vga[p - 100] | 8;
+		}
+		/* 38;5;N and 48;5;N (256-color) — skip N, handled by ignoring unknowns */
+	}
+	terminal_color = vga_entry_color(ansi_fg, ansi_bg);
+}
+
 static const uint32_t vga_to_rgb[16] = {
 	0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
 	0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
 	0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
 	0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
 };
+
+static void ansi_execute_csi(char cmd) {
+	int n = (ansi_param_count > 0) ? ansi_params[0] : 0;
+	int m_val = (ansi_param_count > 1) ? ansi_params[1] : 0;
+
+	switch (cmd) {
+	case 'm': /* SGR — Select Graphic Rendition */
+		ansi_apply_sgr();
+		break;
+	case 'J': /* Erase in Display */
+		if (n == 2 || n == 3) {
+			terminal_clear();
+		} else if (n == 0) {
+			/* Clear from cursor to end */
+			for (size_t x = terminal_column; x < win_w; x++)
+				terminal_putentryat(' ', terminal_color, x, terminal_row);
+			for (size_t y = terminal_row + 1; y < win_h; y++)
+				for (size_t x = 0; x < win_w; x++)
+					terminal_putentryat(' ', terminal_color, x, y);
+		}
+		break;
+	case 'K': /* Erase in Line */
+		if (n == 0) {
+			for (size_t x = terminal_column; x < win_w; x++)
+				terminal_putentryat(' ', terminal_color, x, terminal_row);
+		} else if (n == 1) {
+			for (size_t x = 0; x <= terminal_column; x++)
+				terminal_putentryat(' ', terminal_color, x, terminal_row);
+		} else if (n == 2) {
+			for (size_t x = 0; x < win_w; x++)
+				terminal_putentryat(' ', terminal_color, x, terminal_row);
+		}
+		break;
+	case 'H': case 'f': /* Cursor Position (1-based) */
+		if (n == 0) n = 1;
+		if (m_val == 0) m_val = 1;
+		terminal_row = (size_t)(n - 1);
+		terminal_column = (size_t)(m_val - 1);
+		if (terminal_row >= win_h) terminal_row = win_h - 1;
+		if (terminal_column >= win_w) terminal_column = win_w - 1;
+		break;
+	case 'A': /* Cursor Up */
+		if (n == 0) n = 1;
+		if ((size_t)n > terminal_row) terminal_row = 0;
+		else terminal_row -= (size_t)n;
+		break;
+	case 'B': /* Cursor Down */
+		if (n == 0) n = 1;
+		terminal_row += (size_t)n;
+		if (terminal_row >= win_h) terminal_row = win_h - 1;
+		break;
+	case 'C': /* Cursor Forward */
+		if (n == 0) n = 1;
+		terminal_column += (size_t)n;
+		if (terminal_column >= win_w) terminal_column = win_w - 1;
+		break;
+	case 'D': /* Cursor Back */
+		if (n == 0) n = 1;
+		if ((size_t)n > terminal_column) terminal_column = 0;
+		else terminal_column -= (size_t)n;
+		break;
+	case 'G': /* Cursor Horizontal Absolute (1-based) */
+		if (n == 0) n = 1;
+		terminal_column = (size_t)(n - 1);
+		if (terminal_column >= win_w) terminal_column = win_w - 1;
+		break;
+	default:
+		/* Silently ignore unrecognized CSI commands (l, h, etc.) */
+		break;
+	}
+}
 
 static void terminal_update_cursor(void) {
 	if (gfx_mode) {
@@ -105,6 +250,10 @@ void terminal_initialize(void) {
 	terminal_row = 0;
 	terminal_column = 0;
 	terminal_color = vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+	ansi_state = ANSI_NORMAL;
+	ansi_bold = 0;
+	ansi_fg = VGA_COLOR_LIGHT_GREY;
+	ansi_bg = VGA_COLOR_BLACK;
 
 	if (gfx_is_active()) {
 		gfx_mode = 1;
@@ -139,10 +288,16 @@ void terminal_initialize(void) {
 
 void terminal_setcolor(enum vga_color fg, enum vga_color bg) {
 	terminal_color = vga_entry_color(fg, bg);
+	ansi_fg = (uint8_t)fg;
+	ansi_bg = (uint8_t)bg;
 }
 
 void terminal_resetcolor(void) {
 	terminal_color = vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+	ansi_bold = 0;
+	ansi_fg = VGA_COLOR_LIGHT_GREY;
+	ansi_bg = VGA_COLOR_BLACK;
+	ansi_state = ANSI_NORMAL;
 }
 
 void terminal_putentryat(unsigned char c, uint8_t color, size_t x, size_t y) {
@@ -224,9 +379,52 @@ static void terminal_scroll_up(void) {
 }
 
 void terminal_putchar(char c) {
-	unsigned char uc = c;
+	unsigned char uc = (unsigned char)c;
 
 	if (canvas_buf) wm_mark_dirty();
+
+	/* ---- ANSI escape sequence state machine ---- */
+	if (ansi_state == ANSI_ESC) {
+		if (c == '[') {
+			ansi_state = ANSI_CSI;
+			ansi_param_count = 0;
+			memset(ansi_params, 0, sizeof(ansi_params));
+			return;
+		}
+		/* Not a CSI — discard ESC, fall through to print char */
+		ansi_state = ANSI_NORMAL;
+	} else if (ansi_state == ANSI_CSI) {
+		if (c >= '0' && c <= '9') {
+			if (ansi_param_count == 0) ansi_param_count = 1;
+			ansi_params[ansi_param_count - 1] =
+				ansi_params[ansi_param_count - 1] * 10 + (c - '0');
+			return;
+		} else if (c == ';') {
+			if (ansi_param_count < ANSI_MAX_PARAMS)
+				ansi_param_count++;
+			return;
+		} else if (c == '?') {
+			/* Private mode prefix (ESC[?25l etc.) — consume */
+			return;
+		} else if (c >= 0x40 && c <= 0x7E) {
+			/* Final byte — execute CSI command */
+			ansi_execute_csi(c);
+			ansi_state = ANSI_NORMAL;
+			terminal_update_cursor();
+			return;
+		} else {
+			/* Unexpected — abort sequence */
+			ansi_state = ANSI_NORMAL;
+			return;
+		}
+	}
+
+	if (uc == 0x1B) { /* ESC */
+		ansi_state = ANSI_ESC;
+		return;
+	}
+
+	/* ---- Normal character handling ---- */
 
 	if (c == '\b') {
 		if (terminal_column > 0) {
@@ -246,6 +444,20 @@ void terminal_putchar(char c) {
 			terminal_scroll_up();
 			terminal_row = win_h - 1;
 		}
+		terminal_update_cursor();
+		return;
+	}
+
+	if (c == '\r') {
+		terminal_column = 0;
+		terminal_update_cursor();
+		return;
+	}
+
+	if (c == '\t') {
+		size_t next = (terminal_column + 8) & ~(size_t)7;
+		if (next >= win_w) next = win_w - 1;
+		terminal_column = next;
 		terminal_update_cursor();
 		return;
 	}
