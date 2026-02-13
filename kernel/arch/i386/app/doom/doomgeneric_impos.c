@@ -17,8 +17,6 @@
 
 #include <kernel/gfx.h>
 #include <kernel/idt.h>    /* pit_get_ticks(), pit_sleep_ms() */
-#include <kernel/desktop.h>
-#include <kernel/wm.h>
 
 /* ═══ Scaling state ════════════════════════════════════════════════ */
 
@@ -47,8 +45,6 @@ static void addKeyToQueue(int pressed, unsigned char doomKey)
 /* keyboard_get_raw_scancode() declared in <stdio.h> */
 
 static int e0_prefix = 0;
-static int doom_ctrl_held = 0; /* track Ctrl state for Ctrl+Tab */
-static int doom_alt_held = 0;  /* track Alt state for Alt+Tab */
 
 /* Map a PS/2 make scancode (with E0 context) to a doom key constant.
    Returns 0 if the scancode doesn't map to a doom key. */
@@ -145,50 +141,6 @@ static unsigned char scancode_to_doom(uint8_t sc, int is_e0)
     }
 }
 
-/* ═══ Alt+Tab: suspend doom, show desktop ═════════════════════════ */
-
-/* Forward declaration — finder is in kernel */
-extern int finder_show(void);
-
-static void doom_suspend_for_desktop(void)
-{
-    /* Redraw full desktop over doom's framebuffer */
-    desktop_full_redraw();
-
-    /* Re-enable WM idle callback so getchar() processes mouse/WM events */
-    desktop_resume_idle();
-    desktop_clear_fullscreen_resume();
-
-    /* Process desktop events until Ctrl+Tab or dock click resumes doom */
-    while (1) {
-        char c = getchar();
-
-        /* Ctrl+Tab or Alt+Tab → resume doom */
-        if (c == KEY_ALT_TAB)
-            break;
-
-        /* Dock click on doom's "D" icon → resume doom */
-        if (desktop_fullscreen_resume_requested()) {
-            desktop_clear_fullscreen_resume();
-            break;
-        }
-
-        /* Ctrl+Space → open Finder overlay */
-        if (c == KEY_FINDER) {
-            finder_show();
-            desktop_full_redraw();
-        }
-    }
-
-    /* Disable idle callback, doom takes over input again */
-    keyboard_set_idle_callback(0);
-    doom_ctrl_held = 0;
-    doom_alt_held = 0;
-
-    /* Clear screen to black (restores letterbox bars) before doom repaints */
-    gfx_clear(0x000000);
-}
-
 /* ═══ Input polling ═══════════════════════════════════════════════ */
 
 static void doom_poll_input(void)
@@ -213,26 +165,6 @@ static void doom_poll_input(void)
 
         int released = (raw & 0x80) != 0;
         uint8_t make = raw & 0x7F;
-
-        /* Track Ctrl/Alt state for Ctrl+Tab / Alt+Tab detection */
-        if (make == 0x1D && !e0_prefix) {
-            doom_ctrl_held = !released;
-            /* Still pass Ctrl to doom for fire */
-        }
-        if (make == 0x38 && !e0_prefix) {
-            doom_alt_held = !released;
-            /* Still pass Alt to doom for strafe */
-        }
-
-        /* Detect Ctrl+Tab or Alt+Tab: modifier held + Tab pressed */
-        if (!released && make == 0x0F && (doom_ctrl_held || doom_alt_held) && !e0_prefix) {
-            e0_prefix = 0;
-            /* Release modifier keys in doom before suspending */
-            if (doom_ctrl_held) addKeyToQueue(0, KEY_RCTRL);
-            if (doom_alt_held)  addKeyToQueue(0, KEY_RALT);
-            doom_suspend_for_desktop();
-            return;  /* stop polling, doom will re-poll next frame */
-        }
 
         unsigned char dk = scancode_to_doom(make, e0_prefix);
         e0_prefix = 0;
@@ -264,8 +196,6 @@ void DG_Init(void)
     gfx_flip();
 
     e0_prefix = 0;
-    doom_ctrl_held = 0;
-    doom_alt_held = 0;
     s_KeyQueueWriteIndex = 0;
     s_KeyQueueReadIndex = 0;
 

@@ -1850,10 +1850,6 @@ static void cmd_doom(int argc, char* argv[]) {
 
     printf("Starting DOOM...\n");
 
-    /* Register as task (activity monitor) and dock entry */
-    int doom_tid = task_register("DOOM", 1, -1);
-    int doom_dock = desktop_register_fullscreen_app("DOOM", doom_tid);
-
     /* Disable WM idle callback while doom runs */
     keyboard_set_idle_callback(0);
 
@@ -1875,17 +1871,11 @@ static void cmd_doom(int argc, char* argv[]) {
     /* Clear exit() redirect so it doesn't jump back into stale doom state */
     exit_set_restart_point(0);
 
-    /* Unregister from dock and task list */
-    desktop_unregister_fullscreen_app(doom_dock);
-    if (doom_tid >= 0) task_unregister(doom_tid);
-
-    /* Restore idle callback, redraw desktop + terminal like gfxdemo does */
+    /* Restore idle callback and redraw desktop */
     keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
     terminal_clear();
-    if (gfx_is_active()) {
-        desktop_full_redraw();
-        shell_draw_prompt();
-    }
+    if (gfx_is_active())
+        wm_composite();
 }
 
 void shell_process_command(char* command) {
