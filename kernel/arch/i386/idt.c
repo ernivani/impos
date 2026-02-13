@@ -122,6 +122,19 @@ void gdt_set_fs_base(uint32_t base) {
     );
 }
 
+/* Update GDT entry 6 base for per-thread GS segment (Linux TLS) and reload GS */
+void gdt_set_gs_base(uint32_t base) {
+    gdt_entries[6].base_low  = base & 0xFFFF;
+    gdt_entries[6].base_mid  = (base >> 16) & 0xFF;
+    gdt_entries[6].base_high = (base >> 24) & 0xFF;
+    /* Selector 0x33 = index 6, TI=0 (GDT), RPL=3 */
+    __asm__ volatile (
+        "mov $0x33, %%ax\n\t"
+        "mov %%ax, %%gs\n\t"
+        : : : "ax"
+    );
+}
+
 /* ========== IDT ========== */
 
 typedef struct {

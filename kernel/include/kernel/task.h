@@ -70,6 +70,17 @@ typedef struct {
     /* Win32 PE task fields */
     uint32_t     tib;          /* pointer to WIN32_TEB (0 if not a PE task) */
     int          is_pe;        /* 1 if this is a PE executable task */
+
+    /* ELF Linux compat fields */
+    int          is_elf;         /* 1 if Linux ELF process */
+    uint32_t     brk_start;      /* initial program break (end of loaded segments) */
+    uint32_t     brk_current;    /* current program break */
+    uint32_t     mmap_next;      /* next available VA for anonymous mmap */
+    uint32_t     tls_base;       /* TLS base address (set by set_thread_area) */
+
+    /* ELF memory tracking for cleanup */
+    uint32_t     elf_frames[64]; /* PMM frames allocated for ELF segments + brk + mmap */
+    uint8_t      num_elf_frames; /* count of allocated frames */
 } task_info_t;
 
 void        task_init(void);
@@ -89,6 +100,9 @@ int         task_get_pid(int tid);     /* PID for slot, or -1 */
 int         task_kill_by_pid(int pid); /* 0=ok, -1=not found, -2=system */
 void        task_set_name(int tid, const char *name);
 void        task_add_gpu_ticks(int tid, uint32_t ticks);
+
+/* Assign a unique PID to a task slot (used by external loaders) */
+int         task_assign_pid(int tid);
 
 /* Preemptive multitasking API */
 int         task_create_thread(const char *name, void (*entry)(void), int killable);
