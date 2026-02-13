@@ -2143,6 +2143,174 @@ static void test_misc_win32(void) {
     TEST_ASSERT(pGSIA != NULL, "misc: GetStartupInfoA resolves");
 }
 
+/* ---- CRT Phase 1 Tests ---- */
+
+static void test_crt_phase1(void) {
+    printf("== CRT Phase 1 Tests ==\n");
+
+    /* Test strtoul resolution and functionality */
+    void *pStrtoul = win32_resolve_import("msvcrt.dll", "strtoul");
+    TEST_ASSERT(pStrtoul != NULL, "crt: strtoul resolves");
+    if (pStrtoul) {
+        typedef unsigned long (*pfn_strtoul)(const char *, char **, int);
+        pfn_strtoul fn = (pfn_strtoul)pStrtoul;
+        TEST_ASSERT(fn("123", NULL, 10) == 123, "crt: strtoul(123) == 123");
+        TEST_ASSERT(fn("FF", NULL, 16) == 255, "crt: strtoul(FF, 16) == 255");
+        TEST_ASSERT(fn("0", NULL, 10) == 0, "crt: strtoul(0) == 0");
+    }
+
+    /* Test fseek/ftell resolution */
+    void *pFseek = win32_resolve_import("msvcrt.dll", "fseek");
+    void *pFtell = win32_resolve_import("msvcrt.dll", "ftell");
+    void *pRewind = win32_resolve_import("msvcrt.dll", "rewind");
+    TEST_ASSERT(pFseek != NULL, "crt: fseek resolves");
+    TEST_ASSERT(pFtell != NULL, "crt: ftell resolves");
+    TEST_ASSERT(pRewind != NULL, "crt: rewind resolves");
+
+    /* Functional fseek/ftell test via libc directly */
+    {
+        /* Write a test file */
+        const char *testdata = "ABCDEFGHIJ";
+        fs_write_file("/tmp/crt_test", (const uint8_t *)testdata, 10);
+        FILE *f = fopen("/tmp/crt_test", "r");
+        if (f) {
+            TEST_ASSERT(ftell(f) == 0, "crt: ftell initial == 0");
+            fseek(f, 5, 0); /* SEEK_SET */
+            TEST_ASSERT(ftell(f) == 5, "crt: ftell after seek == 5");
+            int c = fgetc(f);
+            TEST_ASSERT(c == 'F', "crt: fgetc after seek == 'F'");
+            fseek(f, 0, 0); /* rewind */
+            c = fgetc(f);
+            TEST_ASSERT(c == 'A', "crt: fgetc after rewind == 'A'");
+            fclose(f);
+        }
+    }
+
+    /* Test time resolution and functionality */
+    void *pTime = win32_resolve_import("msvcrt.dll", "time");
+    void *pLocaltime = win32_resolve_import("msvcrt.dll", "localtime");
+    void *pMktime = win32_resolve_import("msvcrt.dll", "mktime");
+    void *pStrftime = win32_resolve_import("msvcrt.dll", "strftime");
+    void *pClock = win32_resolve_import("msvcrt.dll", "clock");
+    TEST_ASSERT(pTime != NULL, "crt: time resolves");
+    TEST_ASSERT(pLocaltime != NULL, "crt: localtime resolves");
+    TEST_ASSERT(pMktime != NULL, "crt: mktime resolves");
+    TEST_ASSERT(pStrftime != NULL, "crt: strftime resolves");
+    TEST_ASSERT(pClock != NULL, "crt: clock resolves");
+
+    if (pTime) {
+        typedef uint32_t (*pfn_time)(uint32_t *);
+        pfn_time fn = (pfn_time)pTime;
+        uint32_t t = fn(NULL);
+        TEST_ASSERT(t > 0, "crt: time() returns nonzero");
+    }
+
+    /* Test signal resolution */
+    void *pSignal = win32_resolve_import("msvcrt.dll", "signal");
+    void *pRaise = win32_resolve_import("msvcrt.dll", "raise");
+    TEST_ASSERT(pSignal != NULL, "crt: signal resolves");
+    TEST_ASSERT(pRaise != NULL, "crt: raise resolves");
+
+    /* Test locale resolution and functionality */
+    void *pSetlocale = win32_resolve_import("msvcrt.dll", "setlocale");
+    void *pLocaleconv = win32_resolve_import("msvcrt.dll", "localeconv");
+    TEST_ASSERT(pSetlocale != NULL, "crt: setlocale resolves");
+    TEST_ASSERT(pLocaleconv != NULL, "crt: localeconv resolves");
+
+    if (pSetlocale) {
+        typedef const char *(*pfn_setlocale)(int, const char *);
+        pfn_setlocale fn = (pfn_setlocale)pSetlocale;
+        const char *loc = fn(0, "");
+        TEST_ASSERT(loc != NULL && strcmp(loc, "C") == 0, "crt: setlocale returns 'C'");
+    }
+
+    /* Test POSIX-style I/O resolution */
+    void *pOpen = win32_resolve_import("msvcrt.dll", "_open");
+    void *pRead = win32_resolve_import("msvcrt.dll", "_read");
+    void *pWrite = win32_resolve_import("msvcrt.dll", "_write");
+    void *pClose = win32_resolve_import("msvcrt.dll", "_close");
+    void *pLseek = win32_resolve_import("msvcrt.dll", "_lseek");
+    TEST_ASSERT(pOpen != NULL, "crt: _open resolves");
+    TEST_ASSERT(pRead != NULL, "crt: _read resolves");
+    TEST_ASSERT(pWrite != NULL, "crt: _write resolves");
+    TEST_ASSERT(pClose != NULL, "crt: _close resolves");
+    TEST_ASSERT(pLseek != NULL, "crt: _lseek resolves");
+
+    /* Test stat/access resolution */
+    void *pStat = win32_resolve_import("msvcrt.dll", "_stat");
+    void *pFstat = win32_resolve_import("msvcrt.dll", "_fstat");
+    void *pAccess = win32_resolve_import("msvcrt.dll", "_access");
+    TEST_ASSERT(pStat != NULL, "crt: _stat resolves");
+    TEST_ASSERT(pFstat != NULL, "crt: _fstat resolves");
+    TEST_ASSERT(pAccess != NULL, "crt: _access resolves");
+
+    /* Test C++ new/delete resolution */
+    void *pNew = win32_resolve_import("msvcrt.dll", "??2@YAPAXI@Z");
+    void *pNewArr = win32_resolve_import("msvcrt.dll", "??_U@YAPAXI@Z");
+    void *pDel = win32_resolve_import("msvcrt.dll", "??3@YAXPAX@Z");
+    void *pDelArr = win32_resolve_import("msvcrt.dll", "??_V@YAXPAX@Z");
+    TEST_ASSERT(pNew != NULL, "crt: operator new resolves");
+    TEST_ASSERT(pNewArr != NULL, "crt: operator new[] resolves");
+    TEST_ASSERT(pDel != NULL, "crt: operator delete resolves");
+    TEST_ASSERT(pDelArr != NULL, "crt: operator delete[] resolves");
+
+    /* Functional: new/delete round-trip */
+    if (pNew && pDel) {
+        typedef void *(*pfn_new)(size_t);
+        typedef void (*pfn_del)(void *);
+        pfn_new fn_new = (pfn_new)pNew;
+        pfn_del fn_del = (pfn_del)pDel;
+        void *p = fn_new(64);
+        TEST_ASSERT(p != NULL, "crt: operator new(64) != NULL");
+        if (p) { memset(p, 0xAA, 64); fn_del(p); }
+        TEST_ASSERT(1, "crt: operator delete no crash");
+    }
+
+    /* Test ctype completions */
+    void *pIsUpper = win32_resolve_import("msvcrt.dll", "isupper");
+    void *pIsLower = win32_resolve_import("msvcrt.dll", "islower");
+    void *pIsPrint = win32_resolve_import("msvcrt.dll", "isprint");
+    void *pIsXdigit = win32_resolve_import("msvcrt.dll", "isxdigit");
+    TEST_ASSERT(pIsUpper != NULL, "crt: isupper resolves");
+    TEST_ASSERT(pIsLower != NULL, "crt: islower resolves");
+    TEST_ASSERT(pIsPrint != NULL, "crt: isprint resolves");
+    TEST_ASSERT(pIsXdigit != NULL, "crt: isxdigit resolves");
+
+    /* Test math stubs resolution */
+    void *pSqrt = win32_resolve_import("msvcrt.dll", "sqrt");
+    void *pFabs = win32_resolve_import("msvcrt.dll", "fabs");
+    void *pSin = win32_resolve_import("msvcrt.dll", "sin");
+    void *pPow = win32_resolve_import("msvcrt.dll", "pow");
+    TEST_ASSERT(pSqrt != NULL, "crt: sqrt resolves");
+    TEST_ASSERT(pFabs != NULL, "crt: fabs resolves");
+    TEST_ASSERT(pSin != NULL, "crt: sin resolves");
+    TEST_ASSERT(pPow != NULL, "crt: pow resolves");
+
+    /* Test string additions */
+    void *pStricmp = win32_resolve_import("msvcrt.dll", "_stricmp");
+    void *pStrdup2 = win32_resolve_import("msvcrt.dll", "_strdup");
+    void *pStrerror = win32_resolve_import("msvcrt.dll", "strerror");
+    TEST_ASSERT(pStricmp != NULL, "crt: _stricmp resolves");
+    TEST_ASSERT(pStrdup2 != NULL, "crt: _strdup resolves");
+    TEST_ASSERT(pStrerror != NULL, "crt: strerror resolves");
+
+    /* Test global state */
+    void *pAcmdln = win32_resolve_import("msvcrt.dll", "_acmdln");
+    void *pArgc = win32_resolve_import("msvcrt.dll", "__argc");
+    void *pEnviron = win32_resolve_import("msvcrt.dll", "_environ");
+    TEST_ASSERT(pAcmdln != NULL, "crt: _acmdln resolves");
+    TEST_ASSERT(pArgc != NULL, "crt: __argc resolves");
+    TEST_ASSERT(pEnviron != NULL, "crt: _environ resolves");
+
+    /* Test RTTI stubs */
+    void *pRTtypeid = win32_resolve_import("msvcrt.dll", "__RTtypeid");
+    void *pRTDynCast = win32_resolve_import("msvcrt.dll", "__RTDynamicCast");
+    void *pTypeInfoVtable = win32_resolve_import("msvcrt.dll", "??_7type_info@@6B@");
+    TEST_ASSERT(pRTtypeid != NULL, "crt: __RTtypeid resolves");
+    TEST_ASSERT(pRTDynCast != NULL, "crt: __RTDynamicCast resolves");
+    TEST_ASSERT(pTypeInfoVtable != NULL, "crt: type_info vtable resolves");
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -2176,6 +2344,7 @@ void test_run_all(void) {
     test_security_crypto();
     test_seh();
     test_misc_win32();
+    test_crt_phase1();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

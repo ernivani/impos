@@ -169,23 +169,23 @@ _The long tail of APIs that Chromium calls on startup._
 
 ### Phase 1: Robust C/C++ Runtime (msvcrt → full CRT)
 _Almost every real app links against the C runtime. Your current msvcrt shim covers basics, but real software hits dozens more functions immediately._
-- [ ] `<stdio.h>` completeness — sprintf, snprintf, sscanf, fprintf, fseek, ftell, rewind, tmpfile, perror, setvbuf
-- [ ] `<stdlib.h>` completeness — atoi, atof, strtol, strtod, strtoul, qsort, bsearch, abs, labs, div, ldiv, system, getenv, putenv, _itoa, _atoi64
+- [x] `<stdio.h>` completeness — sprintf, snprintf, sscanf, fprintf, fseek, ftell, rewind, tmpfile, perror, setvbuf
+- [x] `<stdlib.h>` completeness — atoi, atof, strtol, strtod, strtoul, qsort, bsearch, abs, labs, div, ldiv, system, getenv, putenv, _itoa, _atoi64
 - [x] `<string.h>` completeness — strncpy, strncat, strncmp, strstr, strchr, strrchr, strtok, memset, memmove, memcmp, _stricmp, _strnicmp, _strdup
-- [ ] `<math.h>` — sin, cos, tan, sqrt, pow, log, log10, exp, floor, ceil, fabs, fmod, atan2, asin, acos (link to soft-float or FPU)
-- [ ] `<time.h>` — time, localtime, gmtime, mktime, strftime, difftime, clock, _ftime
+- [x] `<math.h>` — sin, cos, tan, sqrt, pow, log, log10, exp, floor, ceil, fabs, fmod, atan2, asin, acos (link to soft-float or FPU)
+- [x] `<time.h>` — time, localtime, gmtime, mktime, strftime, difftime, clock, _ftime
 - [x] `<ctype.h>` — isalpha, isdigit, isspace, toupper, tolower, isalnum, isprint, etc.
 - [ ] `<setjmp.h>` — setjmp / longjmp (critical for error recovery in C code)
-- [ ] `<signal.h>` — signal, raise (SIGSEGV, SIGABRT, SIGFPE handlers)
-- [ ] `<locale.h>` — setlocale, localeconv (most apps call setlocale on startup)
+- [x] `<signal.h>` — signal, raise (SIGSEGV, SIGABRT, SIGFPE handlers)
+- [x] `<locale.h>` — setlocale, localeconv (most apps call setlocale on startup)
 - [x] `<errno.h>` — per-thread errno via TLS, all standard error codes
 - [x] `_beginthread` / `_endthread` (simplified thread wrappers beyond _beginthreadex)
-- [ ] `_open` / `_read` / `_write` / `_close` / `_lseek` — POSIX-style low-level I/O in msvcrt
-- [ ] `_stat` / `_fstat` / `_access` — file info queries
+- [x] `_open` / `_read` / `_write` / `_close` / `_lseek` — POSIX-style low-level I/O in msvcrt
+- [x] `_stat` / `_fstat` / `_access` — file info queries
 - [x] `_snprintf` / `_vsnprintf` — Windows-specific format variants
-- [ ] msvcrt global state — `_acmdln`, `_environ`, `__argc`, `__argv`, `_pgmptr` initialization
-- [ ] C++ operator new / delete — map to HeapAlloc/HeapFree with proper alignment
-- [ ] C++ RTTI stubs — `typeid`, `dynamic_cast` support structures
+- [x] msvcrt global state — `_acmdln`, `_environ`, `__argc`, `__argv`, `_pgmptr` initialization
+- [x] C++ operator new / delete — map to HeapAlloc/HeapFree with proper alignment
+- [x] C++ RTTI stubs — `typeid`, `dynamic_cast` support structures
 - [x] `atexit` / `_onexit` — shutdown callback chain
 
 ### Phase 2: Exception Handling Hardening
