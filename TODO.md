@@ -432,6 +432,283 @@ Even after all 14 phases, Chromium requires additional work beyond this tier:
 
 Chromium is realistically a Tier 2.0+ goal that would require dedicated phases beyond this roadmap.
 
+## Tier 1.7 — From Running Real Software to a Polished Platform
+
+> **Goal:** After Tier 1.6, ImposOS runs real Win32 apps. Tier 1.7 makes it a platform
+> people would actually *want* to use — with proper graphics, real networking,
+> a working browser, plugin systems, and the foundation for modern applications.
+> Estimated total: 12 phases.
+
+### Phase 1: Software Rendering Engine (Skia-class 2D)
+_Your GDI shims do basic drawing. This phase builds a real 2D engine that apps can actually rely on._
+- [ ] Scanline rasterizer — filled triangles, polygons, and paths with sub-pixel accuracy
+- [ ] Anti-aliased line and curve rendering — Bresenham is not enough for real apps
+- [ ] Bézier curve support — quadratic and cubic, used by fonts, SVG, and every vector app
+- [ ] Alpha blending engine — per-pixel ARGB compositing with Porter-Duff modes (SrcOver, SrcIn, DstOut, etc.)
+- [ ] Gradient fills — linear and radial gradients with arbitrary color stops
+- [ ] Image scaling — bilinear and bicubic interpolation for `StretchBlt` and image display
+- [ ] Affine transforms on bitmaps — rotate, scale, skew any image
+- [ ] Clipping engine — arbitrary polygon and path-based clipping regions, not just rectangles
+- [ ] Color space support — sRGB as default, basic ICC profile awareness
+- [ ] Compositor — layer-based compositing for window manager (each window = layer, alpha blend the stack)
+- [ ] Double-buffered rendering — eliminate flicker system-wide, present completed frames
+- [ ] Dirty rectangle tracking — only re-render changed regions for performance
+- [ ] Off-screen render targets — render to texture/bitmap for effects and caching
+
+### Phase 2: TrueType / OpenType Font Engine
+_Real apps need real fonts. Bitmap fonts won't cut it for any serious text rendering._
+- [ ] TrueType parser — read .ttf files: `head`, `cmap`, `glyf`, `loca`, `hmtx`, `maxp`, `name`, `OS/2`, `post` tables
+- [ ] Glyph outline interpreter — parse TrueType quadratic Bézier contours into paths
+- [ ] Hinting engine — execute TrueType bytecode instructions (or skip with auto-hinting)
+- [ ] Rasterize glyphs — render glyph outlines to bitmaps at requested size
+- [ ] Anti-aliased glyph rendering — 256-level grayscale or subpixel (ClearType-style RGB)
+- [ ] Glyph cache — LRU cache of rendered glyphs keyed by (font, size, codepoint, flags)
+- [ ] Font matching — `CreateFont` / `CreateFontIndirect` match against installed .ttf files by family, weight, style
+- [ ] `EnumFontFamiliesEx` backed by real font inventory
+- [ ] `GetTextMetrics` / `GetTextExtentPoint32` with accurate measurements from font tables
+- [ ] Kerning — read `kern` table, apply pair adjustments
+- [ ] OpenType layout (basic) — `GSUB` / `GPOS` for ligatures and positional forms
+- [ ] System fonts — bundle 3-4 open-source fonts: a serif (Liberation Serif), sans (Liberation Sans), mono (Liberation Mono), and a symbol/emoji font
+- [ ] Font installation — copy .ttf to /fonts, register in registry, available to all apps
+- [ ] `AddFontResourceEx` / `RemoveFontResourceEx` — per-session font loading
+
+### Phase 3: OpenGL Software Renderer
+_Many real apps need OpenGL. A software implementation unlocks huge categories of software._
+- [ ] OpenGL 1.1 core — `glBegin/glEnd`, `glVertex`, `glColor`, `glTexCoord`, `glNormal`
+- [ ] Matrix stack — `glPushMatrix`, `glPopMatrix`, `glTranslate`, `glRotate`, `glScale`, `glMultMatrix`
+- [ ] Texture mapping — `glGenTextures`, `glBindTexture`, `glTexImage2D`, `glTexParameter` (min/mag filtering)
+- [ ] Depth buffer — Z-buffer with `glEnable(GL_DEPTH_TEST)`, depth compare functions
+- [ ] Blending — `glBlendFunc` with standard blend equations
+- [ ] Lighting — up to 8 lights, `GL_AMBIENT`, `GL_DIFFUSE`, `GL_SPECULAR`, material properties
+- [ ] Display lists — `glNewList` / `glCallList` for batch rendering
+- [ ] Stencil buffer — 8-bit stencil with compare and operations
+- [ ] `wglCreateContext` / `wglMakeCurrent` / `wglDeleteContext` — real implementations instead of stubs
+- [ ] `wglGetProcAddress` — extension function loading
+- [ ] Pixel buffer readback — `glReadPixels` for screenshots and testing
+- [ ] Fog — `glFog` with linear/exp/exp2 modes
+- [ ] `glViewport` / `glScissor` — viewport and scissor test
+- [ ] OpenGL 2.0 stubs — `glCreateShader`, `glCompileShader` return failure (apps fall back to fixed-function)
+- [ ] Frame output — render to offscreen buffer, blit to window via WM
+
+### Phase 4: Network Stack Hardening
+_Your TLS and Winsock work. This phase makes networking reliable and complete._
+- [ ] TCP retransmission & congestion control — Reno or Cubic (real TCP, not just "send and hope")
+- [ ] TCP window scaling — support connections over high-bandwidth links
+- [ ] TCP keepalive — `SO_KEEPALIVE` with configurable interval
+- [ ] UDP support hardening — fragmentation, checksums, proper error handling
+- [ ] ICMP — ping support (used by network diagnostic tools)
+- [ ] ARP cache management — timeout, refresh, gratuitous ARP
+- [ ] DNS caching — local resolver cache with TTL expiry
+- [ ] DNS over TCP — fallback for large responses
+- [ ] Multiple simultaneous connections — proper socket multiplexing for apps opening 50+ sockets
+- [ ] Non-blocking I/O correctness — `select`, `WSAPoll`, `WSAAsyncSelect` all handle edge cases
+- [ ] `SO_LINGER` / `SO_RCVBUF` / `SO_SNDBUF` — socket options that apps actually set
+- [ ] Loopback interface — `127.0.0.1` connections without hitting the wire
+- [ ] Connection tracking — proper FIN/RST handling, TIME_WAIT state
+- [ ] Network error codes — map real failures to `WSAGetLastError` codes (WSAECONNREFUSED, WSAETIMEDOUT, etc.)
+
+### Phase 5: HTTP/HTTPS Client Library
+_An internal HTTP engine that WinInet, WinHTTP, and eventually a browser can use._
+- [ ] HTTP/1.1 client — full request/response parser, chunked transfer encoding, content-length
+- [ ] Connection pooling — keep-alive with connection reuse per host
+- [ ] Redirect following — 301, 302, 307, 308 with configurable max redirects
+- [ ] Cookie engine — parse Set-Cookie, store, send on matching requests (RFC 6265)
+- [ ] HTTPS via your TLS stack — TLS 1.2 mandatory, TLS 1.3 optional
+- [ ] Certificate chain validation — verify against embedded root CA bundle
+- [ ] Certificate pinning stubs — for apps that pin specific certs
+- [ ] Proxy support — HTTP CONNECT for HTTPS-through-proxy, basic/digest proxy auth
+- [ ] Compression — gzip and deflate `Accept-Encoding` / `Content-Encoding`
+- [ ] Content-Type parsing — charset detection, MIME type handling
+- [ ] Multipart form data — `multipart/form-data` for file uploads
+- [ ] Authentication — Basic and Digest `WWW-Authenticate` / `Authorization`
+- [ ] Timeout handling — connect timeout, read timeout, total request timeout
+- [ ] Download progress — callback mechanism for progress reporting
+- [ ] Map to WinInet API — `InternetOpenUrl` → HTTP engine, `InternetReadFile` → buffered read
+- [ ] Map to WinHTTP API — `WinHttpSendRequest` → HTTP engine
+
+### Phase 6: Lightweight HTML Renderer
+_Not Chromium. A simple HTML viewer that can render basic web pages and help text._
+- [ ] HTML parser — tokenizer + tree builder for HTML5 subset (div, span, p, h1-h6, a, img, ul, ol, li, table, form, input, br, hr)
+- [ ] CSS parser — basic selectors (element, class, id), box model properties, colors, fonts, display, position
+- [ ] Layout engine — block and inline flow layout, margin collapsing, basic table layout
+- [ ] Box model — margin, border, padding, content with correct sizing
+- [ ] Text layout — word wrap, line height, text-align, vertical-align
+- [ ] Image loading — fetch `<img src>` via HTTP client, decode PNG/JPEG, inline display
+- [ ] Hyperlinks — clickable `<a href>`, history stack (back/forward), URL bar
+- [ ] Forms — `<input type=text>`, `<textarea>`, `<select>`, `<button>`, `<input type=submit>`, POST form data
+- [ ] CSS cascade — specificity, inheritance, !important
+- [ ] Colors and backgrounds — background-color, background-image (solid + simple gradients)
+- [ ] Scrolling — vertical scroll with scrollbar for overflow content
+- [ ] Basic JavaScript stubs — `document.getElementById`, `alert()`, `console.log` (enough that pages don't error out)
+- [ ] DOM manipulation (basic) — `innerHTML`, `textContent`, `style.*` property changes
+- [ ] `<style>` and `<link rel=stylesheet>` — embedded and external CSS
+- [ ] View source — show raw HTML for debugging
+- [ ] about:blank, data: URIs, file:// protocol
+- [ ] Wrap in Win32 window — register as a Win32 app, handle WM_SIZE for responsive layout
+
+### Phase 7: POSIX Compatibility Layer
+_Many open-source apps target POSIX. A basic layer dramatically expands what you can compile and run._
+- [ ] `fork()` — process duplication via page directory COW (copy-on-write)
+- [ ] `exec()` family — `execvp`, `execve`, `execl` (replace process image with new ELF/PE)
+- [ ] `pipe()` — anonymous pipe pair
+- [ ] `dup()` / `dup2()` — file descriptor duplication
+- [ ] `open` / `read` / `write` / `close` / `lseek` — POSIX file I/O (separate from Win32 handles)
+- [ ] `stat` / `fstat` / `lstat` — file info with `struct stat`
+- [ ] `opendir` / `readdir` / `closedir` — directory enumeration
+- [ ] `mkdir` / `rmdir` / `unlink` / `rename` / `link` — filesystem operations
+- [ ] `mmap` / `munmap` / `mprotect` — memory-mapped I/O (map to VirtualAlloc internally)
+- [ ] `waitpid` / `wait` — child process reaping
+- [ ] `kill` / `signal` / `sigaction` — signal delivery between processes
+- [ ] `getpid` / `getppid` / `getuid` / `getgid` — process and user identity
+- [ ] `select` / `poll` — I/O multiplexing on file descriptors
+- [ ] `socket` / `bind` / `listen` / `accept` / `connect` (BSD socket API) — map to ImposOS sockets
+- [ ] `gettimeofday` / `clock_gettime` — high-resolution time
+- [ ] `getcwd` / `chdir` — working directory
+- [ ] `environ` global — environment variable access
+- [ ] `pthreads` — `pthread_create`, `pthread_join`, `pthread_mutex_*`, `pthread_cond_*`, `pthread_key_*` (TLS)
+- [ ] `dlopen` / `dlsym` / `dlclose` — dynamic library loading (map to LoadLibrary internally)
+- [ ] `cygwin1.dll` / `msys-2.0.dll` style bridge — or native POSIX subsystem linked at compile time
+
+### Phase 8: ELF Binary Loader
+_With POSIX in place, you can run Linux-targeted binaries — massively expanding your software library._
+- [ ] ELF32 parser — read ELF header, program headers (PT_LOAD, PT_DYNAMIC, PT_INTERP, PT_PHDR)
+- [ ] Section loading — map PT_LOAD segments with correct permissions (RX for .text, RW for .data/.bss)
+- [ ] Dynamic linker (ld.so) — resolve DT_NEEDED shared libraries, symbol lookup, relocation
+- [ ] Relocation types — R_386_32, R_386_PC32, R_386_GLOB_DAT, R_386_JMP_SLOT, R_386_RELATIVE
+- [ ] PLT/GOT — lazy binding via procedure linkage table
+- [ ] Symbol versioning — `DT_VERSYM`, `DT_VERNEED` (glibc uses this)
+- [ ] `__libc_start_main` — CRT entry point calling constructors, then main()
+- [ ] ELF TLS — thread-local storage model (initial-exec and local-exec at minimum)
+- [ ] Built-in libc — port musl or newlib as your C library for ELF binaries
+- [ ] `vDSO` page — fast `gettimeofday` / `clock_gettime` without syscall overhead
+- [ ] `/proc/self` stubs — `/proc/self/exe`, `/proc/self/maps` (many Linux apps read these)
+- [ ] Mixed PE/ELF environment — both loaders coexist, file extension or magic number determines loader
+- [ ] ELF `.interp` custom dynamic linker — ImposOS ships its own ld-imposos.so
+- [ ] `LD_LIBRARY_PATH` equivalent — search paths for shared objects
+
+### Phase 9: ImposOS Native App Framework
+_Give developers a proper API to write native ImposOS apps — not just Win32 compatibility._
+- [ ] `imposui.h` — native C API: `imposui_create_window`, `imposui_button`, `imposui_label`, `imposui_textbox`, `imposui_list`, `imposui_menu`
+- [ ] Event system — callback-based: `imposui_on_click(widget, callback, userdata)`
+- [ ] Layout engine — auto-layout: `imposui_vbox`, `imposui_hbox`, `imposui_grid` with padding, spacing, alignment
+- [ ] Theme system — JSON-based themes with colors, fonts, border radius, spacing
+- [ ] Custom drawing — `imposui_canvas` widget with `imposgfx_*` drawing API (backed by your Phase 1 renderer)
+- [ ] File dialogs — native open/save/folder picker
+- [ ] Standard dialogs — message box, input box, confirmation, progress
+- [ ] Drag and drop — native DnD between ImposOS apps
+- [ ] Clipboard integration — read/write text, images, custom formats
+- [ ] App manifest format — `app.json` with name, icon, version, permissions, entry point
+- [ ] App packaging — `/apps/appname/` directory with manifest, binary, resources
+- [ ] IPC mechanism — lightweight message passing between native apps
+- [ ] SDK toolchain — headers, static libs, example apps, Makefile templates
+- [ ] Documentation — man pages or built-in help viewer for API reference
+
+### Phase 10: Package Manager & Software Repository
+_Let users install real software without manually copying files._
+- [ ] `winget` improvements — search, install, update, remove, list commands
+- [ ] Package manifest format — JSON with name, version, description, author, dependencies, download URL, checksum
+- [ ] Remote repository — HTTPS-based package index (JSON catalog file)
+- [ ] Dependency resolution — install required packages before the requested one
+- [ ] Version constraints — `>=1.0`, `<2.0`, `~1.5` semver-style
+- [ ] Integrity verification — SHA-256 checksum on downloaded packages
+- [ ] Install scripts — pre-install, post-install, pre-remove, post-remove hooks
+- [ ] Uninstall — clean removal of files, registry entries, shortcuts
+- [ ] Upgrade path — `winget upgrade --all` to update everything
+- [ ] Local package cache — avoid re-downloading on reinstall
+- [ ] Multiple repositories — add community repos beyond the default
+- [ ] Package signing — RSA/Ed25519 signature verification on packages
+- [ ] Self-hosted repo tooling — scripts to build and publish a package index
+- [ ] Built-in packages — ship 10-20 pre-packaged apps (text editor, file manager, calculator, hex editor, etc.)
+
+### Phase 11: Accessibility & Input Methods
+_Making the OS usable for everyone and supporting non-English input._
+- [ ] Keyboard layouts — US QWERTY, UK, AZERTY, QWERTZ, Dvorak (switchable)
+- [ ] Dead key support — compose sequences for accented characters (é, ñ, ü)
+- [ ] IME framework — input method editor stub for CJK text entry
+- [ ] Screen reader hooks — expose window tree, control labels, focus state via accessibility API
+- [ ] `IAccessible` COM interface stubs — MSAA for Win32 apps
+- [ ] High contrast mode — system-wide theme swap with configurable colors
+- [ ] Large cursor option — 2x/3x cursor size
+- [ ] Font scaling — system-wide DPI scaling (100%, 125%, 150%, 200%)
+- [ ] Sticky keys — modifier key latching for one-handed use
+- [ ] Mouse keys — keyboard arrow keys control cursor movement
+- [ ] `SystemParametersInfo` — `SPI_GETWORKAREA`, `SPI_GETNONCLIENTMETRICS`, `SPI_GETHIGHCONTRAST`
+- [ ] Caret (text cursor) — system-wide blinking caret with `CreateCaret`, `ShowCaret`, `SetCaretPos`
+- [ ] Focus management — `SetFocus`, `GetFocus`, `WM_SETFOCUS`/`WM_KILLFOCUS` correct across all windows
+
+### Phase 12: Developer Tools & Debugging
+_If developers can't debug apps on your platform, they won't develop for it._
+- [ ] Built-in debugger — attach to running process, set breakpoints (INT3), single-step
+- [ ] Stack trace — walk EBP chain, resolve symbols from PE/ELF symbol tables
+- [ ] `OutputDebugString` viewer — real-time log window for debug output
+- [ ] Memory inspector — view/edit process memory, search for patterns
+- [ ] Handle viewer — list all open handles (files, windows, GDI, threads) per process
+- [ ] PE/ELF inspector — built-in tool to dump headers, imports, exports, resources
+- [ ] System monitor — CPU usage, memory usage, process list, thread count, handle count (like Task Manager)
+- [ ] API trace — log Win32/POSIX API calls per process with timestamps and return values
+- [ ] GDI debug overlay — show window bounds, clipping regions, dirty rects
+- [ ] Network monitor — show active sockets, connections, bytes sent/received
+- [ ] Registry editor — GUI tool to browse and edit the emulated registry
+- [ ] Profiler — sampling profiler that records instruction pointer samples, generates flame graph
+- [ ] Core dump — on crash, write process state to file for post-mortem analysis
+- [ ] Remote debugging — serial or network debug protocol for kernel-level debugging
+
+### Target Software by Phase Completion
+
+| After Phase | What's Now Possible |
+|---|---|
+| 1–2 | Apps look professional — anti-aliased text, smooth rendering, real fonts |
+| 3 | OpenGL 1.x apps and games — Quake, GLXGears, simple 3D viewers |
+| 4–5 | Reliable networking — apps that download, update, communicate over HTTP/HTTPS |
+| 6 | Built-in web browser — view documentation, basic web pages, HTML help files |
+| 7–8 | Run Linux CLI tools — busybox, coreutils, gcc, Python, Lua, many FOSS tools |
+| 9 | Native ImposOS app ecosystem — developers can build polished apps without Win32 |
+| 10 | Users can install software easily — app store experience |
+| 11 | Usable by non-English speakers and people with disabilities |
+| 12 | Developers can build and debug software *on* ImposOS |
+
+### What This Unlocks (Realistic Software Targets)
+
+#### After Full Tier 1.7:
+
+**Win32 apps (expanded):**
+- Winamp 2.x/5.x (full plugin support with DLL loading + audio)
+- PuTTY, WinSCP (networking + crypto + GUI)
+- 7-Zip (GUI version)
+- IrfanView (image viewing + GDI + plugins)
+- Notepad++/AkelPad (full-featured text editing)
+- XP-era games: Minesweeper, Solitaire, Pinball
+- Small Delphi/VB6 apps from the shareware era
+
+**OpenGL apps:**
+- Quake 1 (software or GL) — if you can run Quake, that's a legendary milestone
+- GLXGears and GL demos
+- Simple CAD viewers
+- Tux Racer / other simple GL games
+
+**Linux/POSIX apps (via ELF + POSIX layer):**
+- BusyBox — 300+ Unix utilities in one binary
+- Lua / Python (compiled for your target) — scripting language runtime
+- SQLite CLI — database tool
+- Nano / Vim (terminal) — text editors
+- curl / wget — command-line HTTP
+- gcc (self-hosted compilation milestone!)
+- Git (command-line)
+
+**Native ImposOS apps:**
+- Whatever developers build with your framework
+- Your own bundled app suite: editor, calculator, file manager, image viewer, terminal, settings
+
+### After Tier 1.7: What's Next?
+
+At this point ImposOS is a real, usable operating system. Future tiers would include:
+
+- **Tier 1.8:** GPU driver framework (VESA VBE → basic framebuffer GPU → eventually virtio-gpu or simple hardware)
+- **Tier 1.9:** Hardware abstraction — USB mass storage, HID, audio codecs, real NIC drivers
+- **Tier 2.0:** Self-hosting — compile ImposOS on ImposOS (compiler, assembler, linker all running natively)
+- **Tier 2.5:** Modern browser — embed a real layout engine (NetSurf, SerenityOS's Ladybird, or stripped WebKit)
+- **Tier 3.0:** SMP (multi-core), 64-bit / long mode, UEFI boot
+
 ## Tier 2 — Desktop UX (ship-critical)
 - [ ] Wallpaper picker — 6-8 built-in gradients/patterns selectable from Settings > Display
 - [ ] Window snapping — drag to left/right edge = half-screen, top = maximize, Super+Arrow keys
