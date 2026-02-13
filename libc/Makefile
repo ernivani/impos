@@ -74,6 +74,8 @@ string/strpbrk.o \
 string/strndup.o \
 string/strncat.o \
 stdlib/strtoul.o \
+errno/errno.o \
+string/strcasecmp.o \
 
 HOSTEDOBJS=\
 $(ARCH_HOSTEDOBJS) \

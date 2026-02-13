@@ -554,19 +554,21 @@ doesn't depend on them. They can be done in parallel or deferred.
 > pre-built binaries and run them. Total new kernel code: ~3000-5000 lines.
 > Estimated total: 10 phases.
 
-### Phase 1: Doom Day (Track A — Native)
+### Phase 1: Doom Day (Track A — Native) 
 _The single most impressive milestone. No Linux compat needed. doomgeneric requires exactly 5 callback functions that map 1:1 to existing ImposOS APIs._
 
-- [ ] Download doomgeneric source (github.com/ozkl/doomgeneric)
-- [ ] Add to kernel build as an app (like shell.c, vi.c)
-- [ ] Implement `DG_Init()` — map to existing gfx initialization
-- [ ] Implement `DG_DrawFrame()` — memcpy `DG_ScreenBuffer` (320x200 RGBA) to framebuffer, scale to screen
-- [ ] Implement `DG_SleepMs(ms)` — map to `pit_sleep_ms()`
-- [ ] Implement `DG_GetTicksMs()` — map to `pit_get_ticks() * (1000/120)`
-- [ ] Implement `DG_GetKey()` — map to keyboard ring buffer in getchar.c
-- [ ] Bundle shareware DOOM1.WAD in filesystem or initrd
-- [ ] Add `doom` shell command to launch the game
-- [ ] Stretch: add mouse look support via `mouse_poll()`
+- [x] Download doomgeneric source (github.com/ozkl/doomgeneric) — ~70 `.c` files imported into `kernel/arch/i386/app/doom/`
+- [x] Add to kernel build as an app (like shell.c, vi.c) — objects listed in `make.config`
+- [x] Implement `DG_Init()` — integer scale (5x at 1920x1080), centered with letterbox
+- [x] Implement `DG_DrawFrame()` — nearest-neighbor scale 320x200 → framebuffer via `gfx_backbuffer()` + `gfx_flip_rect()`
+- [x] Implement `DG_SleepMs(ms)` — maps to `pit_sleep_ms()`
+- [x] Implement `DG_GetTicksMs()` — `pit_get_ticks() * 1000 / 120`
+- [x] Implement `DG_GetKey()` — raw PS/2 scancodes via `keyboard_get_raw_scancode()`, E0 prefix handling, full scancode-to-doom key mapping
+- [x] Bundle shareware DOOM1.WAD as GRUB multiboot module (~4MB, exceeds FS limit) — loaded into memory at boot
+- [x] Add `doom` shell command — `setjmp`/`longjmp` exit mechanism, `exit_set_restart_point` to catch `exit()` calls
+- [x] libc additions: `ctype.h`, `errno.h`, `strcasecmp()`, `keyboard_get_raw_scancode()`
+- [x] WAD file reader: memory-mapped `w_file_impos.c` replacing `w_file_stdc.c`
+- [x] Stretch: add mouse look support via `mouse_get_delta()` — raw PS/2 delta accumulator + ev_mouse posting
 
 ### Phase 2: Filesystem Expansion & Initrd
 _Current FS: 64 inodes, 128KB total — way too small. Need 32MB+ for Linux binaries._

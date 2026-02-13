@@ -11,6 +11,7 @@ void mouse_initialize(void);
 int  mouse_get_x(void);
 int  mouse_get_y(void);
 uint8_t mouse_get_buttons(void);
+void mouse_get_delta(int *dx, int *dy);
 int  mouse_poll(void);
 
 #endif
