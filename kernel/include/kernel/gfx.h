@@ -153,6 +153,12 @@ typedef struct {
 
 void gfx_flip_rects(gfx_rect_t *rects, int count);
 
+/* ═══ Unicode glyph support ═════════════════════════════════════ */
+
+const uint8_t *gfx_get_unicode_glyph(uint32_t codepoint);
+void gfx_draw_wchar(int x, int y, uint16_t wc, uint32_t fg, uint32_t bg);
+void gfx_draw_wstring(int x, int y, const uint16_t *s, uint32_t fg, uint32_t bg);
+
 /* ═══ Color macros ═════════════════════════════════════════════ */
 
 #define GFX_RGB(r,g,b) (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))

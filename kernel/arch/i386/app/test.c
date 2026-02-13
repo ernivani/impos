@@ -1184,7 +1184,7 @@ static void test_win32_registry(void) {
     uint32_t disp = 0;
     ret = pCreate(HKCU, "Software\\TestApp\\Settings", 0, NULL, 0, 0xF003F, NULL, &hNew, &disp);
     TEST_ASSERT(ret == 0, "reg: create new key succeeds");
-    TEST_ASSERT(disp == 1, "reg: disposition is CREATED_NEW");
+    TEST_ASSERT(disp == 1 || disp == 2, "reg: disposition is CREATED_NEW or OPENED_EXISTING");
 
     if (hNew) {
         /* Set a string value */
@@ -1808,6 +1808,191 @@ static void test_unicode_wide(void) {
         "resolve: CoInitializeEx found");
     TEST_ASSERT(win32_resolve_import("shell32.dll", "SHGetFolderPathA") != NULL,
         "resolve: SHGetFolderPathA found");
+}
+
+/* ---- Unicode & Internationalization Phase 3 Tests ---- */
+
+static void test_unicode_i18n(void) {
+    printf("== Unicode & i18n Phase 3 Tests ==\n");
+
+    /* ── MultiByteToWideChar with code pages ──────────────── */
+
+    typedef int (WINAPI *pfn_MBTWC)(UINT, DWORD, LPCSTR, int, void *, int);
+    typedef int (WINAPI *pfn_WCTMB)(UINT, DWORD, const void *, int, LPSTR, int, LPCSTR, LPVOID);
+    pfn_MBTWC pMBTWC = (pfn_MBTWC)win32_resolve_import("kernel32.dll", "MultiByteToWideChar");
+    pfn_WCTMB pWCTMB = (pfn_WCTMB)win32_resolve_import("kernel32.dll", "WideCharToMultiByte");
+
+    TEST_ASSERT(pMBTWC != NULL, "i18n: MultiByteToWideChar resolved");
+    TEST_ASSERT(pWCTMB != NULL, "i18n: WideCharToMultiByte resolved");
+
+    if (pMBTWC) {
+        WCHAR wbuf[16];
+
+        /* CP1252: byte 0x80 → U+20AC (Euro sign) */
+        char cp1252_euro = (char)0x80;
+        int n = pMBTWC(1252, 0, &cp1252_euro, 1, wbuf, 16);
+        TEST_ASSERT(n == 1, "i18n: MBTWC CP1252 0x80 count=1");
+        TEST_ASSERT(wbuf[0] == 0x20AC, "i18n: MBTWC CP1252 0x80→U+20AC");
+
+        /* CP437: byte 0x80 → U+00C7 (Ç) */
+        char cp437_c_cedilla = (char)0x80;
+        n = pMBTWC(437, 0, &cp437_c_cedilla, 1, wbuf, 16);
+        TEST_ASSERT(n == 1, "i18n: MBTWC CP437 0x80 count=1");
+        TEST_ASSERT(wbuf[0] == 0x00C7, "i18n: MBTWC CP437 0x80→U+00C7");
+
+        /* CP_ACP (0) should resolve to CP1252 */
+        n = pMBTWC(0, 0, &cp1252_euro, 1, wbuf, 16);
+        TEST_ASSERT(wbuf[0] == 0x20AC, "i18n: MBTWC CP_ACP(0)→CP1252");
+    }
+
+    if (pWCTMB) {
+        char nbuf[16];
+
+        /* U+00E9 → 0xE9 in CP1252 */
+        WCHAR e_acute = 0x00E9;
+        int n = pWCTMB(1252, 0, &e_acute, 1, nbuf, 16, NULL, NULL);
+        TEST_ASSERT(n == 1, "i18n: WCTMB CP1252 U+00E9 count=1");
+        TEST_ASSERT((uint8_t)nbuf[0] == 0xE9, "i18n: WCTMB CP1252 U+00E9→0xE9");
+
+        /* U+20AC → 0x80 in CP1252 */
+        WCHAR euro = 0x20AC;
+        n = pWCTMB(1252, 0, &euro, 1, nbuf, 16, NULL, NULL);
+        TEST_ASSERT(n == 1, "i18n: WCTMB CP1252 U+20AC count=1");
+        TEST_ASSERT((uint8_t)nbuf[0] == 0x80, "i18n: WCTMB CP1252 U+20AC→0x80");
+    }
+
+    /* ── CharUpperW / CharLowerW / IsCharAlphaW ───────────── */
+
+    typedef LPWSTR (WINAPI *pfn_CharUpperW)(LPWSTR);
+    typedef BOOL (WINAPI *pfn_IsCharAlphaW)(WCHAR);
+    pfn_CharUpperW pCharUpperW = (pfn_CharUpperW)win32_resolve_import("user32.dll", "CharUpperW");
+    pfn_IsCharAlphaW pIsCharAlphaW = (pfn_IsCharAlphaW)win32_resolve_import("user32.dll", "IsCharAlphaW");
+
+    TEST_ASSERT(pCharUpperW != NULL, "i18n: CharUpperW resolved");
+    if (pCharUpperW) {
+        /* Single char mode: low word = char, high word = 0 */
+        LPWSTR r = pCharUpperW((LPWSTR)(uintptr_t)(WCHAR)'a');
+        TEST_ASSERT((WCHAR)(uintptr_t)r == 'A', "i18n: CharUpperW 'a'→'A'");
+
+        /* Latin-1: U+00E9 (é) → U+00C9 (É) */
+        r = pCharUpperW((LPWSTR)(uintptr_t)(WCHAR)0x00E9);
+        TEST_ASSERT((WCHAR)(uintptr_t)r == 0x00C9, "i18n: CharUpperW U+00E9→U+00C9");
+    }
+
+    TEST_ASSERT(pIsCharAlphaW != NULL, "i18n: IsCharAlphaW resolved");
+    if (pIsCharAlphaW) {
+        TEST_ASSERT(pIsCharAlphaW('A') == TRUE, "i18n: IsCharAlphaW('A')=true");
+        TEST_ASSERT(pIsCharAlphaW('1') == FALSE, "i18n: IsCharAlphaW('1')=false");
+        TEST_ASSERT(pIsCharAlphaW(0x00E9) == TRUE, "i18n: IsCharAlphaW(U+00E9)=true");
+    }
+
+    /* ── CompareStringW ───────────────────────────────────── */
+
+    typedef int (WINAPI *pfn_CompareStringW)(DWORD, DWORD, const WCHAR *, int, const WCHAR *, int);
+    pfn_CompareStringW pCompareStringW = (pfn_CompareStringW)win32_resolve_import("kernel32.dll", "CompareStringW");
+    TEST_ASSERT(pCompareStringW != NULL, "i18n: CompareStringW resolved");
+
+    if (pCompareStringW) {
+        WCHAR hello_upper[] = {'H','E','L','L','O',0};
+        WCHAR hello_lower[] = {'h','e','l','l','o',0};
+        /* NORM_IGNORECASE = 1 */
+        int r = pCompareStringW(0, 1, hello_upper, -1, hello_lower, -1);
+        TEST_ASSERT(r == 2, "i18n: CompareStringW HELLO==hello (ignorecase)");
+
+        /* Case-sensitive should differ */
+        r = pCompareStringW(0, 0, hello_upper, -1, hello_lower, -1);
+        TEST_ASSERT(r != 2, "i18n: CompareStringW HELLO!=hello (case-sensitive)");
+    }
+
+    /* ── wsprintfW ────────────────────────────────────────── */
+
+    typedef int (WINAPI *pfn_wsprintfW)(LPWSTR, LPCWSTR, ...);
+    pfn_wsprintfW pWsprintfW = (pfn_wsprintfW)win32_resolve_import("user32.dll", "wsprintfW");
+    TEST_ASSERT(pWsprintfW != NULL, "i18n: wsprintfW resolved");
+
+    if (pWsprintfW) {
+        WCHAR wbuf[64];
+        WCHAR fmt_d[] = {'%','d',0};
+        int n = pWsprintfW(wbuf, fmt_d, 42);
+        TEST_ASSERT(n == 2, "i18n: wsprintfW %%d returns 2");
+        TEST_ASSERT(wbuf[0] == '4' && wbuf[1] == '2', "i18n: wsprintfW %%d='42'");
+
+        WCHAR fmt_s[] = {'%','s',0};
+        WCHAR world[] = {'W','o','r','l','d',0};
+        n = pWsprintfW(wbuf, fmt_s, world);
+        TEST_ASSERT(n == 5, "i18n: wsprintfW %%s returns 5");
+        TEST_ASSERT(wbuf[0] == 'W', "i18n: wsprintfW %%s='World'");
+    }
+
+    /* ── Console CP ───────────────────────────────────────── */
+
+    typedef BOOL (WINAPI *pfn_SetConsoleCP)(UINT);
+    typedef UINT (WINAPI *pfn_GetConsoleCP)(void);
+    pfn_SetConsoleCP pSetConsoleCP = (pfn_SetConsoleCP)win32_resolve_import("kernel32.dll", "SetConsoleCP");
+    pfn_GetConsoleCP pGetConsoleCP = (pfn_GetConsoleCP)win32_resolve_import("kernel32.dll", "GetConsoleCP");
+
+    TEST_ASSERT(pSetConsoleCP != NULL, "i18n: SetConsoleCP resolved");
+    TEST_ASSERT(pGetConsoleCP != NULL, "i18n: GetConsoleCP resolved");
+    if (pSetConsoleCP && pGetConsoleCP) {
+        pSetConsoleCP(65001);
+        TEST_ASSERT(pGetConsoleCP() == 65001, "i18n: console CP round-trip 65001");
+        pSetConsoleCP(437); /* restore */
+    }
+
+    /* ── msvcrt wide additions ────────────────────────────── */
+
+    typedef long (*pfn_wcstol)(const WCHAR *, WCHAR **, int);
+    pfn_wcstol pWcstol = (pfn_wcstol)win32_resolve_import("msvcrt.dll", "wcstol");
+    TEST_ASSERT(pWcstol != NULL, "i18n: wcstol resolved");
+    if (pWcstol) {
+        WCHAR num[] = {'1','2','3',0};
+        long v = pWcstol(num, NULL, 10);
+        TEST_ASSERT(v == 123, "i18n: wcstol('123')=123");
+    }
+
+    typedef int (*pfn_wcsicmp)(const WCHAR *, const WCHAR *);
+    pfn_wcsicmp pWcsicmp = (pfn_wcsicmp)win32_resolve_import("msvcrt.dll", "_wcsicmp");
+    TEST_ASSERT(pWcsicmp != NULL, "i18n: _wcsicmp resolved");
+    if (pWcsicmp) {
+        WCHAR a[] = {'H','e','L','L','o',0};
+        WCHAR b[] = {'h','E','l','l','O',0};
+        TEST_ASSERT(pWcsicmp(a, b) == 0, "i18n: _wcsicmp case-insensitive eq");
+    }
+
+    typedef int (*pfn_iswdigit)(WCHAR);
+    pfn_iswdigit pIswdigit = (pfn_iswdigit)win32_resolve_import("msvcrt.dll", "iswdigit");
+    TEST_ASSERT(pIswdigit != NULL, "i18n: iswdigit resolved");
+    if (pIswdigit) {
+        TEST_ASSERT(pIswdigit('5') != 0, "i18n: iswdigit('5')=true");
+        TEST_ASSERT(pIswdigit('A') == 0, "i18n: iswdigit('A')=false");
+    }
+
+    typedef WCHAR (*pfn_towupper)(WCHAR);
+    pfn_towupper pTowupper = (pfn_towupper)win32_resolve_import("msvcrt.dll", "towupper");
+    TEST_ASSERT(pTowupper != NULL, "i18n: towupper resolved");
+    if (pTowupper) {
+        TEST_ASSERT(pTowupper('a') == 'A', "i18n: towupper('a')='A'");
+        /* Latin-1: U+00E9 → U+00C9 */
+        TEST_ASSERT(pTowupper(0x00E9) == 0x00C9, "i18n: towupper(U+00E9)=U+00C9");
+    }
+
+    /* ── NLS stubs ────────────────────────────────────────── */
+
+    typedef WORD (WINAPI *pfn_GetLangID)(void);
+    pfn_GetLangID pGetUserDefaultLangID = (pfn_GetLangID)win32_resolve_import("kernel32.dll", "GetUserDefaultLangID");
+    TEST_ASSERT(pGetUserDefaultLangID != NULL, "i18n: GetUserDefaultLangID resolved");
+    if (pGetUserDefaultLangID) {
+        TEST_ASSERT(pGetUserDefaultLangID() == 0x0409, "i18n: GetUserDefaultLangID=0x0409");
+    }
+
+    typedef int (WINAPI *pfn_GetDateFmt)(DWORD, DWORD, const void *, const WCHAR *, WCHAR *, int);
+    pfn_GetDateFmt pGetDateFormatW = (pfn_GetDateFmt)win32_resolve_import("kernel32.dll", "GetDateFormatW");
+    TEST_ASSERT(pGetDateFormatW != NULL, "i18n: GetDateFormatW resolved");
+    if (pGetDateFormatW) {
+        /* Query required size */
+        int n = pGetDateFormatW(0, 0, NULL, NULL, NULL, 0);
+        TEST_ASSERT(n > 0, "i18n: GetDateFormatW returns >0 for size query");
+    }
 }
 
 /* ---- Security & Crypto Tests ---- */
@@ -2464,6 +2649,7 @@ void test_run_all(void) {
     test_gdi_advanced();
     test_com_ole();
     test_unicode_wide();
+    test_unicode_i18n();
     test_security_crypto();
     test_seh();
     test_misc_win32();

@@ -363,12 +363,129 @@ static void *shim__wfopen(const WCHAR *filename, const WCHAR *mode) {
 
 static WCHAR shim_towupper(WCHAR c) {
     if (c >= 'a' && c <= 'z') return c - 32;
+    /* Latin-1 Supplement: U+00E0-U+00FE → U+00C0-U+00DE, excluding U+00F7 (÷) */
+    if (c >= 0x00E0 && c <= 0x00FE && c != 0x00F7) return c - 0x20;
     return c;
 }
 
 static WCHAR shim_towlower(WCHAR c) {
     if (c >= 'A' && c <= 'Z') return c + 32;
+    /* Latin-1 Supplement: U+00C0-U+00DE → U+00E0-U+00FE, excluding U+00D7 (×) */
+    if (c >= 0x00C0 && c <= 0x00DE && c != 0x00D7) return c + 0x20;
     return c;
+}
+
+/* ── Wide string additional functions ────────────────────────── */
+
+static long shim_wcstol(const WCHAR *s, WCHAR **endptr, int base) {
+    if (!s) { if (endptr) *endptr = NULL; return 0; }
+    while (*s == ' ' || *s == '\t') s++;
+    int neg = 0;
+    if (*s == '-') { neg = 1; s++; }
+    else if (*s == '+') s++;
+    if (base == 0) {
+        if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { base = 16; s += 2; }
+        else if (s[0] == '0') { base = 8; s++; }
+        else base = 10;
+    } else if (base == 16 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+    }
+    long val = 0;
+    while (*s) {
+        int d;
+        if (*s >= '0' && *s <= '9') d = *s - '0';
+        else if (*s >= 'a' && *s <= 'z') d = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'Z') d = *s - 'A' + 10;
+        else break;
+        if (d >= base) break;
+        val = val * base + d;
+        s++;
+    }
+    if (endptr) *endptr = (WCHAR *)s;
+    return neg ? -val : val;
+}
+
+static unsigned long shim_wcstoul(const WCHAR *s, WCHAR **endptr, int base) {
+    return (unsigned long)shim_wcstol(s, endptr, base);
+}
+
+static int shim__wcsicmp(const WCHAR *a, const WCHAR *b) {
+    while (*a && *b) {
+        WCHAR ca = shim_towlower(*a);
+        WCHAR cb = shim_towlower(*b);
+        if (ca != cb) return (int)ca - (int)cb;
+        a++; b++;
+    }
+    return (int)shim_towlower(*a) - (int)shim_towlower(*b);
+}
+
+static int shim__wcsnicmp(const WCHAR *a, const WCHAR *b, size_t n) {
+    for (size_t i = 0; i < n && *a && *b; i++, a++, b++) {
+        WCHAR ca = shim_towlower(*a);
+        WCHAR cb = shim_towlower(*b);
+        if (ca != cb) return (int)ca - (int)cb;
+    }
+    return 0;
+}
+
+static size_t shim_wcstombs(char *dst, const WCHAR *src, size_t n) {
+    extern int win32_wchar_to_utf8(const WCHAR *, int, char *, int);
+    return (size_t)win32_wchar_to_utf8(src, -1, dst, (int)n) - 1;
+}
+
+static size_t shim_mbstowcs(WCHAR *dst, const char *src, size_t n) {
+    extern int win32_utf8_to_wchar(const char *, int, WCHAR *, int);
+    return (size_t)win32_utf8_to_wchar(src, -1, dst, (int)n) - 1;
+}
+
+static WCHAR *shim__wcslwr(WCHAR *s) {
+    for (WCHAR *p = s; *p; p++)
+        *p = shim_towlower(*p);
+    return s;
+}
+
+static WCHAR *shim__wcsupr(WCHAR *s) {
+    for (WCHAR *p = s; *p; p++)
+        *p = shim_towupper(*p);
+    return s;
+}
+
+/* ── isw* family ─────────────────────────────────────────────── */
+
+static int shim_iswalpha(WCHAR c) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return 1;
+    if (c >= 0x00C0 && c <= 0x00FF && c != 0x00D7 && c != 0x00F7) return 1;
+    return 0;
+}
+
+static int shim_iswdigit(WCHAR c) { return c >= '0' && c <= '9'; }
+
+static int shim_iswalnum(WCHAR c) { return shim_iswalpha(c) || shim_iswdigit(c); }
+
+static int shim_iswspace(WCHAR c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+}
+
+static int shim_iswupper(WCHAR c) {
+    if (c >= 'A' && c <= 'Z') return 1;
+    if (c >= 0x00C0 && c <= 0x00DE && c != 0x00D7) return 1;
+    return 0;
+}
+
+static int shim_iswlower(WCHAR c) {
+    if (c >= 'a' && c <= 'z') return 1;
+    if (c >= 0x00E0 && c <= 0x00FE && c != 0x00F7) return 1;
+    return 0;
+}
+
+static int shim_iswprint(WCHAR c) {
+    return c >= 0x20 && c != 0x7F;
+}
+
+static int shim_iswascii(WCHAR c) { return c < 0x80; }
+
+static int shim_iswxdigit(WCHAR c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
 /* ── Security Cookie ─────────────────────────────────────────── */
@@ -1564,6 +1681,27 @@ static const win32_export_entry_t msvcrt_exports[] = {
     { "_wfopen",        (void *)shim__wfopen },
     { "towupper",       (void *)shim_towupper },
     { "towlower",       (void *)shim_towlower },
+
+    /* Wide string additions */
+    { "wcstol",         (void *)shim_wcstol },
+    { "wcstoul",        (void *)shim_wcstoul },
+    { "_wcsicmp",       (void *)shim__wcsicmp },
+    { "_wcsnicmp",      (void *)shim__wcsnicmp },
+    { "wcstombs",       (void *)shim_wcstombs },
+    { "mbstowcs",       (void *)shim_mbstowcs },
+    { "_wcslwr",        (void *)shim__wcslwr },
+    { "_wcsupr",        (void *)shim__wcsupr },
+
+    /* isw* family */
+    { "iswalpha",       (void *)shim_iswalpha },
+    { "iswdigit",       (void *)shim_iswdigit },
+    { "iswalnum",       (void *)shim_iswalnum },
+    { "iswspace",       (void *)shim_iswspace },
+    { "iswupper",       (void *)shim_iswupper },
+    { "iswlower",       (void *)shim_iswlower },
+    { "iswprint",       (void *)shim_iswprint },
+    { "iswascii",       (void *)shim_iswascii },
+    { "iswxdigit",      (void *)shim_iswxdigit },
 };
 
 const win32_dll_shim_t win32_msvcrt = {
