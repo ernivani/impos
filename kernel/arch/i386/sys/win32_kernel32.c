@@ -1,4 +1,5 @@
 #include <kernel/win32_types.h>
+#include <kernel/win32_seh.h>
 #include <kernel/fs.h>
 #include <kernel/task.h>
 #include <kernel/pmm.h>
@@ -2572,6 +2573,30 @@ static HMODULE WINAPI shim_LoadLibraryW(LPCWSTR lpLibFileName) {
     return shim_LoadLibraryA(narrow);
 }
 
+/* ── SEH API Wrappers ────────────────────────────────────────── */
+
+static LPTOP_LEVEL_EXCEPTION_FILTER WINAPI shim_SetUnhandledExceptionFilter(
+    LPTOP_LEVEL_EXCEPTION_FILTER filter)
+{
+    return seh_SetUnhandledExceptionFilter(filter);
+}
+
+static LONG WINAPI shim_UnhandledExceptionFilter(EXCEPTION_POINTERS *ep) {
+    return seh_UnhandledExceptionFilter(ep);
+}
+
+static void WINAPI shim_RaiseException(DWORD code, DWORD flags,
+                                        DWORD nargs, const DWORD *args)
+{
+    seh_RaiseException(code, flags, nargs, args);
+}
+
+static void WINAPI shim_RtlUnwind(void *target_frame, void *target_ip,
+                                   EXCEPTION_RECORD *er, DWORD return_value)
+{
+    seh_RtlUnwind(target_frame, target_ip, er, return_value);
+}
+
 /* ── Stubs ───────────────────────────────────────────────────── */
 
 static BOOL WINAPI shim_stub_true(void) { return TRUE; }
@@ -2769,8 +2794,10 @@ static const win32_export_entry_t kernel32_exports[] = {
     /* Stubs — commonly imported but not critical */
     { "IsProcessorFeaturePresent",  (void *)shim_stub_zero },
     { "IsDebuggerPresent",          (void *)shim_stub_zero },
-    { "SetUnhandledExceptionFilter", (void *)shim_stub_zero },
-    { "UnhandledExceptionFilter",   (void *)shim_stub_zero },
+    { "SetUnhandledExceptionFilter", (void *)shim_SetUnhandledExceptionFilter },
+    { "UnhandledExceptionFilter",   (void *)shim_UnhandledExceptionFilter },
+    { "RaiseException",             (void *)shim_RaiseException },
+    { "RtlUnwind",                  (void *)shim_RtlUnwind },
     { "GetSystemTimeAsFileTime",    (void *)shim_stub_true },
     { "GetStartupInfoA",            (void *)shim_stub_true },
     { "GetStartupInfoW",            (void *)shim_stub_true },

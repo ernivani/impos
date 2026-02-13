@@ -352,6 +352,28 @@ int pe_execute(pe_loaded_image_t *img, const char *name) {
         return -1;
     }
 
+    /* Allocate and initialize a WIN32_TEB for this PE task */
+    task_info_t *t = task_get(tid);
+    if (t) {
+        WIN32_TEB *teb = (WIN32_TEB *)calloc(1, sizeof(WIN32_TEB));
+        if (teb) {
+            teb->tib.ExceptionList = SEH_CHAIN_END;
+            teb->tib.StackBase = t->stack_base ?
+                (uint32_t)t->stack_base + t->stack_size : 0;
+            teb->tib.StackLimit = t->stack_base ?
+                (uint32_t)t->stack_base : 0;
+            teb->tib.Self = (uint32_t)&teb->tib;
+            teb->ClientId[0] = t->pid;  /* ProcessId */
+            teb->ClientId[1] = tid;     /* ThreadId */
+            teb->LastError = 0;
+
+            t->tib = (uint32_t)teb;
+            t->is_pe = 1;
+
+            DBG("pe_execute: TEB at 0x%x for task %d", (unsigned)teb, tid);
+        }
+    }
+
     DBG("pe_execute: started '%s' as task %d", task_name, tid);
     return tid;
 }

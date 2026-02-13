@@ -127,6 +127,8 @@ registers_t* schedule(registers_t* regs) {
             task_set_current(next_thread);
             if (nxt->is_user)
                 tss_set_esp0(nxt->kernel_esp);
+            if (nxt->tib)
+                gdt_set_fs_base(nxt->tib);
             sched_switch_cr3(nxt->page_dir);
             return (registers_t*)nxt->esp;
         }
@@ -145,6 +147,8 @@ registers_t* schedule(registers_t* regs) {
             task_set_current(next_thread);
             if (nxt->is_user)
                 tss_set_esp0(nxt->kernel_esp);
+            if (nxt->tib)
+                gdt_set_fs_base(nxt->tib);
             sched_switch_cr3(nxt->page_dir);
             return (registers_t*)nxt->esp;
         }

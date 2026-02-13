@@ -1,5 +1,6 @@
 #include <kernel/test.h>
 #include <kernel/win32_types.h>
+#include <kernel/win32_seh.h>
 #include <kernel/fs.h>
 #include <kernel/user.h>
 #include <kernel/group.h>
@@ -1983,6 +1984,89 @@ static void test_security_crypto(void) {
     TEST_ASSERT(pCryptAcquireContextW != NULL, "crypt: CryptAcquireContextW resolved");
 }
 
+/* ---- SEH Tests ---- */
+
+static void test_seh(void) {
+    printf("== SEH Tests ==\n");
+
+    /* Test 1: SEH types have correct sizes */
+    TEST_ASSERT(sizeof(NT_TIB) == 28, "seh: NT_TIB size is 28");
+    TEST_ASSERT(sizeof(WIN32_TEB) == 4096, "seh: WIN32_TEB size is 4096");
+    TEST_ASSERT(sizeof(EXCEPTION_RECORD) >= 20, "seh: EXCEPTION_RECORD has min size");
+    TEST_ASSERT(sizeof(CONTEXT) >= 64, "seh: CONTEXT has min size");
+    TEST_ASSERT(sizeof(EXCEPTION_POINTERS) == 8, "seh: EXCEPTION_POINTERS is 8 bytes");
+
+    /* Test 2: NT_TIB field offsets */
+    WIN32_TEB teb;
+    memset(&teb, 0, sizeof(teb));
+    uint8_t *base = (uint8_t *)&teb;
+    TEST_ASSERT((uint8_t *)&teb.tib.ExceptionList - base == 0,
+                "seh: ExceptionList at offset 0");
+    TEST_ASSERT((uint8_t *)&teb.tib.StackBase - base == 4,
+                "seh: StackBase at offset 4");
+    TEST_ASSERT((uint8_t *)&teb.tib.StackLimit - base == 8,
+                "seh: StackLimit at offset 8");
+    TEST_ASSERT((uint8_t *)&teb.tib.Self - base == 0x18,
+                "seh: Self at offset 0x18");
+
+    /* Test 3: kernel32 SEH exports resolve */
+    typedef LPTOP_LEVEL_EXCEPTION_FILTER (WINAPI *pfn_SetUEF)(LPTOP_LEVEL_EXCEPTION_FILTER);
+    typedef LONG (WINAPI *pfn_UEF)(EXCEPTION_POINTERS *);
+    typedef void (WINAPI *pfn_RaiseException)(DWORD, DWORD, DWORD, const DWORD *);
+    typedef void (WINAPI *pfn_RtlUnwind)(void *, void *, EXCEPTION_RECORD *, DWORD);
+
+    pfn_SetUEF pSetUEF = (pfn_SetUEF)win32_resolve_import(
+        "kernel32.dll", "SetUnhandledExceptionFilter");
+    pfn_UEF pUEF = (pfn_UEF)win32_resolve_import(
+        "kernel32.dll", "UnhandledExceptionFilter");
+    pfn_RaiseException pRaise = (pfn_RaiseException)win32_resolve_import(
+        "kernel32.dll", "RaiseException");
+    pfn_RtlUnwind pUnwind = (pfn_RtlUnwind)win32_resolve_import(
+        "kernel32.dll", "RtlUnwind");
+
+    TEST_ASSERT(pSetUEF != NULL, "seh: SetUnhandledExceptionFilter resolves");
+    TEST_ASSERT(pUEF != NULL, "seh: UnhandledExceptionFilter resolves");
+    TEST_ASSERT(pRaise != NULL, "seh: RaiseException resolves");
+    TEST_ASSERT(pUnwind != NULL, "seh: RtlUnwind resolves");
+
+    /* Test 4: msvcrt SEH exports resolve */
+    void *p_handler3 = win32_resolve_import("msvcrt.dll", "_except_handler3");
+    void *p_handler4 = win32_resolve_import("msvcrt.dll", "_except_handler4");
+    void *p_cxx3 = win32_resolve_import("msvcrt.dll", "__CxxFrameHandler3");
+    void *p_cxxthrow = win32_resolve_import("msvcrt.dll", "_CxxThrowException");
+    void *p_cookie = win32_resolve_import("msvcrt.dll", "__security_cookie");
+    void *p_initcookie = win32_resolve_import("msvcrt.dll", "__security_init_cookie");
+    void *p_gsfail = win32_resolve_import("msvcrt.dll", "__report_gsfailure");
+
+    TEST_ASSERT(p_handler3 != NULL, "seh: _except_handler3 resolves");
+    TEST_ASSERT(p_handler4 != NULL, "seh: _except_handler4 resolves");
+    TEST_ASSERT(p_cxx3 != NULL, "seh: __CxxFrameHandler3 resolves");
+    TEST_ASSERT(p_cxxthrow != NULL, "seh: _CxxThrowException resolves");
+    TEST_ASSERT(p_cookie != NULL, "seh: __security_cookie resolves");
+    TEST_ASSERT(p_initcookie != NULL, "seh: __security_init_cookie resolves");
+    TEST_ASSERT(p_gsfail != NULL, "seh: __report_gsfailure resolves");
+
+    /* Test 5: Security cookie value */
+    DWORD *cookie = (DWORD *)p_cookie;
+    TEST_ASSERT(*cookie == 0xBB40E64E, "seh: __security_cookie == 0xBB40E64E");
+
+    /* Test 6: SetUnhandledExceptionFilter round-trip */
+    LPTOP_LEVEL_EXCEPTION_FILTER prev = seh_SetUnhandledExceptionFilter(NULL);
+    (void)prev;
+    /* Set a dummy filter and verify we get it back */
+    LPTOP_LEVEL_EXCEPTION_FILTER dummy = (LPTOP_LEVEL_EXCEPTION_FILTER)0xDEADBEEF;
+    LPTOP_LEVEL_EXCEPTION_FILTER old = seh_SetUnhandledExceptionFilter(dummy);
+    TEST_ASSERT(old == NULL, "seh: first SetUEF returns NULL");
+    LPTOP_LEVEL_EXCEPTION_FILTER old2 = seh_SetUnhandledExceptionFilter(NULL);
+    TEST_ASSERT(old2 == dummy, "seh: second SetUEF returns previous filter");
+
+    /* Test 7: Exception code constants */
+    TEST_ASSERT(EXCEPTION_ACCESS_VIOLATION == 0xC0000005, "seh: ACCESS_VIOLATION code");
+    TEST_ASSERT(EXCEPTION_INT_DIVIDE_BY_ZERO == 0xC0000094, "seh: DIV_BY_ZERO code");
+    TEST_ASSERT(EXCEPTION_ILLEGAL_INSTRUCTION == 0xC000001D, "seh: ILLEGAL_INSTR code");
+    TEST_ASSERT(SEH_CHAIN_END == 0xFFFFFFFF, "seh: chain end sentinel");
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -2014,6 +2098,7 @@ void test_run_all(void) {
     test_com_ole();
     test_unicode_wide();
     test_security_crypto();
+    test_seh();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {
