@@ -7,6 +7,9 @@
 #include <kernel/io.h>
 #include <kernel/pipe.h>
 #include <kernel/pe_loader.h>
+#include <kernel/env.h>
+#include <kernel/config.h>
+#include <kernel/user.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2597,9 +2600,396 @@ static void WINAPI shim_RtlUnwind(void *target_frame, void *target_ip,
     seh_RtlUnwind(target_frame, target_ip, er, return_value);
 }
 
+/* ── Phase 13: System Info ────────────────────────────────────── */
+
+typedef struct {
+    union {
+        DWORD dwOemId;
+        struct { WORD wProcessorArchitecture; WORD wReserved; };
+    };
+    DWORD dwPageSize;
+    LPVOID lpMinimumApplicationAddress;
+    LPVOID lpMaximumApplicationAddress;
+    DWORD dwActiveProcessorMask;
+    DWORD dwNumberOfProcessors;
+    DWORD dwProcessorType;
+    DWORD dwAllocationGranularity;
+    WORD  wProcessorLevel;
+    WORD  wProcessorRevision;
+} SYSTEM_INFO, *LPSYSTEM_INFO;
+
+#define PROCESSOR_ARCHITECTURE_INTEL 0
+#define PROCESSOR_INTEL_PENTIUM      586
+
+static void WINAPI shim_GetSystemInfo(LPSYSTEM_INFO si) {
+    if (!si) return;
+    memset(si, 0, sizeof(*si));
+    si->wProcessorArchitecture = PROCESSOR_ARCHITECTURE_INTEL;
+    si->dwPageSize = 4096;
+    si->lpMinimumApplicationAddress = (LPVOID)0x00010000;
+    si->lpMaximumApplicationAddress = (LPVOID)0x7FFEFFFF;
+    si->dwActiveProcessorMask = 1;
+    si->dwNumberOfProcessors = 1;
+    si->dwProcessorType = PROCESSOR_INTEL_PENTIUM;
+    si->dwAllocationGranularity = 65536;
+    si->wProcessorLevel = 6;
+    si->wProcessorRevision = 0x0301;
+}
+
+static void WINAPI shim_GetNativeSystemInfo(LPSYSTEM_INFO si) {
+    shim_GetSystemInfo(si);
+}
+
+/* ── Phase 13: Version Info ──────────────────────────────────── */
+
+typedef struct {
+    DWORD dwOSVersionInfoSize;
+    DWORD dwMajorVersion;
+    DWORD dwMinorVersion;
+    DWORD dwBuildNumber;
+    DWORD dwPlatformId;
+    CHAR  szCSDVersion[128];
+} OSVERSIONINFOA, *LPOSVERSIONINFOA;
+
+typedef struct {
+    DWORD dwOSVersionInfoSize;
+    DWORD dwMajorVersion;
+    DWORD dwMinorVersion;
+    DWORD dwBuildNumber;
+    DWORD dwPlatformId;
+    CHAR  szCSDVersion[128];
+    WORD  wServicePackMajor;
+    WORD  wServicePackMinor;
+    WORD  wSuiteMask;
+    BYTE  wProductType;
+    BYTE  wReserved;
+} OSVERSIONINFOEXA, *LPOSVERSIONINFOEXA;
+
+#define VER_PLATFORM_WIN32_NT    2
+#define VER_NT_WORKSTATION       1
+
+static BOOL WINAPI shim_GetVersionExA(LPOSVERSIONINFOA info) {
+    if (!info) return FALSE;
+    /* Report as Windows 10.0.19041 */
+    info->dwMajorVersion = 10;
+    info->dwMinorVersion = 0;
+    info->dwBuildNumber = 19041;
+    info->dwPlatformId = VER_PLATFORM_WIN32_NT;
+    memset(info->szCSDVersion, 0, sizeof(info->szCSDVersion));
+
+    /* If extended struct, fill extra fields */
+    if (info->dwOSVersionInfoSize >= sizeof(OSVERSIONINFOEXA)) {
+        LPOSVERSIONINFOEXA ex = (LPOSVERSIONINFOEXA)info;
+        ex->wServicePackMajor = 0;
+        ex->wServicePackMinor = 0;
+        ex->wSuiteMask = 0;
+        ex->wProductType = VER_NT_WORKSTATION;
+        ex->wReserved = 0;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI shim_GetVersionExW(void *info) {
+    /* Wide version — fill same fields, szCSDVersion stays zeroed */
+    return shim_GetVersionExA((LPOSVERSIONINFOA)info);
+}
+
+static DWORD WINAPI shim_GetVersion(void) {
+    /* Low word: major.minor, high word: build + platform */
+    return (10) | (0 << 8) | (19041 << 16);
+}
+
+/* Processor features — report basic x86 features */
+#define PF_COMPARE_EXCHANGE_DOUBLE  2
+#define PF_MMX_INSTRUCTIONS_AVAILABLE 3
+#define PF_XMMI_INSTRUCTIONS_AVAILABLE 6  /* SSE */
+#define PF_XMMI64_INSTRUCTIONS_AVAILABLE 10 /* SSE2 */
+#define PF_NX_ENABLED              12
+
+static BOOL WINAPI shim_IsProcessorFeaturePresent(DWORD feature) {
+    switch (feature) {
+        case PF_COMPARE_EXCHANGE_DOUBLE: return TRUE;
+        case PF_MMX_INSTRUCTIONS_AVAILABLE: return TRUE;
+        case PF_XMMI_INSTRUCTIONS_AVAILABLE: return TRUE;
+        case PF_XMMI64_INSTRUCTIONS_AVAILABLE: return TRUE;
+        case PF_NX_ENABLED: return FALSE;
+        default: return FALSE;
+    }
+}
+
+/* ── Phase 13: Environment Variables (A versions) ────────────── */
+
+static DWORD WINAPI shim_GetEnvironmentVariableA(LPCSTR lpName, LPSTR lpBuffer, DWORD nSize) {
+    if (!lpName) return 0;
+    const char *val = env_get(lpName);
+    if (!val) {
+        last_error = 203; /* ERROR_ENVVAR_NOT_FOUND */
+        return 0;
+    }
+    DWORD len = (DWORD)strlen(val);
+    if (!lpBuffer || nSize == 0)
+        return len + 1; /* Required size including NUL */
+    if (nSize <= len) {
+        return len + 1; /* Buffer too small */
+    }
+    strcpy(lpBuffer, val);
+    return len;
+}
+
+static BOOL WINAPI shim_SetEnvironmentVariableA(LPCSTR lpName, LPCSTR lpValue) {
+    if (!lpName) return FALSE;
+    if (lpValue)
+        return env_set(lpName, lpValue) == 0;
+    else
+        return env_set(lpName, "") == 0; /* Delete = set empty */
+}
+
+/* ── Phase 13: FormatMessage ─────────────────────────────────── */
+
+#define FORMAT_MESSAGE_FROM_SYSTEM    0x1000
+#define FORMAT_MESSAGE_IGNORE_INSERTS 0x200
+#define FORMAT_MESSAGE_ALLOCATE_BUFFER 0x100
+
+static DWORD WINAPI shim_FormatMessageA(DWORD dwFlags, LPCVOID lpSource,
+    DWORD dwMessageId, DWORD dwLanguageId,
+    LPSTR lpBuffer, DWORD nSize, void *Arguments)
+{
+    (void)lpSource; (void)dwLanguageId; (void)Arguments;
+
+    const char *msg = "Unknown error";
+    switch (dwMessageId) {
+        case 0:  msg = "The operation completed successfully."; break;
+        case 2:  msg = "The system cannot find the file specified."; break;
+        case 3:  msg = "The system cannot find the path specified."; break;
+        case 5:  msg = "Access is denied."; break;
+        case 6:  msg = "The handle is invalid."; break;
+        case 8:  msg = "Not enough storage is available to process this command."; break;
+        case 87: msg = "The parameter is incorrect."; break;
+        case 122: msg = "The data area passed to a system call is too small."; break;
+        case 203: msg = "The system could not find the environment option."; break;
+        default: break;
+    }
+
+    DWORD len = (DWORD)strlen(msg);
+    if (dwFlags & FORMAT_MESSAGE_ALLOCATE_BUFFER) {
+        char *buf = (char *)malloc(len + 1);
+        if (!buf) return 0;
+        strcpy(buf, msg);
+        *(char **)lpBuffer = buf;
+        return len;
+    }
+
+    if (!lpBuffer || nSize == 0) return 0;
+    DWORD copy = (len < nSize - 1) ? len : nSize - 1;
+    memcpy(lpBuffer, msg, copy);
+    lpBuffer[copy] = '\0';
+    return copy;
+}
+
+/* ── Phase 13: Locale ────────────────────────────────────────── */
+
+#define LOCALE_SYSTEM_DEFAULT  0x0800
+#define LOCALE_USER_DEFAULT    0x0400
+#define LOCALE_SENGLANGUAGE    0x1001
+#define LOCALE_SENGCOUNTRY     0x1002
+#define LOCALE_SISO639LANGNAME 0x0059
+#define LOCALE_SISO3166CTRYNAME 0x005A
+#define LOCALE_IDEFAULTANSICODEPAGE 0x1004
+#define LOCALE_SDECIMAL        0x000E
+#define LOCALE_STHOUSAND       0x000F
+
+typedef DWORD LCID;
+typedef DWORD LCTYPE;
+
+static LCID WINAPI shim_GetUserDefaultLCID(void) {
+    return 0x0409; /* en-US */
+}
+
+static LCID WINAPI shim_GetSystemDefaultLCID(void) {
+    return 0x0409;
+}
+
+static int WINAPI shim_GetLocaleInfoA(LCID Locale, LCTYPE LCType,
+                                       LPSTR lpLCData, int cchData)
+{
+    (void)Locale;
+    const char *val = "";
+    switch (LCType) {
+        case LOCALE_SENGLANGUAGE:       val = "English"; break;
+        case LOCALE_SENGCOUNTRY:        val = "United States"; break;
+        case LOCALE_SISO639LANGNAME:    val = "en"; break;
+        case LOCALE_SISO3166CTRYNAME:   val = "US"; break;
+        case LOCALE_IDEFAULTANSICODEPAGE: val = "1252"; break;
+        case LOCALE_SDECIMAL:           val = "."; break;
+        case LOCALE_STHOUSAND:          val = ","; break;
+        default: val = ""; break;
+    }
+    int len = (int)strlen(val) + 1;
+    if (cchData == 0) return len;
+    if (!lpLCData) return 0;
+    int copy = (len <= cchData) ? len : cchData;
+    memcpy(lpLCData, val, copy - 1);
+    lpLCData[copy - 1] = '\0';
+    return copy;
+}
+
+static int WINAPI shim_GetLocaleInfoW(LCID Locale, LCTYPE LCType,
+                                       LPWSTR lpLCData, int cchData)
+{
+    /* Get narrow version, then widen */
+    char narrow[128];
+    int len = shim_GetLocaleInfoA(Locale, LCType, narrow, sizeof(narrow));
+    if (cchData == 0) return len;
+    if (!lpLCData) return 0;
+    int copy = (len <= cchData) ? len : cchData;
+    for (int i = 0; i < copy; i++)
+        lpLCData[i] = (WCHAR)(unsigned char)narrow[i];
+    return copy;
+}
+
+static UINT WINAPI shim_GetACP(void) { return 1252; } /* Windows-1252 (Western) */
+static UINT WINAPI shim_GetOEMCP(void) { return 437; } /* DOS CP437 */
+
+static BOOL WINAPI shim_IsValidCodePage(UINT cp) {
+    return (cp == 437 || cp == 1252 || cp == 65001); /* CP437, 1252, UTF-8 */
+}
+
+/* ── Phase 13: Time ──────────────────────────────────────────── */
+
+typedef struct {
+    WORD wYear;
+    WORD wMonth;
+    WORD wDayOfWeek;
+    WORD wDay;
+    WORD wHour;
+    WORD wMinute;
+    WORD wSecond;
+    WORD wMilliseconds;
+} SYSTEMTIME, *LPSYSTEMTIME;
+
+typedef struct { DWORD dwLowDateTime; DWORD dwHighDateTime; } FILETIME, *LPFILETIME;
+
+typedef struct {
+    LONG  Bias;              /* UTC = local + Bias (in minutes) */
+    WCHAR StandardName[32];
+    SYSTEMTIME StandardDate;
+    LONG  StandardBias;
+    WCHAR DaylightName[32];
+    SYSTEMTIME DaylightDate;
+    LONG  DaylightBias;
+} TIME_ZONE_INFORMATION, *LPTIME_ZONE_INFORMATION;
+
+#define TIME_ZONE_ID_UNKNOWN 0
+
+static void fill_systemtime(LPSYSTEMTIME st) {
+    datetime_t dt;
+    config_get_datetime(&dt);
+    memset(st, 0, sizeof(*st));
+    st->wYear = dt.year;
+    st->wMonth = dt.month;
+    st->wDay = dt.day;
+    st->wHour = dt.hour;
+    st->wMinute = dt.minute;
+    st->wSecond = dt.second;
+    st->wDayOfWeek = 0; /* approximation */
+    st->wMilliseconds = 0;
+}
+
+static void WINAPI shim_GetLocalTime(LPSYSTEMTIME st) {
+    if (st) fill_systemtime(st);
+}
+
+static void WINAPI shim_GetSystemTime(LPSYSTEMTIME st) {
+    if (st) fill_systemtime(st); /* We don't track UTC separately */
+}
+
+/* FILETIME epoch: 1601-01-01. We approximate with a fixed base. */
+#define FILETIME_BASE_HIGH 0x01D6A000  /* ~2020 era */
+
+static void WINAPI shim_GetSystemTimeAsFileTime_real(LPFILETIME ft) {
+    if (!ft) return;
+    /* Approximate: use PIT ticks as low part for uniqueness */
+    extern volatile uint32_t pit_ticks;
+    ft->dwHighDateTime = FILETIME_BASE_HIGH;
+    ft->dwLowDateTime = pit_ticks * 83333; /* ~120Hz → 100ns units */
+}
+
+static BOOL WINAPI shim_FileTimeToSystemTime(const FILETIME *ft, LPSYSTEMTIME st) {
+    (void)ft;
+    if (st) fill_systemtime(st);
+    return TRUE;
+}
+
+static BOOL WINAPI shim_SystemTimeToFileTime(const SYSTEMTIME *st, LPFILETIME ft) {
+    (void)st;
+    if (ft) {
+        ft->dwHighDateTime = FILETIME_BASE_HIGH;
+        ft->dwLowDateTime = 0;
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI shim_FileTimeToLocalFileTime(const FILETIME *ft, LPFILETIME lft) {
+    if (ft && lft) { *lft = *ft; }
+    return TRUE;
+}
+
+static DWORD WINAPI shim_GetTimeZoneInformation(LPTIME_ZONE_INFORMATION tzi) {
+    if (!tzi) return TIME_ZONE_ID_UNKNOWN;
+    memset(tzi, 0, sizeof(*tzi));
+    tzi->Bias = 0; /* UTC */
+    /* StandardName: "UTC" as wide chars */
+    tzi->StandardName[0] = 'U'; tzi->StandardName[1] = 'T';
+    tzi->StandardName[2] = 'C'; tzi->StandardName[3] = 0;
+    return TIME_ZONE_ID_UNKNOWN;
+}
+
+/* ── Phase 13: Thread Pool Stubs ─────────────────────────────── */
+
+static BOOL WINAPI shim_QueueUserWorkItem(void *func, LPVOID ctx, DWORD flags) {
+    (void)func; (void)ctx; (void)flags;
+    /* Stub: run inline or ignore. Real impl would queue to thread pool. */
+    return TRUE;
+}
+
+static HANDLE WINAPI shim_CreateTimerQueue(void) {
+    return (HANDLE)0xABCD0001; /* Fake handle */
+}
+
+static BOOL WINAPI shim_DeleteTimerQueue(HANDLE queue) {
+    (void)queue;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_CreateTimerQueueTimer(HANDLE *timer, HANDLE queue,
+    void *callback, LPVOID param, DWORD dueTime, DWORD period, DWORD flags)
+{
+    (void)timer; (void)queue; (void)callback; (void)param;
+    (void)dueTime; (void)period; (void)flags;
+    if (timer) *timer = (HANDLE)0xABCD0002;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_DeleteTimerQueueTimer(HANDLE queue, HANDLE timer, HANDLE event) {
+    (void)queue; (void)timer; (void)event;
+    return TRUE;
+}
+
+/* ── Phase 13: Startup Info ──────────────────────────────────── */
+
+static void WINAPI shim_GetStartupInfoA_real(STARTUPINFOA *si) {
+    if (!si) return;
+    memset(si, 0, sizeof(*si));
+    si->cb = sizeof(STARTUPINFOA);
+}
+
+static void WINAPI shim_GetStartupInfoW_real(void *si) {
+    /* Same layout, just zero it */
+    if (si) memset(si, 0, 68); /* sizeof STARTUPINFOW */
+}
+
 /* ── Stubs ───────────────────────────────────────────────────── */
 
-static BOOL WINAPI shim_stub_true(void) { return TRUE; }
 static DWORD WINAPI shim_stub_zero(void) { return 0; }
 
 /* ── Export Table ─────────────────────────────────────────────── */
@@ -2791,16 +3181,61 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "OutputDebugStringA",       (void *)shim_OutputDebugStringA },
     { "OutputDebugStringW",       (void *)shim_OutputDebugStringW },
 
-    /* Stubs — commonly imported but not critical */
-    { "IsProcessorFeaturePresent",  (void *)shim_stub_zero },
-    { "IsDebuggerPresent",          (void *)shim_stub_zero },
+    /* SEH */
     { "SetUnhandledExceptionFilter", (void *)shim_SetUnhandledExceptionFilter },
     { "UnhandledExceptionFilter",   (void *)shim_UnhandledExceptionFilter },
     { "RaiseException",             (void *)shim_RaiseException },
     { "RtlUnwind",                  (void *)shim_RtlUnwind },
-    { "GetSystemTimeAsFileTime",    (void *)shim_stub_true },
-    { "GetStartupInfoA",            (void *)shim_stub_true },
-    { "GetStartupInfoW",            (void *)shim_stub_true },
+
+    /* System info */
+    { "GetSystemInfo",              (void *)shim_GetSystemInfo },
+    { "GetNativeSystemInfo",        (void *)shim_GetNativeSystemInfo },
+
+    /* Version info */
+    { "GetVersionExA",              (void *)shim_GetVersionExA },
+    { "GetVersionExW",              (void *)shim_GetVersionExW },
+    { "GetVersion",                 (void *)shim_GetVersion },
+    { "IsProcessorFeaturePresent",  (void *)shim_IsProcessorFeaturePresent },
+
+    /* Environment variables */
+    { "GetEnvironmentVariableA",    (void *)shim_GetEnvironmentVariableA },
+    { "SetEnvironmentVariableA",    (void *)shim_SetEnvironmentVariableA },
+    { "GetEnvironmentVariableW",    (void *)shim_GetEnvironmentVariableW },
+    { "SetEnvironmentVariableW",    (void *)shim_SetEnvironmentVariableW },
+
+    /* FormatMessage */
+    { "FormatMessageA",             (void *)shim_FormatMessageA },
+
+    /* Locale */
+    { "GetUserDefaultLCID",         (void *)shim_GetUserDefaultLCID },
+    { "GetSystemDefaultLCID",       (void *)shim_GetSystemDefaultLCID },
+    { "GetLocaleInfoA",             (void *)shim_GetLocaleInfoA },
+    { "GetLocaleInfoW",             (void *)shim_GetLocaleInfoW },
+    { "GetACP",                     (void *)shim_GetACP },
+    { "GetOEMCP",                   (void *)shim_GetOEMCP },
+    { "IsValidCodePage",            (void *)shim_IsValidCodePage },
+
+    /* Time */
+    { "GetLocalTime",               (void *)shim_GetLocalTime },
+    { "GetSystemTime",              (void *)shim_GetSystemTime },
+    { "GetSystemTimeAsFileTime",    (void *)shim_GetSystemTimeAsFileTime_real },
+    { "FileTimeToSystemTime",       (void *)shim_FileTimeToSystemTime },
+    { "SystemTimeToFileTime",       (void *)shim_SystemTimeToFileTime },
+    { "FileTimeToLocalFileTime",    (void *)shim_FileTimeToLocalFileTime },
+    { "GetTimeZoneInformation",     (void *)shim_GetTimeZoneInformation },
+    /* Thread pool */
+    { "QueueUserWorkItem",          (void *)shim_QueueUserWorkItem },
+    { "CreateTimerQueue",           (void *)shim_CreateTimerQueue },
+    { "DeleteTimerQueue",           (void *)shim_DeleteTimerQueue },
+    { "CreateTimerQueueTimer",      (void *)shim_CreateTimerQueueTimer },
+    { "DeleteTimerQueueTimer",      (void *)shim_DeleteTimerQueueTimer },
+
+    /* Startup info */
+    { "GetStartupInfoA",            (void *)shim_GetStartupInfoA_real },
+    { "GetStartupInfoW",            (void *)shim_GetStartupInfoW_real },
+
+    /* Stubs */
+    { "IsDebuggerPresent",          (void *)shim_stub_zero },
 };
 
 const win32_dll_shim_t win32_kernel32 = {

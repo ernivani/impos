@@ -2067,6 +2067,82 @@ static void test_seh(void) {
     TEST_ASSERT(SEH_CHAIN_END == 0xFFFFFFFF, "seh: chain end sentinel");
 }
 
+/* ---- Misc Win32 Tests (Phase 13) ---- */
+
+static void test_misc_win32(void) {
+    printf("== Miscellaneous Win32 Tests ==\n");
+
+    /* Test 1: GetSystemInfo resolves */
+    void *pGetSystemInfo = win32_resolve_import("kernel32.dll", "GetSystemInfo");
+    void *pGetNativeSystemInfo = win32_resolve_import("kernel32.dll", "GetNativeSystemInfo");
+    TEST_ASSERT(pGetSystemInfo != NULL, "misc: GetSystemInfo resolves");
+    TEST_ASSERT(pGetNativeSystemInfo != NULL, "misc: GetNativeSystemInfo resolves");
+
+    /* Test 2: GetVersionExA resolves */
+    void *pGetVersionExA = win32_resolve_import("kernel32.dll", "GetVersionExA");
+    void *pGetVersion = win32_resolve_import("kernel32.dll", "GetVersion");
+    TEST_ASSERT(pGetVersionExA != NULL, "misc: GetVersionExA resolves");
+    TEST_ASSERT(pGetVersion != NULL, "misc: GetVersion resolves");
+
+    /* Test 3: IsProcessorFeaturePresent resolves and works */
+    typedef BOOL (WINAPI *pfn_IPFP)(DWORD);
+    pfn_IPFP pIPFP = (pfn_IPFP)win32_resolve_import(
+        "kernel32.dll", "IsProcessorFeaturePresent");
+    TEST_ASSERT(pIPFP != NULL, "misc: IsProcessorFeaturePresent resolves");
+
+    /* Test 4: Environment variable APIs resolve */
+    void *pGetEnvA = win32_resolve_import("kernel32.dll", "GetEnvironmentVariableA");
+    void *pSetEnvA = win32_resolve_import("kernel32.dll", "SetEnvironmentVariableA");
+    TEST_ASSERT(pGetEnvA != NULL, "misc: GetEnvironmentVariableA resolves");
+    TEST_ASSERT(pSetEnvA != NULL, "misc: SetEnvironmentVariableA resolves");
+
+    /* Test 5: FormatMessageA resolves */
+    void *pFmtMsg = win32_resolve_import("kernel32.dll", "FormatMessageA");
+    TEST_ASSERT(pFmtMsg != NULL, "misc: FormatMessageA resolves");
+
+    /* Test 6: Locale APIs resolve */
+    void *pLCID = win32_resolve_import("kernel32.dll", "GetUserDefaultLCID");
+    void *pLocale = win32_resolve_import("kernel32.dll", "GetLocaleInfoA");
+    void *pACP = win32_resolve_import("kernel32.dll", "GetACP");
+    TEST_ASSERT(pLCID != NULL, "misc: GetUserDefaultLCID resolves");
+    TEST_ASSERT(pLocale != NULL, "misc: GetLocaleInfoA resolves");
+    TEST_ASSERT(pACP != NULL, "misc: GetACP resolves");
+
+    /* Test 7: Time APIs resolve */
+    void *pLocalTime = win32_resolve_import("kernel32.dll", "GetLocalTime");
+    void *pSysTime = win32_resolve_import("kernel32.dll", "GetSystemTime");
+    void *pTZI = win32_resolve_import("kernel32.dll", "GetTimeZoneInformation");
+    void *pTick = win32_resolve_import("kernel32.dll", "GetTickCount");
+    void *pQPC = win32_resolve_import("kernel32.dll", "QueryPerformanceCounter");
+    void *pQPF = win32_resolve_import("kernel32.dll", "QueryPerformanceFrequency");
+    TEST_ASSERT(pLocalTime != NULL, "misc: GetLocalTime resolves");
+    TEST_ASSERT(pSysTime != NULL, "misc: GetSystemTime resolves");
+    TEST_ASSERT(pTZI != NULL, "misc: GetTimeZoneInformation resolves");
+    TEST_ASSERT(pTick != NULL, "misc: GetTickCount resolves");
+    TEST_ASSERT(pQPC != NULL, "misc: QueryPerformanceCounter resolves");
+    TEST_ASSERT(pQPF != NULL, "misc: QueryPerformanceFrequency resolves");
+
+    /* Test 8: Thread pool stubs resolve */
+    void *pQUWI = win32_resolve_import("kernel32.dll", "QueueUserWorkItem");
+    void *pCTQ = win32_resolve_import("kernel32.dll", "CreateTimerQueue");
+    TEST_ASSERT(pQUWI != NULL, "misc: QueueUserWorkItem resolves");
+    TEST_ASSERT(pCTQ != NULL, "misc: CreateTimerQueue resolves");
+
+    /* Test 9: advapi32 security stubs resolve */
+    void *pOPT = win32_resolve_import("advapi32.dll", "OpenProcessToken");
+    void *pGTI = win32_resolve_import("advapi32.dll", "GetTokenInformation");
+    void *pGUN = win32_resolve_import("advapi32.dll", "GetUserNameA");
+    void *pGUNW = win32_resolve_import("advapi32.dll", "GetUserNameW");
+    TEST_ASSERT(pOPT != NULL, "misc: OpenProcessToken resolves");
+    TEST_ASSERT(pGTI != NULL, "misc: GetTokenInformation resolves");
+    TEST_ASSERT(pGUN != NULL, "misc: GetUserNameA resolves");
+    TEST_ASSERT(pGUNW != NULL, "misc: GetUserNameW resolves");
+
+    /* Test 10: Startup info */
+    void *pGSIA = win32_resolve_import("kernel32.dll", "GetStartupInfoA");
+    TEST_ASSERT(pGSIA != NULL, "misc: GetStartupInfoA resolves");
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -2099,6 +2175,7 @@ void test_run_all(void) {
     test_unicode_wide();
     test_security_crypto();
     test_seh();
+    test_misc_win32();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

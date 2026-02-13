@@ -150,16 +150,16 @@ _Chromium uses SEH for crash handling (crashpad). C++ exceptions also need this.
 
 ### Phase 13: Miscellaneous Win32
 _The long tail of APIs that Chromium calls on startup._
-- [ ] GetSystemInfo / GetNativeSystemInfo — CPU count, page size, arch
-- [ ] GetVersionExA / IsProcessorFeaturePresent — OS version queries
-- [ ] GetEnvironmentVariableA / SetEnvironmentVariableA
+- [x] GetSystemInfo / GetNativeSystemInfo — CPU count, page size, arch
+- [x] GetVersionExA / IsProcessorFeaturePresent — OS version queries
+- [x] GetEnvironmentVariableA / SetEnvironmentVariableA
 - [x] OutputDebugStringA — map to serial debug log
 - [x] GetUserNameA — map to user_get_current()
-- [ ] FormatMessageA — error code to string
-- [ ] GetLocaleInfoA / GetUserDefaultLCID — locale stubs (return en-US)
-- [ ] GetTimeZoneInformation / GetLocalTime / GetSystemTime / FileTimeToSystemTime
-- [ ] kernel32 thread pool stubs — QueueUserWorkItem, CreateTimerQueue
-- [ ] advapi32 security stubs — GetTokenInformation, OpenProcessToken
+- [x] FormatMessageA — error code to string
+- [x] GetLocaleInfoA / GetUserDefaultLCID — locale stubs (return en-US)
+- [x] GetTimeZoneInformation / GetLocalTime / GetSystemTime / FileTimeToSystemTime
+- [x] kernel32 thread pool stubs — QueueUserWorkItem, CreateTimerQueue
+- [x] advapi32 security stubs — GetTokenInformation, OpenProcessToken
 
 ## Tier 1.6 — From Demo Toy to Real Software
 
