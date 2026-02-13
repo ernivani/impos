@@ -109,6 +109,14 @@ void pmm_free_frame(uint32_t phys_addr) {
         frame_clear(frame);
 }
 
+void pmm_reserve_range(uint32_t phys_start, uint32_t phys_end) {
+    uint32_t frame_start = phys_start / FRAME_SIZE;
+    uint32_t frame_end = (phys_end + FRAME_SIZE - 1) / FRAME_SIZE;
+    if (frame_end > PMM_MAX_FRAMES) frame_end = PMM_MAX_FRAMES;
+    for (uint32_t f = frame_start; f < frame_end; f++)
+        frame_set(f);
+}
+
 uint32_t pmm_free_frame_count(void) {
     uint32_t count = 0;
     for (uint32_t i = 0; i < PMM_BITMAP_SIZE; i++) {

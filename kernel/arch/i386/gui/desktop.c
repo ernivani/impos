@@ -24,6 +24,7 @@
 #include <stdio.h>
 
 static int desktop_first_show = 1;
+static void desktop_unified_idle(void);  /* forward declaration */
 
 void desktop_notify_login(void) {
     desktop_first_show = 1;
@@ -623,6 +624,54 @@ void desktop_draw_chrome(void) {
     desktop_draw_dock();
     gfx_flip();
 }
+
+void desktop_resume_idle(void) {
+    keyboard_set_idle_callback(desktop_unified_idle);
+}
+
+void desktop_full_redraw(void) {
+    wm_invalidate_bg();
+    wm_mark_dirty();
+    wm_composite();
+    desktop_draw_menubar();
+    desktop_draw_dock();
+    gfx_flip();
+}
+
+/* ═══ Fullscreen App Dock Registration ═════════════════════════ */
+
+int desktop_register_fullscreen_app(const char *name, int task_id) {
+    for (int i = 0; i < MAX_RUNNING_APPS; i++) {
+        if (!running_apps[i].active) {
+            running_apps[i].active = 1;
+            running_apps[i].wm_id = -1;      /* no WM window */
+            running_apps[i].dock_index = -1;
+            running_apps[i].ui_win = 0;
+            running_apps[i].on_event = 0;
+            running_apps[i].on_close = 0;
+            running_apps[i].on_tick = 0;
+            running_apps[i].tick_interval = 0;
+            running_apps[i].is_terminal = 0;
+            running_apps[i].task_id = task_id;
+            if (task_id >= 0)
+                task_set_name(task_id, name);
+            rebuild_dock_items();
+            return i;
+        }
+    }
+    return -1;
+}
+
+void desktop_unregister_fullscreen_app(int slot) {
+    if (slot >= 0 && slot < MAX_RUNNING_APPS) {
+        running_apps[slot].active = 0;
+        rebuild_dock_items();
+    }
+}
+
+static volatile int fullscreen_resume_flag = 0;
+int  desktop_fullscreen_resume_requested(void) { return fullscreen_resume_flag; }
+void desktop_clear_fullscreen_resume(void) { fullscreen_resume_flag = 0; }
 
 /* ═══ Desktop File Icons ═══════════════════════════════════════ */
 
@@ -1695,6 +1744,17 @@ static void desktop_unified_idle(void) {
     /* Check dock action */
     int da = wm_get_dock_action();
     if (da) {
+        /* Fullscreen app dock click (wm_id == -1, not static) → set resume flag */
+        if (da < 0) {
+            int didx = -(da + 1);
+            if (didx >= 0 && didx < dock_item_count &&
+                !dock_dynamic[didx].is_static && dock_dynamic[didx].wm_id < 0) {
+                wm_clear_dock_action();
+                fullscreen_resume_flag = 1;
+                keyboard_request_force_exit();
+                return;
+            }
+        }
         ui_event_t ev;
         ev.type = UI_EVENT_DOCK;
         ev.dock.action = da;
@@ -2059,6 +2119,17 @@ static void desktop_idle_terminal(void) {
     /* Check dock action */
     int da = wm_get_dock_action();
     if (da) {
+        /* Fullscreen app dock click (wm_id == -1, not static) → set resume flag */
+        if (da < 0) {
+            int didx = -(da + 1);
+            if (didx >= 0 && didx < dock_item_count &&
+                !dock_dynamic[didx].is_static && dock_dynamic[didx].wm_id < 0) {
+                wm_clear_dock_action();
+                fullscreen_resume_flag = 1;
+                keyboard_request_force_exit();
+                return;
+            }
+        }
         ui_event_t ev;
         ev.type = UI_EVENT_DOCK;
         ev.dock.action = da;

@@ -98,4 +98,24 @@ void alttab_confirm(void);
 void alttab_cancel(void);
 int  alttab_is_visible(void);
 
+/* ═══ Idle Callback Management ═══════════════════════════════════ */
+
+/* Re-enable the desktop WM idle callback (e.g. after fullscreen app returns) */
+void desktop_resume_idle(void);
+
+/* Full desktop redraw: wallpaper + icons + windows + chrome + flip */
+void desktop_full_redraw(void);
+
+/* ═══ Fullscreen App Dock Registration ═══════════════════════════ */
+
+/* Register a fullscreen app (no WM window) so it appears on the dock.
+   task_id: from task_register().  Returns slot index or -1. */
+int  desktop_register_fullscreen_app(const char *name, int task_id);
+void desktop_unregister_fullscreen_app(int slot);
+
+/* Check/clear "resume fullscreen app" request (set by dock click on
+   a fullscreen app icon while it's suspended). */
+int  desktop_fullscreen_resume_requested(void);
+void desktop_clear_fullscreen_resume(void);
+
 #endif

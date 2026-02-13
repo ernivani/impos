@@ -368,7 +368,29 @@ void shell_loop(void) {
     }
 }
 
+/* Multiboot module globals (for DOOM WAD) */
+uint8_t *doom_wad_data = 0;
+uint32_t doom_wad_size = 0;
+
 void kernel_main(multiboot_info_t* mbi) {
+    /* FIRST: Copy multiboot module (DOOM WAD) before any malloc overwrites it.
+       GRUB places modules after the kernel in physical memory, which overlaps
+       with our linear heap. Copy to a malloc'd buffer immediately. */
+    if ((mbi->flags & (1 << 3)) && mbi->mods_count > 0) {
+        multiboot_module_t *mod = (multiboot_module_t *)mbi->mods_addr;
+        uint32_t wad_src = mod->mod_start;
+        uint32_t wad_len = mod->mod_end - mod->mod_start;
+        if (wad_len > 0 && wad_len < 16 * 1024 * 1024) { /* sanity: <16MB */
+            uint8_t *copy = (uint8_t *)malloc(wad_len);
+            if (copy) {
+                /* Forward memcpy is safe: dest (heap start) < src (module addr) */
+                memcpy(copy, (uint8_t *)wad_src, wad_len);
+                doom_wad_data = copy;
+                doom_wad_size = wad_len;
+            }
+        }
+    }
+
     gfx_init(mbi);
     terminal_initialize();
 
@@ -382,6 +404,14 @@ void kernel_main(multiboot_info_t* mbi) {
     /* Initialize physical and virtual memory management */
     pmm_init(mbi);
     vmm_init(mbi);
+
+    /* Print module info now that printf is safe */
+    if (doom_wad_data && doom_wad_size > 0) {
+        printf("[BOOT] DOOM WAD: %u bytes at 0x%x (header: %c%c%c%c)\n",
+               doom_wad_size, (uint32_t)doom_wad_data,
+               doom_wad_data[0], doom_wad_data[1],
+               doom_wad_data[2], doom_wad_data[3]);
+    }
 
     /* Initialize task tracking (before any tasks are created) */
     task_init();

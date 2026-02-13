@@ -18,7 +18,8 @@ build:
 iso: build
 	mkdir -p isodir/boot/grub
 	cp sysroot/boot/myos.kernel isodir/boot/myos.kernel
-	@printf 'set gfxmode=1024x768x32,auto\nset gfxpayload=keep\nmenuentry "myos" {\n\tmultiboot /boot/myos.kernel\n}\n' > isodir/boot/grub/grub.cfg
+	@if [ -f doom1.wad ]; then cp doom1.wad isodir/boot/doom1.wad; fi
+	@printf 'set gfxmode=1024x768x32,auto\nset gfxpayload=keep\nmenuentry "myos" {\n\tmultiboot /boot/myos.kernel\n\tmodule /boot/doom1.wad\n}\n' > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o myos.iso isodir
 
 $(DISK_IMAGE):
