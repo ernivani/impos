@@ -33,6 +33,7 @@
 #include <kernel/pe_loader.h>
 #include <kernel/tls.h>
 #include <kernel/io.h>
+#include <kernel/multiboot.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1276,6 +1277,12 @@ int shell_login(void) {
 
 void shell_initialize_subsystems(void) {
     fs_initialize();
+
+    /* Mount initrd if available (after fs_initialize, before config) */
+    if (initrd_data && initrd_size > 0) {
+        fs_mount_initrd(initrd_data, initrd_size);
+    }
+
     config_initialize();
     rtc_init();
     net_initialize();
@@ -1686,45 +1693,31 @@ size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size) {
                 // Read target directory
                 inode_t dir_inode;
                 if (fs_read_inode(target_inode, &dir_inode) == 0 && dir_inode.type == INODE_DIR) {
-                    uint8_t dir_data[MAX_DIRECT_SIZE];
-                    size_t dir_size = dir_inode.size;
-                    if (dir_size > MAX_DIRECT_SIZE) dir_size = MAX_DIRECT_SIZE;
+                    /* Process one block at a time to avoid 32KB stack allocation */
+                    static uint8_t ac_block[BLOCK_SIZE];
+                    int epb = BLOCK_SIZE / (int)sizeof(dir_entry_t);
+                    for (uint8_t bi = 0; bi < dir_inode.num_blocks && completion_matches_count < 32; bi++) {
+                        if (fs_read_block(dir_inode.blocks[bi], ac_block) != 0) break;
+                        dir_entry_t* entries = (dir_entry_t*)ac_block;
 
-                    size_t bytes_read = 0;
-                    for (uint8_t i = 0; i < dir_inode.num_blocks && bytes_read < dir_size; i++) {
-                        uint8_t block_data[BLOCK_SIZE];
-                        if (fs_read_block(dir_inode.blocks[i], block_data) != 0) break;
-                        size_t to_copy = BLOCK_SIZE;
-                        if (bytes_read + to_copy > dir_size) to_copy = dir_size - bytes_read;
-                        memcpy(dir_data + bytes_read, block_data, to_copy);
-                        bytes_read += to_copy;
-                    }
+                        for (int ei = 0; ei < epb && completion_matches_count < 32; ei++) {
+                            const char* name = entries[ei].name;
+                            if (name[0] == '\0') continue;
+                            if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
 
-                    size_t num_entries = dir_size / sizeof(dir_entry_t);
-                    dir_entry_t* entries = (dir_entry_t*)dir_data;
-                    
-
-                    for (size_t i = 0; i < num_entries && completion_matches_count < 32; i++) {
-                        const char* name = entries[i].name;
-                        if (name[0] == '\0') continue;
-                        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
-
-                        // Compare with file_prefix instead of full word
-                        size_t j = 0;
-                        for (; j < file_prefix_len; j++) {
-                            if (name[j] == '\0' || name[j] != file_prefix[j]) {
-                                break;
+                            size_t j = 0;
+                            for (; j < file_prefix_len; j++) {
+                                if (name[j] == '\0' || name[j] != file_prefix[j]) break;
                             }
-                        }
-                        if (j == file_prefix_len) {
-                            // Store full path (dir_path + name)
-                            if (dir_path[0] != '\0') {
-                                strcpy(completion_matches[completion_matches_count], dir_path);
-                                strcat(completion_matches[completion_matches_count], name);
-                            } else {
-                                strcpy(completion_matches[completion_matches_count], name);
+                            if (j == file_prefix_len) {
+                                if (dir_path[0] != '\0') {
+                                    strcpy(completion_matches[completion_matches_count], dir_path);
+                                    strcat(completion_matches[completion_matches_count], name);
+                                } else {
+                                    strcpy(completion_matches[completion_matches_count], name);
+                                }
+                                completion_matches_count++;
                             }
-                            completion_matches_count++;
                         }
                     }
                 }
@@ -2051,7 +2044,7 @@ static void cmd_cat(int argc, char* argv[]) {
         printf("cat: out of memory\n");
         return;
     }
-    size_t size;
+    size_t size = MAX_FILE_SIZE;
     if (fs_read_file(argv[1], buffer, &size) == 0) {
         for (size_t i = 0; i < size; i++) {
             putchar(buffer[i]);
