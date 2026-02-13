@@ -8,27 +8,24 @@ DISK_SIZE := 40M
 # Use KVM if available and accessible, otherwise fall back to TCG
 KVM_FLAG := $(shell if [ -w /dev/kvm ] 2>/dev/null; then echo "$(KVM_FLAG)"; fi)
 
-# Cross-compiler tools
-CROSS_AS := $(HOME)/opt/cross/bin/i686-elf-as
-CROSS_LD := $(HOME)/opt/cross/bin/i686-elf-ld
-
-.PHONY: all build iso run run-disk run-us clean rebuild clean-disk help test-programs
+.PHONY: all build iso run run-disk run-us clean rebuild clean-disk help download-busybox
 
 all: iso
 
 build:
 	./build.sh
 
-# Build test ELF binaries
-test_programs/hello: test_programs/hello.S test_programs/hello.ld
-	@echo "Building test ELF: hello"
-	$(CROSS_AS) test_programs/hello.S -o test_programs/hello.o
-	$(CROSS_LD) -T test_programs/hello.ld -o test_programs/hello test_programs/hello.o
-	@rm -f test_programs/hello.o
+# Download static BusyBox i386 (musl) binary
+download-busybox:
+	@if [ ! -f test_programs/busybox ]; then \
+		echo "Downloading BusyBox i386 static binary..."; \
+		curl -L -o test_programs/busybox "https://busybox.net/downloads/binaries/1.35.0-i686-linux-musl/busybox"; \
+		chmod +x test_programs/busybox; \
+	else \
+		echo "BusyBox already downloaded."; \
+	fi
 
-test-programs: test_programs/hello
-
-initrd.tar: test-programs
+initrd.tar:
 	@echo "Creating initrd.tar..."
 	@rm -rf initrd_staging
 	@mkdir -p initrd_staging/etc
@@ -36,7 +33,19 @@ initrd.tar: test-programs
 	@mkdir -p initrd_staging/usr/bin
 	@mkdir -p initrd_staging/tmp
 	@echo "Welcome to ImposOS!" > initrd_staging/etc/motd
-	@cp test_programs/hello initrd_staging/bin/hello
+	@if [ -f test_programs/busybox ]; then \
+		echo "Including BusyBox in initrd..."; \
+		cp test_programs/busybox initrd_staging/bin/busybox; \
+		ln -sf busybox initrd_staging/bin/ls; \
+		ln -sf busybox initrd_staging/bin/cat; \
+		ln -sf busybox initrd_staging/bin/echo; \
+		ln -sf busybox initrd_staging/bin/pwd; \
+		ln -sf busybox initrd_staging/bin/uname; \
+		ln -sf busybox initrd_staging/bin/id; \
+		ln -sf busybox initrd_staging/bin/wc; \
+		ln -sf busybox initrd_staging/bin/head; \
+		ln -sf busybox initrd_staging/bin/tail; \
+	fi
 	@cd initrd_staging && tar cf ../initrd.tar --format=ustar .
 	@rm -rf initrd_staging
 
@@ -121,7 +130,6 @@ clean:
 	./clean.sh
 	rm -f initrd.tar
 	rm -rf initrd_staging
-	rm -f test_programs/hello test_programs/*.o
 
 clean-disk:
 	@echo "Removing disk image: $(DISK_IMAGE)"
