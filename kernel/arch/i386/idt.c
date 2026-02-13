@@ -6,6 +6,8 @@
 #include <kernel/syscall.h>
 #include <kernel/signal.h>
 #include <kernel/win32_seh.h>
+#include <kernel/vmm.h>
+#include <kernel/gfx.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -364,10 +366,51 @@ registers_t* isr_handler(registers_t* regs) {
                               (err & 16) ? " instruction-fetch" : "");
             }
 
+            /* Guard page check: if page fault hits a guard page, dispatch
+             * STATUS_GUARD_PAGE_VIOLATION through SEH (one-shot behavior) */
+            if (int_no == 14 && t && t->is_pe && t->tib) {
+                if (vmm_check_guard_page(cr2 & PAGE_MASK)) {
+                    serial_printf("[GUARD] Guard page hit at 0x%x, dispatching STATUS_GUARD_PAGE_VIOLATION\n", cr2);
+                    /* Build a synthetic guard page violation and dispatch through SEH */
+                    EXCEPTION_RECORD er;
+                    memset(&er, 0, sizeof(er));
+                    er.ExceptionCode = STATUS_GUARD_PAGE_VIOLATION;
+                    er.ExceptionFlags = 0;
+                    er.ExceptionAddress = (PVOID)regs->eip;
+                    er.NumberParameters = 2;
+                    er.ExceptionInformation[0] = (regs->err_code & 2) ? 1 : 0;
+                    er.ExceptionInformation[1] = cr2;
+
+                    CONTEXT ctx;
+                    memset(&ctx, 0, sizeof(ctx));
+                    ctx.ContextFlags = 0x10001F; /* CONTEXT_FULL */
+                    ctx.Eax = regs->eax; ctx.Ebx = regs->ebx;
+                    ctx.Ecx = regs->ecx; ctx.Edx = regs->edx;
+                    ctx.Esi = regs->esi; ctx.Edi = regs->edi;
+                    ctx.Ebp = regs->ebp; ctx.Esp = regs->useresp;
+                    ctx.Eip = regs->eip; ctx.EFlags = regs->eflags;
+
+                    EXCEPTION_POINTERS ep;
+                    ep.ExceptionRecord = &er;
+                    ep.ContextRecord = &ctx;
+
+                    LONG veh_result = seh_dispatch_vectored(&ep);
+                    if (veh_result == EXCEPTION_CONTINUE_EXECUTION)
+                        return regs;  /* Guard page handled by VEH */
+
+                    /* Fall through to normal SEH dispatch below */
+                }
+            }
+
             /* PE task with TEB: try SEH dispatch first */
             if (t && t->is_pe && t->tib) {
                 if (seh_dispatch_exception(t, regs, int_no))
                     return regs;  /* SEH handler handled it */
+            }
+
+            /* PE task crash dialog — show crash info in a graphical dialog */
+            if (t && t->is_pe && gfx_is_active()) {
+                seh_show_crash_dialog(name, int_no, regs, cr2, t);
             }
 
             /* Check if this task is recoverable */

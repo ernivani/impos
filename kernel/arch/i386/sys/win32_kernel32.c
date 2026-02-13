@@ -1406,12 +1406,22 @@ static uint32_t valloc_next = 0x05000000;
 
 /* Convert Win32 protection flags to PTE flags */
 static uint32_t win32_prot_to_pte(DWORD protect) {
+    /* Strip PAGE_GUARD modifier — handled separately */
+    DWORD base_prot = protect & ~0x100; /* ~PAGE_GUARD */
     uint32_t flags = PTE_PRESENT | PTE_USER;
-    if (protect == PAGE_NOACCESS)
-        return PTE_USER;  /* present=0, will fault */
-    if (protect == PAGE_READONLY || protect == PAGE_EXECUTE_READ)
-        return flags;  /* read-only (no PTE_WRITABLE) */
-    return flags | PTE_WRITABLE;  /* PAGE_READWRITE and others */
+    if (base_prot == PAGE_NOACCESS)
+        flags = PTE_USER;  /* present=0, will fault */
+    else if (base_prot == PAGE_READONLY || base_prot == PAGE_EXECUTE_READ)
+        { /* read-only (no PTE_WRITABLE) */ }
+    else
+        flags |= PTE_WRITABLE;  /* PAGE_READWRITE and others */
+
+    /* PAGE_GUARD: remove PRESENT, set PTE_GUARD so page fault handler
+     * can recognize it as a one-shot guard page violation */
+    if (protect & 0x100) {
+        flags = (flags & ~PTE_PRESENT) | PTE_GUARD;
+    }
+    return flags;
 }
 
 static LPVOID WINAPI shim_VirtualAlloc(
@@ -2600,6 +2610,28 @@ static void WINAPI shim_RtlUnwind(void *target_frame, void *target_ip,
     seh_RtlUnwind(target_frame, target_ip, er, return_value);
 }
 
+/* ── Vectored Exception Handling ─────────────────────────────── */
+
+static PVOID WINAPI shim_AddVectoredExceptionHandler(ULONG first,
+    PVECTORED_EXCEPTION_HANDLER handler)
+{
+    return seh_AddVectoredExceptionHandler(first, handler);
+}
+
+static ULONG WINAPI shim_RemoveVectoredExceptionHandler(PVOID handle) {
+    return seh_RemoveVectoredExceptionHandler(handle);
+}
+
+static PVOID WINAPI shim_AddVectoredContinueHandler(ULONG first,
+    PVECTORED_EXCEPTION_HANDLER handler)
+{
+    return seh_AddVectoredContinueHandler(first, handler);
+}
+
+static ULONG WINAPI shim_RemoveVectoredContinueHandler(PVOID handle) {
+    return seh_RemoveVectoredContinueHandler(handle);
+}
+
 /* ── Phase 13: System Info ────────────────────────────────────── */
 
 typedef struct {
@@ -3186,6 +3218,10 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "UnhandledExceptionFilter",   (void *)shim_UnhandledExceptionFilter },
     { "RaiseException",             (void *)shim_RaiseException },
     { "RtlUnwind",                  (void *)shim_RtlUnwind },
+    { "AddVectoredExceptionHandler",  (void *)shim_AddVectoredExceptionHandler },
+    { "RemoveVectoredExceptionHandler", (void *)shim_RemoveVectoredExceptionHandler },
+    { "AddVectoredContinueHandler",   (void *)shim_AddVectoredContinueHandler },
+    { "RemoveVectoredContinueHandler", (void *)shim_RemoveVectoredContinueHandler },
 
     /* System info */
     { "GetSystemInfo",              (void *)shim_GetSystemInfo },

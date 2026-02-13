@@ -16,9 +16,11 @@
 #include <kernel/socket.h>
 #include <kernel/dns.h>
 #include <kernel/task.h>
+#include <kernel/vmm.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <setjmp.h>
 
 static int test_count;
 static int test_pass;
@@ -2311,6 +2313,127 @@ static void test_crt_phase1(void) {
     TEST_ASSERT(pTypeInfoVtable != NULL, "crt: type_info vtable resolves");
 }
 
+/* ---- SEH Phase 2 Tests ---- */
+
+static void test_seh_phase2(void) {
+    printf("== SEH Phase 2 Tests ==\n");
+
+    /* Test 1: VEH exports resolve from kernel32 */
+    void *pAddVEH = win32_resolve_import("kernel32.dll", "AddVectoredExceptionHandler");
+    void *pRemoveVEH = win32_resolve_import("kernel32.dll", "RemoveVectoredExceptionHandler");
+    void *pAddVCH = win32_resolve_import("kernel32.dll", "AddVectoredContinueHandler");
+    void *pRemoveVCH = win32_resolve_import("kernel32.dll", "RemoveVectoredContinueHandler");
+    TEST_ASSERT(pAddVEH != NULL, "seh2: AddVectoredExceptionHandler resolves");
+    TEST_ASSERT(pRemoveVEH != NULL, "seh2: RemoveVectoredExceptionHandler resolves");
+    TEST_ASSERT(pAddVCH != NULL, "seh2: AddVectoredContinueHandler resolves");
+    TEST_ASSERT(pRemoveVCH != NULL, "seh2: RemoveVectoredContinueHandler resolves");
+
+    /* Test 2: VEH add/remove round-trip */
+    {
+        /* Dummy handler — never actually called */
+        LONG dummy_handler(EXCEPTION_POINTERS *ep) {
+            (void)ep;
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        PVOID h = seh_AddVectoredExceptionHandler(0, (PVECTORED_EXCEPTION_HANDLER)dummy_handler);
+        TEST_ASSERT(h != NULL, "seh2: AddVectoredExceptionHandler returns handle");
+        ULONG removed = seh_RemoveVectoredExceptionHandler(h);
+        TEST_ASSERT(removed == 1, "seh2: RemoveVectoredExceptionHandler succeeds");
+        /* Remove again should fail */
+        removed = seh_RemoveVectoredExceptionHandler(h);
+        TEST_ASSERT(removed == 0, "seh2: double-remove returns 0");
+    }
+
+    /* Test 3: VEH continue handler add/remove */
+    {
+        LONG dummy_cont(EXCEPTION_POINTERS *ep) {
+            (void)ep;
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        PVOID h = seh_AddVectoredContinueHandler(1, (PVECTORED_EXCEPTION_HANDLER)dummy_cont);
+        TEST_ASSERT(h != NULL, "seh2: AddVectoredContinueHandler returns handle");
+        ULONG removed = seh_RemoveVectoredContinueHandler(h);
+        TEST_ASSERT(removed == 1, "seh2: RemoveVectoredContinueHandler succeeds");
+    }
+
+    /* Test 4: C++ exception infrastructure exports resolve */
+    void *pCppFilter = win32_resolve_import("msvcrt.dll", "__CppXcptFilter");
+    void *pSetSeTrans = win32_resolve_import("msvcrt.dll", "_set_se_translator");
+    TEST_ASSERT(pCppFilter != NULL, "seh2: __CppXcptFilter resolves");
+    TEST_ASSERT(pSetSeTrans != NULL, "seh2: _set_se_translator resolves");
+
+    /* Test 5: _set_se_translator round-trip */
+    {
+        _se_translator_function prev = seh_set_se_translator(NULL);
+        TEST_ASSERT(prev == NULL, "seh2: initial se_translator is NULL");
+        /* Set a dummy translator */
+        void dummy_trans(unsigned int code, EXCEPTION_POINTERS *ep) {
+            (void)code; (void)ep;
+        }
+        _se_translator_function old = seh_set_se_translator(dummy_trans);
+        TEST_ASSERT(old == NULL, "seh2: first set_se_translator returns NULL");
+        old = seh_set_se_translator(NULL);
+        TEST_ASSERT(old == (_se_translator_function)dummy_trans, "seh2: second set_se_translator returns previous");
+    }
+
+    /* Test 6: setjmp/longjmp resolve from msvcrt */
+    void *pSetjmp = win32_resolve_import("msvcrt.dll", "setjmp");
+    void *pLongjmp = win32_resolve_import("msvcrt.dll", "longjmp");
+    void *p_Setjmp = win32_resolve_import("msvcrt.dll", "_setjmp");
+    void *p_Longjmp = win32_resolve_import("msvcrt.dll", "_longjmp");
+    TEST_ASSERT(pSetjmp != NULL, "seh2: setjmp resolves");
+    TEST_ASSERT(pLongjmp != NULL, "seh2: longjmp resolves");
+    TEST_ASSERT(p_Setjmp != NULL, "seh2: _setjmp resolves");
+    TEST_ASSERT(p_Longjmp != NULL, "seh2: _longjmp resolves");
+
+    /* Test 7: setjmp/longjmp functional test */
+    {
+        jmp_buf env;
+        volatile int reached = 0;
+        int val = setjmp(env);
+        if (val == 0) {
+            /* First return from setjmp */
+            reached = 1;
+            longjmp(env, 42);
+            /* Should not reach here */
+            reached = 99;
+        } else {
+            /* Returned from longjmp */
+            TEST_ASSERT(val == 42, "seh2: longjmp returns correct value");
+            TEST_ASSERT(reached == 1, "seh2: setjmp initial path was taken");
+        }
+        TEST_ASSERT(reached != 99, "seh2: code after longjmp not reached");
+    }
+
+    /* Test 8: Guard page constants */
+    TEST_ASSERT(STATUS_GUARD_PAGE_VIOLATION == 0x80000001, "seh2: STATUS_GUARD_PAGE_VIOLATION code");
+    TEST_ASSERT(PAGE_GUARD == 0x100, "seh2: PAGE_GUARD value");
+
+    /* Test 9: Guard page PTE flag defined */
+    TEST_ASSERT(PTE_GUARD == 0x200, "seh2: PTE_GUARD flag == 0x200");
+
+    /* Test 10: VEH dispatch with empty handler list returns CONTINUE_SEARCH */
+    {
+        EXCEPTION_RECORD er;
+        memset(&er, 0, sizeof(er));
+        er.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
+        CONTEXT ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        EXCEPTION_POINTERS ep;
+        ep.ExceptionRecord = &er;
+        ep.ContextRecord = &ctx;
+        LONG result = seh_dispatch_vectored(&ep);
+        TEST_ASSERT(result == EXCEPTION_CONTINUE_SEARCH,
+                    "seh2: empty VEH dispatch returns CONTINUE_SEARCH");
+    }
+
+    /* Test 11: Exception disposition constants */
+    TEST_ASSERT(ExceptionContinueExecution == 0, "seh2: ExceptionContinueExecution == 0");
+    TEST_ASSERT(ExceptionContinueSearch == 1, "seh2: ExceptionContinueSearch == 1");
+    TEST_ASSERT(EXCEPTION_CONTINUE_EXECUTION == -1, "seh2: EXCEPTION_CONTINUE_EXECUTION == -1");
+    TEST_ASSERT(EXCEPTION_CONTINUE_SEARCH == 0, "seh2: EXCEPTION_CONTINUE_SEARCH == 0");
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -2345,6 +2468,7 @@ void test_run_all(void) {
     test_seh();
     test_misc_win32();
     test_crt_phase1();
+    test_seh_phase2();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

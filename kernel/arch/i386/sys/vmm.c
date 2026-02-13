@@ -149,3 +149,38 @@ uint32_t vmm_map_user_page(uint32_t pd_phys, uint32_t virt, uint32_t phys, uint3
 void vmm_destroy_user_pagedir(uint32_t pd_phys) {
     pmm_free_frame(pd_phys);
 }
+
+int vmm_set_guard_page(uint32_t virt) {
+    uint32_t pde_idx = virt >> 22;
+    uint32_t pte_idx = (virt >> 12) & 0x3FF;
+
+    if (!(kernel_page_directory[pde_idx] & PTE_PRESENT))
+        return 0;
+    if (kernel_page_directory[pde_idx] & PTE_4MB)
+        return 0;  /* Can't guard within a 4MB page */
+
+    uint32_t *pt = (uint32_t *)(kernel_page_directory[pde_idx] & PAGE_MASK);
+    /* Remove PRESENT and set GUARD bit — access will trigger page fault */
+    pt[pte_idx] = (pt[pte_idx] & ~PTE_PRESENT) | PTE_GUARD;
+    vmm_invlpg(virt);
+    return 1;
+}
+
+int vmm_check_guard_page(uint32_t virt) {
+    uint32_t pde_idx = virt >> 22;
+    uint32_t pte_idx = (virt >> 12) & 0x3FF;
+
+    if (!(kernel_page_directory[pde_idx] & PTE_PRESENT))
+        return 0;
+    if (kernel_page_directory[pde_idx] & PTE_4MB)
+        return 0;
+
+    uint32_t *pt = (uint32_t *)(kernel_page_directory[pde_idx] & PAGE_MASK);
+    if (pt[pte_idx] & PTE_GUARD) {
+        /* One-shot: remove guard, restore present */
+        pt[pte_idx] = (pt[pte_idx] & ~PTE_GUARD) | PTE_PRESENT;
+        vmm_invlpg(virt);
+        return 1;
+    }
+    return 0;
+}
