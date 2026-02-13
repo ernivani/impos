@@ -13,6 +13,9 @@ uint32_t pmm_alloc_frame(void);
 /* Free a previously allocated physical frame */
 void pmm_free_frame(uint32_t phys_addr);
 
+/* Reserve a range of physical addresses (mark frames as used) */
+void pmm_reserve_range(uint32_t phys_start, uint32_t phys_end);
+
 /* Return the number of free frames */
 uint32_t pmm_free_frame_count(void);
 

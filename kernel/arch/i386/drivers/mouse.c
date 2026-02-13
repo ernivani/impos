@@ -12,6 +12,10 @@ static volatile int mouse_y;
 static volatile uint8_t mouse_buttons;
 static volatile int mouse_updated;
 
+/* Raw delta accumulators for applications needing relative movement (e.g. FPS games) */
+static volatile int mouse_dx_accum;
+static volatile int mouse_dy_accum;
+
 static int screen_w;
 static int screen_h;
 
@@ -88,6 +92,10 @@ static void mouse_irq_handler(registers_t *regs) {
         if (mouse_packet[0] & 0x40) dx = 0;
         if (mouse_packet[0] & 0x80) dy = 0;
 
+        /* Accumulate raw deltas (before clamping destroys them) */
+        mouse_dx_accum += dx;
+        mouse_dy_accum += dy;
+
         /* Update position (invert Y for screen coords) */
         mouse_x += dx;
         mouse_y -= dy;
@@ -111,6 +119,8 @@ void mouse_initialize(void) {
     mouse_buttons = 0;
     mouse_updated = 0;
     mouse_cycle = 0;
+    mouse_dx_accum = 0;
+    mouse_dy_accum = 0;
 
     /* Disable interrupts during PS/2 setup to prevent stale data
        from IRQ12 corrupting the config byte read */
@@ -165,6 +175,15 @@ int mouse_get_y(void) {
 
 uint8_t mouse_get_buttons(void) {
     return mouse_buttons;
+}
+
+void mouse_get_delta(int *dx, int *dy) {
+    __asm__ volatile("cli");
+    *dx = mouse_dx_accum;
+    *dy = mouse_dy_accum;
+    mouse_dx_accum = 0;
+    mouse_dy_accum = 0;
+    __asm__ volatile("sti");
 }
 
 int mouse_poll(void) {

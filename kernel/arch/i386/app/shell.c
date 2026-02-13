@@ -138,6 +138,7 @@ static void cmd_threadtest(int argc, char* argv[]);
 static void cmd_memtest(int argc, char* argv[]);
 static void cmd_fstest(int argc, char* argv[]);
 static void cmd_proctest(int argc, char* argv[]);
+static void cmd_doom(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -1146,6 +1147,24 @@ static command_t commands[] = {
         "    GetExitCodeProcess, CreatePipe, and DuplicateHandle.\n",
         CMD_FLAG_ROOT
     },
+    {
+        "doom", cmd_doom,
+        "Play DOOM (requires doom1.wad module)",
+        "doom: doom\n"
+        "    Launch DOOM. Requires doom1.wad loaded as GRUB module.\n"
+        "    Controls: arrows=move, Ctrl=fire, Space=use, Shift=run\n"
+        "    ESC=menu, 1-7=weapons, Tab=map, F1=help\n",
+        "NAME\n"
+        "    doom - play DOOM\n\n"
+        "SYNOPSIS\n"
+        "    doom\n\n"
+        "DESCRIPTION\n"
+        "    Launches the DOOM engine using the doom1.wad file loaded\n"
+        "    as a GRUB multiboot module. The game renders at 320x200\n"
+        "    scaled to fill the screen. Press ESC for the menu and\n"
+        "    select Quit Game to return to the shell.\n",
+        0
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -1798,6 +1817,65 @@ static void pipe_cmd_wc(const char *buf, int len) {
     /* Count final line if not newline-terminated */
     if (len > 0 && buf[len - 1] != '\n') lines++;
     printf("  %d  %d  %d\n", lines, words, chars);
+}
+
+/* ═══ DOOM ═════════════════════════════════════════════════════════ */
+
+extern void doomgeneric_Create(int argc, char **argv);
+extern void doomgeneric_Tick(void);
+extern uint8_t *doom_wad_data;
+extern uint32_t doom_wad_size;
+
+/* Doom calls exit() — we use setjmp/longjmp to return to shell */
+#include <setjmp.h>
+static jmp_buf doom_exit_jmp;
+static int doom_running = 0;
+
+void doom_exit_to_shell(void) {
+    if (doom_running)
+        longjmp(doom_exit_jmp, 1);
+}
+
+static void cmd_doom(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+
+    if (!gfx_is_active()) {
+        printf("doom: requires graphical mode\n");
+        return;
+    }
+    if (!doom_wad_data || doom_wad_size == 0) {
+        printf("doom: no WAD file loaded (add doom1.wad as GRUB module)\n");
+        return;
+    }
+
+    printf("Starting DOOM...\n");
+
+    /* Disable WM idle callback while doom runs */
+    keyboard_set_idle_callback(0);
+
+    /* Redirect exit() to doom's longjmp so any exit() call in doom
+       returns here instead of freezing the system */
+    exit_set_restart_point(&doom_exit_jmp);
+
+    doom_running = 1;
+    if (setjmp(doom_exit_jmp) == 0) {
+        char *doom_argv[] = { "doom", "-iwad", "doom1.wad", NULL };
+        doomgeneric_Create(3, doom_argv);
+
+        while (doom_running) {
+            doomgeneric_Tick();
+        }
+    }
+    doom_running = 0;
+
+    /* Clear exit() redirect so it doesn't jump back into stale doom state */
+    exit_set_restart_point(0);
+
+    /* Restore idle callback and redraw desktop */
+    keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
+    terminal_clear();
+    if (gfx_is_active())
+        wm_composite();
 }
 
 void shell_process_command(char* command) {

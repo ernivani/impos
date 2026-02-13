@@ -24,6 +24,7 @@
 #include <stdio.h>
 
 static int desktop_first_show = 1;
+static void desktop_unified_idle(void);  /* forward declaration */
 
 void desktop_notify_login(void) {
     desktop_first_show = 1;
