@@ -175,7 +175,7 @@ _Almost every real app links against the C runtime. Your current msvcrt shim cov
 - [x] `<math.h>` — sin, cos, tan, sqrt, pow, log, log10, exp, floor, ceil, fabs, fmod, atan2, asin, acos (link to soft-float or FPU)
 - [x] `<time.h>` — time, localtime, gmtime, mktime, strftime, difftime, clock, _ftime
 - [x] `<ctype.h>` — isalpha, isdigit, isspace, toupper, tolower, isalnum, isprint, etc.
-- [ ] `<setjmp.h>` — setjmp / longjmp (critical for error recovery in C code)
+- [x] `<setjmp.h>` — setjmp / longjmp (critical for error recovery in C code)
 - [x] `<signal.h>` — signal, raise (SIGSEGV, SIGABRT, SIGFPE handlers)
 - [x] `<locale.h>` — setlocale, localeconv (most apps call setlocale on startup)
 - [x] `<errno.h>` — per-thread errno via TLS, all standard error codes
@@ -701,45 +701,590 @@ _If developers can't debug apps on your platform, they won't develop for it._
 
 ### After Tier 1.7: What's Next?
 
-At this point ImposOS is a real, usable operating system. Future tiers would include:
+At this point ImposOS is a real, usable operating system. Future tiers continue below.
 
-- **Tier 1.8:** GPU driver framework (VESA VBE → basic framebuffer GPU → eventually virtio-gpu or simple hardware)
-- **Tier 1.9:** Hardware abstraction — USB mass storage, HID, audio codecs, real NIC drivers
-- **Tier 2.0:** Self-hosting — compile ImposOS on ImposOS (compiler, assembler, linker all running natively)
-- **Tier 2.5:** Modern browser — embed a real layout engine (NetSurf, SerenityOS's Ladybird, or stripped WebKit)
-- **Tier 3.0:** SMP (multi-core), 64-bit / long mode, UEFI boot
+## Tier 1.8 — GPU, Graphics & Display Infrastructure
 
-## Tier 2 — Desktop UX (ship-critical)
-- [ ] Wallpaper picker — 6-8 built-in gradients/patterns selectable from Settings > Display
-- [ ] Window snapping — drag to left/right edge = half-screen, top = maximize, Super+Arrow keys
-- [ ] Calendar dropdown — click menubar clock to show month view with today highlighted
-- [ ] Lock screen — Super+L or power menu "Lock", password required to unlock
-- [ ] Persistent settings — save user preferences (wallpaper, layout, hostname) to disk, reload on boot
-- [ ] Terminal as a windowed app — shell runs inside a WM window instead of fullscreen VGA
-- [ ] Shutdown/restart confirmation dialog — "Are you sure?" modal before power actions
-- [ ] System tray dropdowns — click WiFi icon = network info, click username = logout/lock/about
+> **Goal:** Move beyond software rendering. Build a real graphics stack from framebuffer
+> basics to accelerated 2D/3D, multiple displays, and a modern compositing window manager.
+> Estimated total: 10 phases.
 
-## Tier 3 — Shell & CLI
-- [ ] Shell output redirection (>, >>)
-- [ ] Background jobs (&, fg/bg)
-- [ ] Wildcards/globbing (*.txt)
-- [ ] System logging (dmesg, /var/log)
-- [ ] fork/exec — proper process creation
+### Phase 1: VESA VBE & Framebuffer Foundation
+_Your current VGA driver is limited. VESA gives you high resolution and real color depth._
+- [ ] VESA VBE 2.0 detection — call INT 0x10 / AX=0x4F00 in real mode (or via V86 monitor) to get VBE info block
+- [ ] Mode enumeration — list all available modes with resolution, color depth, framebuffer address
+- [ ] Mode setting — switch to linear framebuffer modes (1024x768x32, 1280x1024x32, 1920x1080x32)
+- [ ] Linear framebuffer mapping — map physical framebuffer address into kernel virtual address space
+- [ ] Backbuffer allocation — system RAM double buffer, flip/copy to VESA framebuffer on vsync
+- [ ] Pixel format abstraction — handle RGB888, XRGB8888, BGR888 layouts (VESA modes vary)
+- [ ] Framebuffer device API — `fb_open()`, `fb_get_info()`, `fb_map()`, `fb_flip()`, `fb_set_mode()`
+- [ ] Mode switching at runtime — change resolution from Settings app without reboot
+- [ ] EDID reading — parse monitor EDID via VBE DDC to detect native resolution
+- [ ] Framebuffer console — kernel panic and early boot messages render to framebuffer (not VGA text mode)
+- [ ] VGA text mode fallback — if VESA fails, gracefully fall back to 80x25 text
+- [ ] Splash screen — boot logo displayed on framebuffer before desktop loads
 
-## Tier 4 — Virtual Desktops & Animations
-- [ ] Virtual desktops/workspaces — Ctrl+Left/Right to switch, indicator in menubar
-- [ ] Window open/close animations — scale-up on open, fade on close
-- [ ] Smooth scrolling — pixel-level scroll in file manager, editor, lists
-- [ ] Drag-and-drop between apps — drag file from Files to desktop or Editor
+### Phase 2: Compositing Window Manager
+_Replace your current stacking WM with a compositing WM. Every window renders to its own buffer._
+- [ ] Per-window framebuffers — each window renders to an offscreen bitmap, not directly to screen
+- [ ] Composition pass — blend all visible window buffers onto the screen framebuffer in Z-order
+- [ ] Alpha channel per window — windows can have transparency (drop shadows, rounded corners)
+- [ ] Window drop shadows — render soft shadow behind each window during composition
+- [ ] Damage tracking — windows report dirty rectangles, compositor only re-blends affected regions
+- [ ] VSync synchronization — present composed frame on vertical blank to prevent tearing
+- [ ] Smooth window dragging — compositor re-blends at 60fps during drag, no "trail" artifacts
+- [ ] Window thumbnails — compositor can scale down any window buffer (for Alt-Tab, task switcher)
+- [ ] Live window previews — taskbar hover shows real-time miniature of window content
+- [ ] Blur behind — gaussian blur of background visible through semi-transparent windows (optional, expensive)
+- [ ] Desktop wallpaper layer — wallpaper is the bottom layer of the composition stack
+- [ ] Cursor layer — hardware cursor or compositor-rendered cursor on top of everything
+- [ ] Composition bypass — fullscreen apps can write directly to framebuffer for performance
+- [ ] Multi-monitor awareness — composition across two framebuffers (future, but design for it now)
 
-## Tier 5 — Advanced / Kernel
-- [ ] USB stack
-- [ ] Demand paging + swap
-- [x] HTTPS/TLS — TLS 1.2 client with RSA + ECDHE (P-256), async downloads
-- [ ] ELF binary loading
-- [ ] Shared libraries / dynamic linking
-- [ ] Journaling filesystem
-- [x] Package manager — winget with /apps directory, HTTPS downloads
-- [ ] Init system / service manager
-- [ ] IPv6
-- [ ] AHCI/SATA
+### Phase 3: 2D Acceleration Abstraction
+_Software blitting is slow. Abstract 2D operations so they can be accelerated later._
+- [ ] 2D command buffer — apps submit draw commands (blit, fill, line, text) to a command queue
+- [ ] Batch submission — group multiple draw commands into a single batch for efficiency
+- [ ] Hardware blit interface — abstract `blit_rect(src, dst, w, h)` that backends can accelerate
+- [ ] Hardware fill interface — abstract `fill_rect(x, y, w, h, color)` with hardware path
+- [ ] Virtio-GPU 2D — implement virtio-gpu `RESOURCE_CREATE_2D`, `TRANSFER_TO_HOST`, `SET_SCANOUT` for QEMU/KVM
+- [ ] BGA (Bochs Graphics Adapter) driver — simple register-based mode setting and LFB for Bochs/QEMU
+- [ ] Software fallback — all 2D operations have a software path when no hardware is available
+- [ ] Blit with ROP — accelerated raster operations for common patterns (SRCCOPY, SRCPAINT, PATCOPY)
+- [ ] Stretch blit — accelerated image scaling (nearest-neighbor in hardware, bilinear in software)
+- [ ] Cursor sprite — hardware cursor support via virtio-gpu / BGA cursor registers
+- [ ] VRAM management — track allocated surfaces in video memory, evict LRU when full
+- [ ] Performance counters — track FPS, blit count, fill count, composition time per frame
+
+### Phase 4: virtio-gpu 3D & OpenGL Acceleration
+_virtio-gpu with virgl gives you GPU-accelerated OpenGL inside QEMU/KVM._
+- [ ] virtio-gpu device driver — PCI device detection, virtqueue setup, command submission
+- [ ] virgl 3D command stream — encode OpenGL commands as Gallium state tracker commands over virtio
+- [ ] MESA gallium interface — port a minimal virgl Gallium driver (or write a custom encoder)
+- [ ] OpenGL dispatch — route OpenGL calls through virgl when available, software renderer when not
+- [ ] Shared texture support — GDI surfaces can be backed by virtio-gpu resources for zero-copy window composition
+- [ ] Context management — multiple GL contexts for multiple windows
+- [ ] Fence synchronization — GPU fence for knowing when rendering is complete before display
+- [ ] OpenGL ES 2.0 — enough for Chromium's GPU-accelerated compositing (if you ever get there)
+- [ ] Shader compilation — pass GLSL to host GPU via virgl (host does actual compilation)
+- [ ] EGL implementation — `eglGetDisplay`, `eglCreateContext`, `eglSwapBuffers` for platform-independent GL
+- [ ] GPU memory management — allocate/free GPU-side resources, handle out-of-memory
+- [ ] Performance — aim for 60fps composition with 5+ windows on virtio-gpu
+
+### Phase 5: Display Server Protocol
+_Decouple apps from the compositor. Apps talk to a display server, not raw framebuffers._
+- [ ] Display protocol design — message-based protocol: create_surface, destroy_surface, attach_buffer, commit, damage
+- [ ] Shared memory buffers — apps allocate SHM, draw into it, share the fd/handle with compositor
+- [ ] Surface lifecycle — create → attach buffer → damage region → commit → compositor displays
+- [ ] Input routing — compositor sends input events to the focused surface's owning process
+- [ ] Subsurfaces — child surfaces for popups, tooltips, dropdown menus
+- [ ] Server-side decorations — compositor draws title bar, close/minimize/maximize buttons
+- [ ] Client-side decorations option — apps can opt to draw their own chrome
+- [ ] Cursor surface — apps set custom cursors per-surface
+- [ ] Clipboard protocol — copy/paste negotiation between surfaces via compositor
+- [ ] Drag-and-drop protocol — DnD initiation, enter/leave/drop events between surfaces
+- [ ] Window hints — minimum/maximum size, aspect ratio, modal, always-on-top
+- [ ] Multi-seat awareness — design for multiple keyboard/mouse pairs (future)
+- [ ] Protocol versioning — extensible with backward compatibility
+- [ ] Win32 backend — CreateWindowEx maps to display protocol surface creation transparently
+
+### Phase 6: Multi-Monitor Support
+_Even in VMs, multi-monitor is useful (QEMU supports multiple displays)._
+- [ ] Monitor enumeration — detect multiple framebuffers / VBE outputs / virtio-gpu scanouts
+- [ ] Per-monitor mode setting — each display can have independent resolution and refresh rate
+- [ ] Monitor arrangement — configurable layout: left-of, right-of, above, below, mirror
+- [ ] Cross-monitor window dragging — window moves seamlessly between displays
+- [ ] Per-monitor DPI — different scaling factor per display
+- [ ] Primary monitor designation — taskbar and new windows default to primary
+- [ ] `EnumDisplayDevices` / `EnumDisplaySettings` / `ChangeDisplaySettings` — Win32 multi-monitor APIs
+- [ ] `MonitorFromWindow` / `MonitorFromPoint` / `GetMonitorInfo` — monitor geometry queries
+- [ ] Display hotplug — detect monitor connect/disconnect (via virtio-gpu or polling)
+- [ ] Compositor multi-output — render separate composition for each monitor, handle overlap
+
+### Phase 7: Icon & Image Format Support
+_A modern desktop needs to display images everywhere — icons, wallpapers, thumbnails._
+- [ ] PNG decoder — full spec: RGBA, indexed, interlaced, all bit depths, gamma correction
+- [ ] JPEG decoder — baseline DCT decoding (8x8 blocks, Huffman, YCbCr→RGB)
+- [ ] BMP decoder — 1/4/8/24/32-bit, RLE compression, top-down and bottom-up
+- [ ] ICO/CUR decoder — Windows icon format with multiple sizes and bit depths
+- [ ] GIF decoder — single frame and animated (frame delay, disposal methods)
+- [ ] SVG renderer (basic) — simple paths, rectangles, circles, text, fill, stroke (for scalable icons)
+- [ ] Image scaling — Lanczos resampling for high-quality icon/thumbnail generation
+- [ ] Thumbnail cache — generate and cache thumbnails for file manager (keyed by path + mtime)
+- [ ] Icon theme system — `/icons/` directory with sizes (16x16, 32x32, 48x48, 256x256)
+- [ ] System icon set — bundled open-source icon theme (file types, folders, apps, devices, actions)
+- [ ] Wallpaper engine — load, decode, scale-to-fit/fill/center wallpaper images
+- [ ] Image viewer app — built-in app to open PNG/JPEG/BMP/GIF with zoom, pan, rotate
+
+### Phase 8: Color Management & Rendering Quality
+_Consistent, correct color across the system._
+- [ ] sRGB as system color space — all internal rendering assumes sRGB
+- [ ] Gamma-correct blending — alpha blending in linear light, convert to/from sRGB at boundaries
+- [ ] Subpixel text rendering — ClearType-style RGB subpixel AA using LCD pixel geometry
+- [ ] Font gamma correction — adjust glyph alpha ramps for perceptually correct appearance
+- [ ] Color profile stubs — `GetICMProfile`, `SetICMProfile` (return sRGB)
+- [ ] Dithering — Floyd-Steinberg dithering when displaying 24-bit images on 16-bit framebuffers
+- [ ] Color picker — system-wide color picker tool (eyedropper from any pixel)
+- [ ] Premultiplied alpha — use premultiplied alpha internally for correct compositing math
+- [ ] HDR awareness stubs — report SDR, but design internal pipeline to not hard-cap at 8-bit
+
+### Phase 9: Animation & Effects Framework
+_Smooth, responsive UI that feels alive._
+- [ ] Animation timer — high-resolution timer (1ms or better) for smooth 60fps animations
+- [ ] Easing functions — linear, ease-in, ease-out, ease-in-out, cubic-bezier (CSS-style)
+- [ ] Property animation — animate any numeric property (position, size, opacity, color) over time
+- [ ] Window open animation — scale from 0.8→1.0 + fade in over 200ms
+- [ ] Window close animation — scale to 0.9 + fade out over 150ms
+- [ ] Window minimize animation — shrink to taskbar position
+- [ ] Window maximize animation — smooth expand to fill screen
+- [ ] Workspace switch animation — horizontal slide between virtual desktops
+- [ ] Menu animation — dropdown menus slide/fade in
+- [ ] Tooltip fade — tooltips fade in after delay, fade out on leave
+- [ ] Compositor-driven — all animations run in compositor at display refresh rate, independent of app framerate
+- [ ] Reduced motion option — Settings toggle to disable all animations (accessibility)
+- [ ] Spring physics (optional) — natural-feeling bounce on window snap and overscroll
+
+### Phase 10: Display Settings & Calibration
+_Users need to control their display experience._
+- [ ] Settings > Display panel — resolution picker, refresh rate, scaling factor
+- [ ] Brightness control — if supported by display/VM (VESA VBE backlight or gamma ramp)
+- [ ] Night light / blue light filter — warm color temperature shift on schedule or manual toggle
+- [ ] Wallpaper settings — choose from built-in set, load custom image, solid color option
+- [ ] Font rendering settings — toggle subpixel AA, choose LCD geometry (RGB/BGR), hinting level
+- [ ] Screen orientation — 0°, 90°, 180°, 270° rotation (useful for tablets/unusual displays)
+- [ ] Screensaver — blank screen after idle timeout, password on wake (reuse lock screen)
+- [ ] Display test pattern — built-in tool to check color accuracy, dead pixels, geometry
+- [ ] Theme settings — light mode, dark mode, accent color picker, title bar color
+- [ ] Taskbar settings — position (top/bottom), auto-hide, icon size
+
+## Tier 1.9 — Hardware Abstraction & Real Device Drivers
+
+> **Goal:** Make ImposOS run on real hardware, not just QEMU. Build a proper driver model
+> that supports USB, audio, storage, and networking hardware.
+> Estimated total: 12 phases.
+
+### Phase 1: Driver Model & Framework
+_Before writing drivers, build the infrastructure they plug into._
+- [ ] Driver interface specification — standardized struct: `driver_probe()`, `driver_attach()`, `driver_detach()`, `driver_ioctl()`
+- [ ] Device tree — hierarchical device registry: bus → controller → device → function
+- [ ] Bus abstraction — generic bus API: `bus_enumerate()`, `bus_register_driver()`, `bus_match()`
+- [ ] PCI bus driver — enumerate PCI devices, read config space, allocate BARs, route interrupts
+- [ ] PCI config space — full read/write of all 256 bytes, capability list walking
+- [ ] MSI/MSI-X interrupts — message-signaled interrupts for PCI devices (bypass legacy PIC)
+- [ ] DMA framework — `dma_alloc_coherent()`, `dma_map_single()`, bounce buffers for ISA DMA
+- [ ] MMIO helpers — `ioread32()`, `iowrite32()`, memory barrier macros
+- [ ] Port I/O helpers — `inb()`, `outb()`, `inw()`, `outw()`, `inl()`, `outl()`
+- [ ] Interrupt routing — IRQ → handler dispatch, shared IRQ support, top-half/bottom-half split
+- [ ] Deferred work — tasklets or work queues for interrupt bottom-half processing
+- [ ] Power management stubs — `driver_suspend()`, `driver_resume()` hooks
+- [ ] Driver loading — load drivers from `/drivers/` directory at boot, or on device hotplug
+- [ ] Device nodes — `/dev/` entries for each device, accessible via `open()`/`ioctl()`
+
+### Phase 2: ACPI & Platform Initialization
+_Real hardware needs ACPI for power management, IRQ routing, and device discovery._
+- [ ] RSDP discovery — scan EBDA and BIOS area for "RSD PTR " signature
+- [ ] RSDT/XSDT parsing — walk root system description table to find other ACPI tables
+- [ ] MADT (APIC table) — discover I/O APICs, local APICs, interrupt source overrides
+- [ ] I/O APIC driver — program I/O APIC redirection table entries for PCI IRQ routing
+- [ ] Local APIC — enable, configure timer, send/receive IPIs
+- [ ] HPET table — discover and configure High Precision Event Timer as system tick source
+- [ ] FADT — Fixed ACPI Description Table for power management ports, PM timer
+- [ ] ACPI namespace (basic) — parse DSDT/SSDT AML just enough to read _PRT (PCI IRQ routing)
+- [ ] AML interpreter (minimal) — evaluate enough AML to call `_STA`, `_CRS`, `_PRT` methods
+- [ ] ACPI power off — write to PM1a/PM1b control registers to shutdown (`S5` state)
+- [ ] ACPI reboot — use FADT reset register for clean reboot
+- [ ] ACPI sleep stubs — `S1` (standby) and `S3` (suspend to RAM) framework, even if not fully implemented
+- [ ] CPU topology — read MADT to discover processor count and APIC IDs (for future SMP)
+
+### Phase 3: USB Host Controller
+_USB is the gateway to keyboards, mice, storage, audio, and everything else on real hardware._
+- [ ] UHCI driver (USB 1.1) — Universal Host Controller Interface for legacy hardware
+- [ ] OHCI driver (USB 1.1) — Open Host Controller Interface (alternative to UHCI)
+- [ ] EHCI driver (USB 2.0) — Enhanced Host Controller Interface, 480Mbps
+- [ ] xHCI driver (USB 3.x) — Extensible Host Controller Interface, modern hardware
+- [ ] Transfer types — control, bulk, interrupt, isochronous transfer support
+- [ ] USB device enumeration — bus reset, address assignment, get device descriptor, get config descriptor
+- [ ] USB hub support — hub driver, port power, port reset, port status change handling
+- [ ] Endpoint management — open/close endpoints, set configuration, set interface
+- [ ] USB request blocks (URBs) — async transfer submission and completion
+- [ ] USB string descriptors — read manufacturer, product, serial number strings
+- [ ] USB device hotplug — detect connect/disconnect, load appropriate class driver
+- [ ] USB power management — suspend/resume individual ports and devices
+
+### Phase 4: USB Device Class Drivers
+_With a working USB stack, implement the common device classes._
+- [ ] USB HID driver — keyboards, mice, gamepads via HID report descriptor parsing
+- [ ] HID report parser — decode report descriptors, extract button/axis/key data
+- [ ] USB keyboard — key press/release events, LED control (caps lock, num lock)
+- [ ] USB mouse — movement, button clicks, scroll wheel
+- [ ] USB mass storage (bulk-only) — SCSI command set over USB, read/write sectors
+- [ ] USB mass storage → block device — mount USB drives as filesystem volumes
+- [ ] USB CDC-ACM — serial ports over USB (for development/debugging)
+- [ ] USB audio (basic) — UAC1 class for simple USB headsets/speakers (PCM streaming)
+- [ ] USB printer class (stub) — detect printers, report to OS, actual printing is Tier 3+
+- [ ] USB hub class driver — nested hub support, multi-TT hubs
+- [ ] USB wireless adapter stubs — detect, report "unsupported" gracefully
+- [ ] Hot-unplug safety — filesystems on USB drives sync and unmount cleanly on removal
+
+### Phase 5: Storage Drivers
+_Support real disk hardware beyond your current RAM disk or simple ATA._
+- [ ] ATA/ATAPI PIO driver — IDE drives via port I/O (legacy but works everywhere)
+- [ ] ATA DMA (UDMA) — bus-mastering DMA for faster IDE transfers
+- [ ] AHCI/SATA driver — modern SATA via AHCI registers, native command queuing (NCQ)
+- [ ] AHCI port multiplier — support multiple drives per AHCI port
+- [ ] NVMe driver (basic) — PCIe NVMe submission/completion queues, namespace discovery, read/write
+- [ ] Virtio-blk driver — virtio block device for QEMU (your existing likely uses this, formalize it)
+- [ ] Partition table — MBR and GPT partition table parsing
+- [ ] Block device layer — abstract sector read/write, request queue, I/O scheduling
+- [ ] I/O scheduler — simple elevator or deadline scheduler for disk request ordering
+- [ ] Block cache — LRU cache of recently-read sectors in RAM
+- [ ] Device mapper stubs — framework for future LVM, encryption, RAID
+- [ ] SMART monitoring (basic) — read drive health via ATA SMART commands
+- [ ] TRIM/DISCARD — send trim commands for SSD health (AHCI + NVMe)
+
+### Phase 6: Filesystem Improvements
+_Real storage needs a real filesystem — not just an in-memory FS._
+- [ ] ext2 driver — read and write support for the standard Linux filesystem
+- [ ] ext2 features — directory indexing, large file support, symlinks, permissions, timestamps
+- [ ] FAT32 driver — full read/write for USB drives and SD cards, long filename support (VFAT)
+- [ ] exFAT driver — modern FAT for large USB drives and SD cards
+- [ ] NTFS read support — read-only NTFS for accessing Windows partitions
+- [ ] ISO 9660 / CDFS — read CD/DVD images (useful for driver/software distribution)
+- [ ] VFS improvements — mount points, `mount()` / `umount()` syscalls, `/etc/fstab`
+- [ ] Block device caching — integrate block cache with VFS for coherent reads
+- [ ] Journaling (ext3-style) — write-ahead journal for crash recovery on ext2
+- [ ] fsck — filesystem check and repair tool for ext2
+- [ ] Disk utility app — GUI tool to view partitions, format drives, mount/unmount
+- [ ] Auto-mount — automatically mount USB drives and detected partitions on boot/hotplug
+- [ ] Symbolic links — proper symlink resolution across VFS
+- [ ] File locking — `flock()` / `fcntl()` advisory locks
+
+### Phase 7: Network Hardware Drivers
+_Support real NICs beyond your current virtual/stub networking._
+- [ ] Intel e1000/e1000e driver — most common emulated NIC (QEMU default), PCI MMIO-based
+- [ ] RTL8139 driver — another very common emulated NIC, simpler than e1000
+- [ ] Virtio-net driver — high-performance virtual NIC for QEMU/KVM
+- [ ] NIC abstraction — generic `netdev` interface: `netdev_xmit()`, `netdev_rx()`, `netdev_set_mac()`
+- [ ] Interrupt-driven receive — receive packets via IRQ, not polling
+- [ ] NAPI-style polling — hybrid interrupt + poll for high-throughput scenarios
+- [ ] TX ring buffer — transmit descriptor ring for zero-copy packet sending
+- [ ] RX ring buffer — receive descriptor ring with DMA-mapped buffers
+- [ ] Checksum offload — let NIC compute TCP/UDP checksums when supported
+- [ ] Scatter-gather I/O — multiple buffer segments per packet for zero-copy
+- [ ] Link status detection — carrier detect, link up/down notifications
+- [ ] MAC address configuration — read from EEPROM, allow override
+- [ ] Promiscuous mode — for packet capture tools
+- [ ] Network statistics — TX/RX packet counts, error counts, bytes transferred
+
+### Phase 8: Audio Hardware Drivers
+_Real audio output on real hardware._
+- [ ] Intel HDA (High Definition Audio) driver — most common audio codec interface on modern hardware
+- [ ] HDA codec discovery — enumerate codecs on the HDA bus, parse codec tree (widgets)
+- [ ] HDA output stream — configure output stream descriptor, set format (44.1kHz/48kHz, 16/24-bit, stereo)
+- [ ] HDA input stream — microphone capture (basic)
+- [ ] AC97 driver — legacy audio codec (older hardware, Bochs, some QEMU configs)
+- [ ] Audio abstraction layer — `audio_open()`, `audio_write()`, `audio_set_format()`, `audio_set_volume()`
+- [ ] Audio mixer — kernel-level mixing of multiple audio streams from different processes
+- [ ] Volume control — master volume, per-app volume (if feasible)
+- [ ] Audio resampling — convert between sample rates (e.g., 44.1kHz to 48kHz)
+- [ ] Virtio-snd driver — virtual sound device for QEMU
+- [ ] PC speaker fallback — if no audio hardware, route simple beeps to PC speaker
+- [ ] Audio settings app — GUI for output device selection, volume, test sound
+- [ ] Win32 audio bridge — `waveOutWrite` → audio abstraction layer → hardware driver
+- [ ] MIDI synthesizer (software) — basic wavetable synth for MIDI output (optional but fun)
+
+### Phase 9: Input Hardware Drivers
+_Go beyond PS/2 to support real input hardware._
+- [ ] PS/2 keyboard hardening — full scancode set 2, handle edge cases (pause key, print screen)
+- [ ] PS/2 mouse hardening — intellimouse extensions (scroll wheel, 5 buttons)
+- [ ] PS/2 touchpad — Synaptics/ALPS protocol for basic tap and two-finger scroll
+- [ ] USB HID → input abstraction — USB keyboard/mouse events map to same internal event stream
+- [ ] Input event abstraction — unified `input_event` struct: type (key/rel/abs), code, value, timestamp
+- [ ] Keyboard repeat — key repeat delay and rate, configurable in settings
+- [ ] Multi-keyboard support — multiple keyboards generate events on same input stream
+- [ ] Multi-mouse support — multiple mice (useful for accessibility)
+- [ ] Gamepad support — USB HID gamepads, axis/button mapping
+- [ ] Touchscreen (basic) — absolute positioning via USB HID, tap = click
+- [ ] Raw input — apps can request raw unprocessed input events (needed for games)
+- [ ] Input grab — fullscreen apps can grab all input, preventing Alt-Tab etc.
+- [ ] `GetAsyncKeyState` / `GetKeyState` — Win32 APIs backed by real keyboard state table
+
+### Phase 10: Power Management
+_Proper shutdown, reboot, sleep, and battery awareness._
+- [ ] Clean shutdown sequence — sync filesystems → stop processes → unmount → ACPI S5
+- [ ] Reboot — sync filesystems → ACPI reset register or keyboard controller reset or triple fault
+- [ ] Suspend to RAM (S3) — save device state, enter ACPI S3, resume path restores state
+- [ ] Idle power management — HLT in idle loop, CPU C-states if available
+- [ ] ACPI button events — power button, sleep button, lid switch
+- [ ] Battery status (ACPI) — read battery charge level, charging state, time remaining
+- [ ] Battery indicator — system tray icon showing charge level
+- [ ] Low battery warning — notification at 15%, critical action at 5% (suspend or shutdown)
+- [ ] Power profiles — "Performance" vs "Balanced" vs "Power saver" (adjust tick rate, CPU governor)
+- [ ] Scheduled wakeup — RTC alarm to wake from sleep at specified time
+- [ ] UPS / AC adapter detection — distinguish battery vs plugged-in state
+- [ ] Shutdown confirmation — "Save your work" dialog with list of running apps
+
+### Phase 11: Real-Time Clock & Timekeeping
+_Accurate time is critical for networking, filesystems, and user experience._
+- [ ] RTC driver hardening — read/write CMOS RTC reliably, handle BCD and 12/24hr formats
+- [ ] NTP client — sync time from internet time servers over UDP
+- [ ] Monotonic clock — `CLOCK_MONOTONIC` that never jumps, for measuring durations
+- [ ] High-resolution timer — TSC, HPET, or APIC timer for microsecond-precision timing
+- [ ] Timer calibration — measure TSC frequency against HPET or PIT for accurate conversion
+- [ ] Timezone database — embedded timezone data, configurable timezone in settings
+- [ ] Daylight saving time — automatic DST transitions based on timezone rules
+- [ ] `QueryPerformanceCounter` / `QueryPerformanceFrequency` — Win32 high-res timer backed by TSC/HPET
+- [ ] `GetTickCount` / `GetTickCount64` — millisecond uptime counter
+- [ ] `NtQuerySystemTime` / `GetSystemTimeAsFileTime` — 100ns precision system time
+- [ ] `timeGetTime` — winmm timer backed by system tick
+- [ ] RTC write-back — persist time changes to CMOS, NTP corrections written back
+- [ ] Time settings app — GUI for timezone selection, manual time set, NTP toggle
+
+### Phase 12: Hardware Detection & System Information
+_Report what hardware is present and let apps query system capabilities._
+- [ ] CPU detection — CPUID: vendor, model, family, stepping, feature flags (SSE, AVX, etc.)
+- [ ] CPU frequency — read from MSR or calibrate against known timer
+- [ ] RAM detection — read memory map from E820 or multiboot info, total/available/used
+- [ ] PCI device listing — enumerate all PCI devices with vendor/product IDs, class codes
+- [ ] PCI ID database — embedded pci.ids subset for human-readable device names
+- [ ] USB device listing — enumerate connected USB devices with descriptors
+- [ ] Disk information — model, capacity, serial number from ATA IDENTIFY / NVMe IDENTIFY
+- [ ] Network adapter info — MAC address, link speed, driver name
+- [ ] Audio device info — codec name, output jacks
+- [ ] Display info — resolution, color depth, monitor name from EDID
+- [ ] `GetSystemInfo` backed by real data — CPU count, page size, architecture, processor features
+- [ ] System information app — GUI showing all detected hardware, driver status, resource usage
+- [ ] `/proc/cpuinfo`, `/proc/meminfo`, `/proc/pci` stubs — for Linux apps
+- [ ] WMI stubs — `Win32_Processor`, `Win32_PhysicalMemory`, `Win32_DiskDrive` (COM-based, basic queries)
+- [ ] DMI/SMBIOS — read system manufacturer, BIOS version, serial number from SMBIOS tables
+
+## Tier 2.0 — Self-Hosting & Sovereignty
+
+> **Goal:** ImposOS can build itself. A compiler, assembler, linker, and full toolchain
+> run natively on ImposOS, producing working ImposOS binaries. This is the ultimate
+> milestone for any operating system — the moment it becomes truly independent.
+> Estimated total: 12 phases.
+
+### Phase 1: Cross-Compiler Preparation
+_Before self-hosting, you need a cross-compiler on your development host that targets ImposOS._
+- [ ] ImposOS target triple — define `i686-pc-imposos` (or similar) as a compiler target
+- [ ] GCC cross-compiler — build `i686-pc-imposos-gcc` on your Linux host
+- [ ] Binutils cross — `i686-pc-imposos-as`, `i686-pc-imposos-ld`, `i686-pc-imposos-objcopy`
+- [ ] C library port (musl) — port musl libc to ImposOS, implement syscall interface
+- [ ] Syscall interface — define stable syscall numbers and calling convention (INT 0x80 or SYSENTER)
+- [ ] C library tests — run musl test suite on ImposOS via cross-compiled binaries
+- [ ] libgcc — build libgcc for ImposOS target (software integer division, 64-bit ops, etc.)
+- [ ] libstdc++ (basic) — enough C++ standard library for the compiler itself
+- [ ] Cross-compile ImposOS — build the entire OS using the new cross-compiler (prove it works)
+- [ ] ELF output — cross-compiler produces ELF binaries that ImposOS's ELF loader runs
+
+### Phase 2: Native Assembler
+_The first tool that must run natively. An assembler turns .s files into .o object files._
+- [ ] x86 instruction encoder — encode all common x86 instructions to machine code
+- [ ] AT&T and Intel syntax — support both (GAS uses AT&T, NASM uses Intel)
+- [ ] Pseudo-ops — `.section`, `.global`, `.extern`, `.byte`, `.word`, `.long`, `.ascii`, `.asciz`, `.align`, `.comm`
+- [ ] ELF object output — produce ELF relocatable objects (.o files) with proper sections and symbols
+- [ ] Symbol table — local and global symbols, section symbols
+- [ ] Relocation entries — R_386_32, R_386_PC32, R_386_GOT32, R_386_PLT32
+- [ ] Expression evaluation — constant expressions in operands: `mov $CONST+4, %eax`
+- [ ] Macro support — `.macro` / `.endm` definitions
+- [ ] Conditional assembly — `.if`, `.else`, `.endif`
+- [ ] Include files — `.include "header.inc"`
+- [ ] Debug info — `.file`, `.line` directives for basic debug info generation
+- [ ] Error messages — useful error messages with line numbers and source context
+- [ ] Self-test — assembler can assemble its own assembly output correctly
+
+### Phase 3: Native Linker
+_Combine .o files into executables and shared libraries._
+- [ ] ELF input — read ELF relocatable objects, parse section headers, symbol tables, relocations
+- [ ] Symbol resolution — match undefined symbols to definitions across all input objects and libraries
+- [ ] Section merging — combine `.text`, `.data`, `.bss`, `.rodata` sections from all inputs
+- [ ] Relocation processing — apply all relocation entries, patch addresses
+- [ ] ELF executable output — produce ELF executables with program headers, entry point, proper layout
+- [ ] Static linking — archive (.a) file reading, selective object inclusion based on undefined symbols
+- [ ] Shared library output — produce ELF shared objects (.so) with dynamic symbol table and PLT/GOT
+- [ ] Dynamic linking support — `DT_NEEDED`, `DT_SONAME`, `DT_RPATH`, `DT_RUNPATH` entries
+- [ ] Linker script (basic) — `SECTIONS`, `ENTRY`, `OUTPUT_FORMAT` directives
+- [ ] `--gc-sections` — garbage collect unused sections
+- [ ] Map file — output linker map showing section addresses and symbol locations
+- [ ] Common symbol handling — merge COMMON symbols into .bss
+- [ ] Weak symbols — `__attribute__((weak))` support
+- [ ] Version scripts — symbol versioning for shared library compatibility
+- [ ] PE output mode — optionally produce PE .exe files for Win32 compatibility
+
+### Phase 4: Port GCC (C Compiler)
+_GCC is the workhorse. Getting GCC running natively is the biggest single milestone._
+- [ ] GCC source preparation — configure GCC for `i686-pc-imposos` target
+- [ ] Cross-compile GCC — build GCC on host targeting ImposOS, producing an ImposOS ELF binary
+- [ ] GCC stage 1 — run cross-compiled GCC on ImposOS, compile a hello world
+- [ ] libgcc native build — compile libgcc on ImposOS using stage 1 GCC
+- [ ] GCC stage 2 — compile GCC again on ImposOS using stage 1 GCC
+- [ ] GCC stage 3 — compile GCC with stage 2, compare output with stage 2 (bootstrap verification)
+- [ ] C99 compliance — full C99 features work: variable-length arrays, designated initializers, _Bool, etc.
+- [ ] C11 basics — `_Static_assert`, `_Alignof`, anonymous structs/unions
+- [ ] Optimization levels — -O0, -O1, -O2 produce correct code (full -O3 can be deferred)
+- [ ] Debug info — -g produces DWARF debug information
+- [ ] Preprocessor — cpp works correctly (macros, includes, conditionals)
+- [ ] Inline assembly — `asm volatile(...)` with constraints
+- [ ] C++ support — g++ compiles basic C++ (classes, templates, exceptions, STL)
+- [ ] `configure` / `make` compatibility — enough POSIX that autotools-based projects can configure
+
+### Phase 5: Port Make & Core Build Tools
+_A compiler alone isn't enough. You need make, shell, and utilities to run build systems._
+- [ ] GNU Make — `make` with pattern rules, variables, functions, recursive make
+- [ ] Shell improvements — your shell needs: `if/then/else/fi`, `for/do/done`, `while`, `case`, functions, variables, backtick substitution, `$()`, `&&`, `||`, `|`, `>`, `>>`, `<`, `2>&1`
+- [ ] `ar` — create and manipulate static archives (.a files)
+- [ ] `ranlib` — generate archive index
+- [ ] `objcopy` — copy/convert object files
+- [ ] `objdump` — disassemble and display object file info
+- [ ] `nm` — list symbols from object files
+- [ ] `strip` — remove symbols from binaries
+- [ ] `size` — display section sizes
+- [ ] `find` — search for files by name, type, time
+- [ ] `grep` — pattern searching in files
+- [ ] `sed` — stream editor for text processing
+- [ ] `awk` — pattern processing language
+- [ ] `diff` / `patch` — compare files, apply patches
+- [ ] `tar` — archive creation/extraction
+- [ ] `gzip` / `gunzip` — compression (used by tar for .tar.gz)
+- [ ] `install` — copy files with permission setting
+- [ ] `which` / `test` / `expr` / `basename` / `dirname` — shell utilities
+- [ ] `env` — run command with modified environment
+- [ ] `sort` / `uniq` / `wc` / `head` / `tail` / `tee` / `tr` / `cut` — text processing pipeline
+
+### Phase 6: Port Autotools & pkg-config
+_Most open-source projects use autotools. Without this, you can't build almost anything._
+- [ ] GNU Autoconf — `configure` scripts run correctly in ImposOS shell
+- [ ] GNU Automake — `Makefile.in` processing
+- [ ] GNU Libtool — shared library build abstraction
+- [ ] `pkg-config` — library discovery (.pc files in `/lib/pkgconfig/`)
+- [ ] `config.guess` / `config.sub` — recognize `i686-pc-imposos` as a valid target
+- [ ] m4 macro processor — required by autoconf
+- [ ] `/usr/include` layout — standard header locations that configure scripts expect
+- [ ] `/usr/lib` layout — library locations, `.a` and `.so` files where expected
+- [ ] Standard POSIX headers — `<unistd.h>`, `<fcntl.h>`, `<sys/stat.h>`, `<sys/types.h>`, `<sys/wait.h>`, `<dirent.h>`, `<dlfcn.h>`, `<pthread.h>`
+- [ ] Feature test macros — `_POSIX_VERSION`, `_GNU_SOURCE`, `__imposos__`
+- [ ] CMake port (bonus) — many modern projects use CMake instead of autotools
+
+### Phase 7: Build ImposOS Kernel on ImposOS
+_The defining moment: compile the kernel on the OS it runs on._
+- [ ] Kernel source available on disk — full ImposOS source tree at `/usr/src/imposos/`
+- [ ] Kernel Makefile — builds kernel image from source using native GCC + Make
+- [ ] Assembly files — kernel .s files assemble with native assembler
+- [ ] Linker script — kernel linker script works with native linker
+- [ ] Kernel headers — exported headers match what user-space libc was built against
+- [ ] Build succeeds — `make` in kernel source produces a bootable kernel image
+- [ ] Binary comparison — native-built kernel matches cross-compiled kernel (bit-for-bit or functionally)
+- [ ] Boot test — boot the self-compiled kernel, it works identically to the cross-compiled one
+- [ ] Module compilation (if modular) — compile kernel modules natively, load with `insmod`
+- [ ] Kernel rebuild cycle — edit kernel source, rebuild, reboot, verify change — all on ImposOS
+- [ ] Rebuild time tracking — measure compilation time, optimize Makefile for incremental builds
+
+### Phase 8: Build User-Space on ImposOS
+_Compile all of user-space natively — libc, core apps, drivers, everything._
+- [ ] musl libc — native rebuild from source on ImposOS
+- [ ] Core utilities — native build of your shell, file manager, editor, settings apps
+- [ ] GCC rebuild — full GCC bootstrap on ImposOS (stage 1 → 2 → 3)
+- [ ] Binutils rebuild — native build of assembler, linker, and all binutils tools
+- [ ] Window manager — native rebuild of WM and compositor
+- [ ] Win32 shim layer — native rebuild of all Win32 API shims
+- [ ] Device drivers — native rebuild of all hardware drivers
+- [ ] Init system — native rebuild of init/service manager
+- [ ] Package manager — `winget` / package tools built natively
+- [ ] Full system image — script that builds entire ImposOS from source on ImposOS
+- [ ] Reproducible builds — same source + same compiler = identical output binaries
+- [ ] Build log — capture full build output, flag any warnings or errors
+
+### Phase 9: Port Essential Development Tools
+_A self-hosting OS needs more than just a compiler — developers need a full environment._
+- [ ] Text editor (native) — your built-in editor with syntax highlighting, line numbers, search/replace
+- [ ] `vi` / `vim` (ported) — the universal Unix editor
+- [ ] `nano` (ported) — friendly terminal editor
+- [ ] `gdb` (ported) — debugger with breakpoints, stepping, stack traces, variable inspection
+- [ ] `git` (ported) — version control (requires networking, SSL, zlib, POSIX)
+- [ ] `python3` (ported) — Python interpreter (massive ecosystem, useful for build scripts)
+- [ ] `perl` (basic port) — many autotools scripts and configure checks need perl
+- [ ] `bash` (ported) — full-featured shell replacing your built-in shell (or make yours bash-compatible)
+- [ ] `less` / `more` — pagers for reading files and command output
+- [ ] `man` — manual page viewer with nroff/groff rendering
+- [ ] Terminal multiplexer — `screen` or `tmux` equivalent (multiple shells in one terminal)
+- [ ] `strace` equivalent — trace syscalls for debugging (your own implementation)
+- [ ] `ldd` — list shared library dependencies of a binary
+- [ ] `file` — identify file types by magic bytes
+
+### Phase 10: Port Essential Libraries
+_Software depends on libraries. These are the most commonly needed._
+- [ ] zlib — compression (used by everything: PNG, HTTP gzip, git, Python, etc.)
+- [ ] libpng — PNG encode/decode (replace your built-in decoder with the real one)
+- [ ] libjpeg-turbo — JPEG decode/encode with SIMD optimizations
+- [ ] freetype2 — font rendering (replace your built-in TrueType engine or upgrade it)
+- [ ] harfbuzz — text shaping for complex scripts (Arabic, Devanagari, etc.)
+- [ ] fontconfig — font matching and discovery
+- [ ] libffi — foreign function interface (Python ctypes needs this)
+- [ ] openssl / mbedtls — TLS library (replace or supplement your built-in TLS)
+- [ ] sqlite3 — embeddable SQL database
+- [ ] expat or libxml2 — XML parsing
+- [ ] ncurses — terminal UI library (needed by vim, nano, htop, etc.)
+- [ ] readline — line editing for interactive shells and REPLs
+- [ ] libevent / libev — event loop library (used by many servers and tools)
+- [ ] pcre2 — regular expressions (used by grep, many languages)
+- [ ] curl (library) — HTTP/HTTPS client library
+
+### Phase 11: Testing & Validation Infrastructure
+_Prove that the self-hosted OS is correct and stable._
+- [ ] Unit test framework — C test framework for kernel and user-space components
+- [ ] Kernel test suite — memory allocation, scheduler, filesystem, IPC, networking
+- [ ] Syscall test suite — test every syscall with edge cases
+- [ ] Win32 API test suite — test every shimmed function against expected behavior
+- [ ] POSIX conformance tests — subset of Open POSIX Test Suite
+- [ ] GCC test suite — `make check` on GCC passes (or documented failures with reasons)
+- [ ] libc test suite — musl/libc tests pass
+- [ ] Regression tests — automated tests that catch breakage in nightly builds
+- [ ] Boot test automation — script that builds, installs to disk image, boots in QEMU, runs tests, checks results
+- [ ] Stress tests — fork bombs, memory exhaustion, disk full, network flood — OS recovers gracefully
+- [ ] Fuzz testing — fuzz syscall interface, filesystem parser, PE/ELF loaders
+- [ ] Code coverage — measure which kernel paths are exercised by tests
+- [ ] CI/CD pipeline — automatic build + test on every commit (can run on Linux host initially)
+- [ ] Performance benchmarks — track compilation time, boot time, context switch latency, IPC throughput
+
+### Phase 12: Distribution & Installation
+_Make ImposOS installable by other people._
+- [ ] ISO image builder — create bootable .iso with kernel, initrd, base system
+- [ ] Boot loader — GRUB integration or custom boot loader that chainloads from BIOS/UEFI
+- [ ] Installer — text-mode or GUI installer: partition disk, format, copy files, install bootloader
+- [ ] Partition editor — create/delete/resize partitions during install
+- [ ] Package selection — minimal install vs full install with development tools
+- [ ] User account creation — set hostname, create user account, set password during install
+- [ ] First-boot wizard — timezone, keyboard layout, network configuration
+- [ ] Live environment — boot from ISO without installing, try ImposOS before committing
+- [ ] Disk image distribution — pre-built .img files for QEMU: `qemu-system-i386 -hda imposos.img`
+- [ ] Release versioning — semantic versioning, changelog, release notes
+- [ ] Documentation — installation guide, user manual, developer guide
+- [ ] Website — project website with downloads, screenshots, documentation, wiki
+- [ ] Community infrastructure — git repository, issue tracker, mailing list or forum
+
+### The Self-Hosting Milestone
+
+When Phase 7 passes — when ImposOS compiles its own kernel and boots the result — you've joined an elite group. Very few hobby operating systems ever achieve self-hosting. Here's the short list of OSes that have done it:
+
+- **Linux** (1994 — Linus compiled Linux on Linux)
+- **FreeBSD/OpenBSD/NetBSD** (inherited from 4.4BSD)
+- **Minix** (Andrew Tanenbaum's teaching OS)
+- **MenuetOS / KolibriOS** (assembly-language OSes, self-hosted in FASM)
+- **SerenityOS** (Andreas Kling, achieved self-hosting ~2021)
+- **Sortix** (Jonas 'Sortie' Termansen)
+- **Managarm** (microkernel OS, self-hosted with GCC)
+
+If ImposOS reaches this point — with a Win32 compatibility layer, POSIX support, ELF loading, real hardware drivers, a compositing desktop, *and* self-hosting — it would be one of the most ambitious and complete hobby OS projects ever built.
+
+### Complete Tier Map
+
+| Tier | Theme | Status |
+|---|---|---|
+| 1.0 | Core OS: kernel, shell, filesystem, basic GUI | Done |
+| 1.5 | Win32 bridge: PE loader, API shims, Phase 1-13 | Done |
+| 1.6 | Real software: full CRT, controls, networking, stability | In Progress |
+| 1.7 | Polished platform: renderer, fonts, OpenGL, browser, POSIX, ELF | Planned |
+| 1.8 | Graphics: GPU, compositing, multi-monitor, animations | Planned |
+| 1.9 | Hardware: USB, AHCI, audio, NIC drivers, ACPI, power management | Planned |
+| 2.0 | Self-hosting: GCC, Make, build tools, build ImposOS on ImposOS | Planned |
