@@ -1,8 +1,12 @@
 *.iso
 *.img
 isodir
-sysroot 
+sysroot
 
 *.log
 
 *.exe
+
+.vscode/
+initrd.tar
+initrd_staging/
