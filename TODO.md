@@ -432,276 +432,408 @@ Even after all 14 phases, Chromium requires additional work beyond this tier:
 
 Chromium is realistically a Tier 2.0+ goal that would require dedicated phases beyond this roadmap.
 
-## Tier 1.7 — From Running Real Software to a Polished Platform
+---
 
-> **Goal:** After Tier 1.6, ImposOS runs real Win32 apps. Tier 1.7 makes it a platform
-> people would actually *want* to use — with proper graphics, real networking,
-> a working browser, plugin systems, and the foundation for modern applications.
-> Estimated total: 12 phases.
+## Strategy: Technology Leapfrogging
 
-### Phase 1: Software Rendering Engine (Skia-class 2D)
-_Your GDI shims do basic drawing. This phase builds a real 2D engine that apps can actually rely on._
-- [ ] Scanline rasterizer — filled triangles, polygons, and paths with sub-pixel accuracy
-- [ ] Anti-aliased line and curve rendering — Bresenham is not enough for real apps
-- [ ] Bézier curve support — quadratic and cubic, used by fonts, SVG, and every vector app
-- [ ] Alpha blending engine — per-pixel ARGB compositing with Porter-Duff modes (SrcOver, SrcIn, DstOut, etc.)
-- [ ] Gradient fills — linear and radial gradients with arbitrary color stops
-- [ ] Image scaling — bilinear and bicubic interpolation for `StretchBlt` and image display
-- [ ] Affine transforms on bitmaps — rotate, scale, skew any image
-- [ ] Clipping engine — arbitrary polygon and path-based clipping regions, not just rectangles
-- [ ] Color space support — sRGB as default, basic ICC profile awareness
-- [ ] Compositor — layer-based compositing for window manager (each window = layer, alpha blend the stack)
-- [ ] Double-buffered rendering — eliminate flicker system-wide, present completed frames
-- [ ] Dirty rectangle tracking — only re-render changed regions for performance
-- [ ] Off-screen render targets — render to texture/bitmap for effects and caching
+> **Don't build what you can skip. Don't port what you can run unchanged.**
+>
+> Traditional OS development: build POSIX → port libc → cross-compile each tool → run ported binaries.
+> That's the path SerenityOS, Sortix, and Managarm took. It works, but it's slow.
+>
+> **Our leapfrog:** Implement the Linux i386 syscall ABI directly. Then pre-built static
+> Linux binaries run on ImposOS WITHOUT modification, WITHOUT porting, WITHOUT cross-compilation.
+> Download a binary, copy it to the disk image, run it. This is what WSL1 did — Microsoft
+> didn't port Linux software, they made the NT kernel speak Linux's language.
 
-### Phase 2: TrueType / OpenType Font Engine
-_Real apps need real fonts. Bitmap fonts won't cut it for any serious text rendering._
-- [ ] TrueType parser — read .ttf files: `head`, `cmap`, `glyf`, `loca`, `hmtx`, `maxp`, `name`, `OS/2`, `post` tables
-- [ ] Glyph outline interpreter — parse TrueType quadratic Bézier contours into paths
-- [ ] Hinting engine — execute TrueType bytecode instructions (or skip with auto-hinting)
-- [ ] Rasterize glyphs — render glyph outlines to bitmaps at requested size
-- [ ] Anti-aliased glyph rendering — 256-level grayscale or subpixel (ClearType-style RGB)
-- [ ] Glyph cache — LRU cache of rendered glyphs keyed by (font, size, codepoint, flags)
-- [ ] Font matching — `CreateFont` / `CreateFontIndirect` match against installed .ttf files by family, weight, style
-- [ ] `EnumFontFamiliesEx` backed by real font inventory
-- [ ] `GetTextMetrics` / `GetTextExtentPoint32` with accurate measurements from font tables
-- [ ] Kerning — read `kern` table, apply pair adjustments
-- [ ] OpenType layout (basic) — `GSUB` / `GPOS` for ligatures and positional forms
-- [ ] System fonts — bundle 3-4 open-source fonts: a serif (Liberation Serif), sans (Liberation Sans), mono (Liberation Mono), and a symbol/emoji font
-- [ ] Font installation — copy .ttf to /fonts, register in registry, available to all apps
-- [ ] `AddFontResourceEx` / `RemoveFontResourceEx` — per-session font loading
+### The Leapfrog Map
 
-### Phase 3: OpenGL Software Renderer
-_Many real apps need OpenGL. A software implementation unlocks huge categories of software._
-- [ ] OpenGL 1.1 core — `glBegin/glEnd`, `glVertex`, `glColor`, `glTexCoord`, `glNormal`
-- [ ] Matrix stack — `glPushMatrix`, `glPopMatrix`, `glTranslate`, `glRotate`, `glScale`, `glMultMatrix`
-- [ ] Texture mapping — `glGenTextures`, `glBindTexture`, `glTexImage2D`, `glTexParameter` (min/mag filtering)
-- [ ] Depth buffer — Z-buffer with `glEnable(GL_DEPTH_TEST)`, depth compare functions
-- [ ] Blending — `glBlendFunc` with standard blend equations
-- [ ] Lighting — up to 8 lights, `GL_AMBIENT`, `GL_DIFFUSE`, `GL_SPECULAR`, material properties
-- [ ] Display lists — `glNewList` / `glCallList` for batch rendering
-- [ ] Stencil buffer — 8-bit stencil with compare and operations
-- [ ] `wglCreateContext` / `wglMakeCurrent` / `wglDeleteContext` — real implementations instead of stubs
-- [ ] `wglGetProcAddress` — extension function loading
-- [ ] Pixel buffer readback — `glReadPixels` for screenshots and testing
-- [ ] Fog — `glFog` with linear/exp/exp2 modes
-- [ ] `glViewport` / `glScissor` — viewport and scissor test
-- [ ] OpenGL 2.0 stubs — `glCreateShader`, `glCompileShader` return failure (apps fall back to fixed-function)
-- [ ] Frame output — render to offscreen buffer, blit to window via WM
+| Traditional Work | Time | Leapfrog | Time | Savings |
+|---|---|---|---|---|
+| Design custom POSIX syscall numbers | ~1 wk | Use Linux i386 syscall numbers | 0 days | 1 week |
+| Port musl libc to ImposOS | ~2 wk | Run pre-built static musl binaries unchanged | 0 days | 2 weeks |
+| Implement fork() with COW paging | ~1 wk | vfork()+exec() (skip COW entirely) | ~1 day | 6 days |
+| Build a dynamic linker (ld.so) | ~2 wk | Static binaries only | 0 days | 2 weeks |
+| Cross-compile each tool individually | ~3 wk | Download pre-built static i386 binaries | ~1 hr | 3 weeks |
+| Port BusyBox (configure, build, debug) | ~1 wk | Download 1MB static BusyBox binary | 0 days | 1 week |
+| Write custom TrueType font engine | ~2 wk | Static freetype2 (or X11 fonts later) | ~1 day | 13 days |
+| Write custom HTTP client library | ~1 wk | Download static curl binary | 0 days | 1 week |
+| Write custom HTML renderer | ~3 wk | NetSurf framebuffer (raw memory surface) | ~3 days | 18 days |
+| Write custom display protocol | ~4 wk | Port TinyX/Xfbdev (~950KB X11 server) | ~1 wk | 3 weeks |
+| Write custom widget toolkit | ~4 wk | X11 + dwm + existing X11 apps | ~3 days | 25 days |
+| Write custom OpenGL renderer | ~3 wk | Port TinyGL (~4000 LOC) or skip entirely | ~2 days | 19 days |
+| Port 300 tools one-by-one | ~6 wk | BusyBox = 300+ tools in 1 binary | 0 days | 6 weeks |
 
-### Phase 4: Network Stack Hardening
-_Your TLS and Winsock work. This phase makes networking reliable and complete._
-- [ ] TCP retransmission & congestion control — Reno or Cubic (real TCP, not just "send and hope")
-- [ ] TCP window scaling — support connections over high-bandwidth links
-- [ ] TCP keepalive — `SO_KEEPALIVE` with configurable interval
-- [ ] UDP support hardening — fragmentation, checksums, proper error handling
-- [ ] ICMP — ping support (used by network diagnostic tools)
-- [ ] ARP cache management — timeout, refresh, gratuitous ARP
+**Total traditional effort: ~35 weeks. Leapfrog effort: ~3 weeks. Savings: ~32 weeks.**
+
+### Why This Works for ImposOS
+
+ImposOS already uses `INT 0x80` with `EAX=syscall#`, `EBX/ECX/EDX=args` — that's the
+**exact same calling convention as Linux i386**. The only difference is the syscall numbers.
+Static musl binaries expect Linux syscall numbers in EAX. We just remap our INT 0x80
+handler to dispatch Linux numbers.
+
+### The Two-Track Parallel Strategy
+
+**Track A: "Native"** — compile directly with i686-elf-gcc, link into kernel or run natively.
+Gives the fastest, most impressive results (Doom on Day 1-2).
+
+**Track B: "Linux Compat"** — implement ~45 Linux syscalls so pre-built static binaries
+run unchanged. Gives the massive ecosystem (BusyBox, bash, curl, git, python, GCC).
+
+Both tracks run in parallel. Track A for quick visual wins, Track B for the ecosystem.
+
+### The 30 Syscalls That Change Everything
+
+| # | Syscall | Linux # | What it unlocks |
+|---|---------|---------|-----------------|
+| 1 | `write` | 4 | Any program can print output |
+| 2 | `exit_group` | 252 | Programs can exit cleanly |
+| 3 | `brk` | 45 | malloc works (musl heap) |
+| 4 | `mmap2` | 192 | Large allocations, stack setup |
+| 5 | `set_thread_area` | 243 | TLS → musl initializes → ANY musl binary |
+| 6 | `writev` | 146 | printf works (musl stdout uses writev) |
+| — | — | — | **Static hello world runs** |
+| 7 | `read` | 3 | Programs can read input |
+| 8 | `open` | 5 | Programs can open files |
+| 9 | `close` | 6 | File cleanup |
+| 10 | `fstat64` | 197 | stat() on open files |
+| 11 | `stat64` | 195 | ls works |
+| 12 | `getdents64` | 220 | ls can list directories |
+| 13 | `ioctl` | 54 | Terminal control → interactive apps |
+| 14 | `getcwd` | 183 | pwd, shell prompt |
+| 15 | `uname` | 122 | System identification |
+| 16 | `getuid32` | 199 | User identity |
+| — | — | — | **BusyBox runs (300+ tools)** |
+| 17 | `clone` (vfork) | 120 | Process creation (no COW needed) |
+| 18 | `execve` | 11 | Shell can launch programs |
+| 19 | `wait4` | 114 | Shell waits for child processes |
+| 20 | `pipe` | 42 | Shell pipelines |
+| 21 | `dup2` | 63 | I/O redirection |
+| 22 | `rt_sigaction` | 174 | Ctrl+C in bash |
+| 23 | `rt_sigprocmask` | 175 | Signal masking |
+| 24 | `kill` | 37 | Signals between processes |
+| 25 | `nanosleep` | 162 | sleep command, timing |
+| — | — | — | **bash + interactive shell works** |
+| 26 | `socketcall` | 102 | All socket ops → networking |
+| 27 | `select` | 142 | Multiplexed I/O → servers, clients |
+| 28 | `chdir` | 12 | cd command |
+| 29 | `access` | 33 | Permission checks |
+| 30 | `mprotect` | 125 | Memory protection |
+| — | — | — | **curl, wget, git, python work** |
+
+### Things We NEVER Build (Permanent Skips)
+
+| Never Build | Use Instead |
+|---|---|
+| Custom TrueType engine | Ported freetype2 (static binary or via X11) |
+| Custom HTTP library | Static curl binary |
+| Custom HTML/CSS renderer | NetSurf (framebuffer mode) or port Links |
+| Custom OpenGL renderer | TinyGL (4000 LOC) or skip entirely |
+| Custom display protocol | X11 via TinyX/Xfbdev (~950KB) |
+| Custom widget toolkit for ports | GTK2/FLTK via X11, or just use terminal apps |
+| Custom C library for ports | Pre-built musl (already inside static binaries) |
+| Custom package manager | BusyBox wget + tar, or port opkg |
+| Custom assembler/linker | Static GNU as/ld binaries |
+| Individual tool porting | BusyBox (300+ tools, 1MB, one binary) |
+| Dynamic linker (initially) | Static binaries only — skip PLT/GOT/ld.so |
+| COW fork (initially) | vfork+exec pattern covers 90% of usage |
+
+### What About Tier 1.6 Phases 4–14?
+
+Tier 1.6 phases 4–14 complete the Win32 compatibility layer. They're useful for running
+Windows `.exe` files, but they're **not on the critical path**. The leapfrog cascade
+doesn't depend on them. They can be done in parallel or deferred.
+
+---
+
+## Tier 1.7 — Linux Compat & Software Leapfrog
+
+> **Goal:** Instead of porting software TO ImposOS, make ImposOS speak Linux so software
+> runs UNCHANGED. Implement ~45 Linux i386 syscalls + a static ELF loader. Then download
+> pre-built binaries and run them. Total new kernel code: ~3000-5000 lines.
+> Estimated total: 10 phases.
+
+### Phase 1: Doom Day (Track A — Native)
+_The single most impressive milestone. No Linux compat needed. doomgeneric requires exactly 5 callback functions that map 1:1 to existing ImposOS APIs._
+
+- [ ] Download doomgeneric source (github.com/ozkl/doomgeneric)
+- [ ] Add to kernel build as an app (like shell.c, vi.c)
+- [ ] Implement `DG_Init()` — map to existing gfx initialization
+- [ ] Implement `DG_DrawFrame()` — memcpy `DG_ScreenBuffer` (320x200 RGBA) to framebuffer, scale to screen
+- [ ] Implement `DG_SleepMs(ms)` — map to `pit_sleep_ms()`
+- [ ] Implement `DG_GetTicksMs()` — map to `pit_get_ticks() * (1000/120)`
+- [ ] Implement `DG_GetKey()` — map to keyboard ring buffer in getchar.c
+- [ ] Bundle shareware DOOM1.WAD in filesystem or initrd
+- [ ] Add `doom` shell command to launch the game
+- [ ] Stretch: add mouse look support via `mouse_poll()`
+
+### Phase 2: Filesystem Expansion & Initrd
+_Current FS: 64 inodes, 128KB total — way too small. Need 32MB+ for Linux binaries._
+
+- [ ] GRUB multiboot module support — parse multiboot info struct for module address + size
+- [ ] Initrd loader — load tar/cpio archive from GRUB module into memory at boot
+- [ ] Tar parser — read tar headers (512-byte blocks), extract file names, sizes, data pointers (~100 lines)
+- [ ] Overlay mount — initrd files accessible alongside existing FS (read-only overlay)
+- [ ] `/bin`, `/usr/bin` directories — standard Unix layout for Linux binaries
+- [ ] `/dev/null`, `/dev/zero`, `/dev/tty`, `/dev/urandom` — minimal device nodes (special-cased in open/read/write)
+- [ ] Expand existing FS — increase to 256+ inodes, 4KB blocks, 8192+ blocks (~32MB) for user-writable storage
+- [ ] Update `make clean-disk` and disk format version
+
+### Phase 3: Static ELF Loader + First Linux Syscalls
+_Prove Linux binary compat works. Run a static musl hello world._
+
+**ELF Loader (static only — NO dynamic linker):**
+- [ ] ELF32 header validation — check magic, class (32-bit), data (little-endian), machine (EM_386)
+- [ ] Program header parsing — iterate PT_LOAD segments
+- [ ] Segment loading — allocate pages via PMM, map into per-process PD with correct RX/RW permissions
+- [ ] BSS zeroing — zero-fill memory beyond file-backed segment data
+- [ ] Entry point — jump to `e_entry` in Ring 3 with fresh user stack
+- [ ] Mixed PE/ELF detection — check magic bytes (0x7F ELF vs MZ) to choose loader
+
+**Linux i386 Syscall ABI (first 6 — enough for hello world):**
+- [ ] Remap INT 0x80 handler — add Linux syscall dispatch alongside existing ImposOS syscalls
+- [ ] `write` (#4) — route fd 1/2 to tty_write, other fds to pipe/file write
+- [ ] `writev` (#146) — loop calling write for each iovec entry
+- [ ] `exit_group` (#252) — terminate process via task_exit
+- [ ] `brk` (#45) — per-process heap pointer, extend by mapping new pages
+- [ ] `mmap2` (#192) — anonymous only: allocate pages, map into PD, return address
+- [ ] `set_thread_area` (#243) — write `user_desc` struct to GDT entry, set %gs segment (musl TLS)
+
+**Test:** Download static musl i386 hello world → boot ImposOS → it prints "Hello, world!"
+
+### Phase 4: BusyBox Day (300+ Tools)
+_Add ~10 more syscalls. Download static BusyBox (1MB). Run it. Instant Unix userland._
+
+**Per-process kernel file descriptor table:**
+- [ ] Expand fd_entry_t — support pipes, files, sockets, and device types
+- [ ] Per-task FD table — 64 entries (up from 16), inherited on exec, closed on exit
+- [ ] FD allocation — lowest-available-number semantics (POSIX requirement)
+- [ ] Stdin/stdout/stderr — auto-open fd 0/1/2 for each new process
+
+**Linux syscalls (file I/O — makes ls, cat, grep, find work):**
+- [ ] `open` (#5) — map to fs_open_file, allocate kernel fd, return fd number
+- [ ] `close` (#6) — release fd entry, decrement refcount
+- [ ] `read` (#3) — dispatch by fd type: file → fs_read_file, pipe → pipe_read, device → handler
+- [ ] `stat64` (#195) — map fs_stat → populate Linux `struct stat64` (inode, mode, size, times, uid, gid)
+- [ ] `fstat64` (#197) — same via fd lookup
+- [ ] `lstat64` (#196) — stat without following symlinks
+- [ ] `getdents64` (#220) — fs_readdir → Linux `struct linux_dirent64` format
+- [ ] `lseek` (#19) — per-fd file offset tracking (SEEK_SET, SEEK_CUR, SEEK_END)
+- [ ] `ioctl` (#54) — terminal: `TIOCGWINSZ` (window size), `TCGETS`/`TCSETS` (termios)
+- [ ] `fcntl64` (#221) — `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL` (O_NONBLOCK)
+
+**Misc syscalls (identity, environment):**
+- [ ] `getcwd` (#183) — return current working directory path
+- [ ] `uname` (#122) — return sysname="ImposOS", release, version, machine="i686"
+- [ ] `getuid32` (#199) / `geteuid32` (#201) — map to user_get_current_uid()
+- [ ] `getgid32` (#200) / `getegid32` (#202) — map to user_get_current_gid()
+- [ ] `munmap` (#91) — free mapped pages
+- [ ] `access` (#33) — check file permissions via fs_stat + mode check
+
+**Test:** `busybox sh` launches shell. `busybox ls /bin` lists files. `busybox cat`, `busybox grep`,
+`busybox vi`, `busybox wget` — 300+ tools work from a single 1MB binary.
+
+### Phase 5: Process Management & Shell Pipelines
+_Run commands from bash. Pipes. I/O redirection. Job control basics._
+
+**Process creation (LEAPFROG: skip fork, use vfork):**
+- [ ] `clone` (#120) — implement with `CLONE_VFORK | CLONE_VM` semantics (child shares parent memory until exec)
+- [ ] `execve` (#11) — load new ELF into current process: reset PD, load segments, reset stack, jump to entry
+- [ ] `wait4` (#114) — block parent until child exits, return status and rusage
+- [ ] `exit_group` (#252) — terminate all threads in process (already stubbed in Phase 3)
+- [ ] `getpid` (#20) — return current task PID (already exists internally)
+- [ ] `getppid` (#64) — add parent_pid to task_info_t, return it
+- [ ] Parent-child tracking — store parent_pid on clone, set child status to ZOMBIE on exit until reaped
+
+**I/O plumbing (makes shell pipelines work):**
+- [ ] `pipe` (#42) — create pipe pair, assign to two new fds in caller's fd table
+- [ ] `dup2` (#63) — duplicate fd: copy fd_entry from src to dst slot
+- [ ] `dup` (#41) — duplicate fd to lowest available slot
+- [ ] FD inheritance on exec — preserve open fds across execve (except FD_CLOEXEC)
+- [ ] `chdir` (#12) — change per-process working directory
+- [ ] `fchdir` (#133) — chdir via fd
+
+**Signals (makes Ctrl+C, job control work):**
+- [ ] `rt_sigaction` (#174) — map to existing signal handler infrastructure + add sa_mask, sa_flags
+- [ ] `rt_sigprocmask` (#175) — add per-task signal mask bitmask, block/unblock signals
+- [ ] `rt_sigreturn` (#173) — map to existing sigreturn
+- [ ] `kill` (#37) — map to existing sig_send_pid
+- [ ] `nanosleep` (#162) — map to pit_sleep_ms with nanosecond struct conversion
+- [ ] `getpgid` (#132) / `setpgid` (#57) — process groups (add pgid to task_info_t)
+
+**Test:** `bash` runs interactively. `ls | grep foo` works. `cat file > output` works.
+`Ctrl+C` interrupts running commands. Background jobs with `&` work.
+
+### Phase 6: Networking (Socket Syscalls)
+_Existing TCP/IP stack works. Just wrap it in Linux socket syscall ABI._
+
+**Socket multiplexer (Linux i386 uses `socketcall` #102):**
+- [ ] `socketcall` (#102) dispatcher — SYS_SOCKET, SYS_BIND, SYS_CONNECT, SYS_LISTEN, SYS_ACCEPT, SYS_SEND, SYS_RECV, SYS_SENDTO, SYS_RECVFROM, SYS_SHUTDOWN, SYS_SETSOCKOPT, SYS_GETSOCKOPT, SYS_GETPEERNAME, SYS_GETSOCKNAME
+- [ ] `socket()` → map to ImposOS socket_create (AF_INET + SOCK_STREAM/SOCK_DGRAM)
+- [ ] `connect()` → map to tcp_connect / set UDP peer
+- [ ] `bind()` / `listen()` / `accept()` → map to tcp_listen, tcp_accept
+- [ ] `send()` / `recv()` → map to tcp_send / tcp_recv
+- [ ] `sendto()` / `recvfrom()` → map to udp_send / udp_recv
+- [ ] `setsockopt()` / `getsockopt()` — SO_REUSEADDR, SO_RCVBUF, TCP_NODELAY
+- [ ] `select` (#142) — poll across file descriptors: sockets + pipes + files
+- [ ] `poll` (#168) — same as select but with pollfd interface
+- [ ] Socket fds — sockets live in the per-task fd table alongside files and pipes
+- [ ] `getpeername` / `getsockname` — query socket addresses
+
+**DNS (needed for hostname resolution):**
+- [ ] `gethostbyname` path — route through ImposOS dns_resolve internally
+- [ ] `/etc/resolv.conf` stub — return QEMU's DNS forwarder (10.0.2.3)
+
+**Test:** Static `curl http://example.com` downloads a page. `busybox wget` fetches files.
+Static `links` browses the web in text mode.
+
+### Phase 7: Terminal, PTY & Interactive Applications
+_Make vim, htop, tmux, python3 REPL work properly._
+
+**Pseudo-terminals:**
+- [ ] PTY pair — master/slave fd pair (master = controlling process, slave = terminal for child)
+- [ ] `openpty()` / `posix_openpt()` / `grantpt()` / `unlockpt()` support via ioctl
+- [ ] `/dev/ptmx` — PTY multiplexer device node
+- [ ] `/dev/pts/N` — individual PTY slave devices
+
+**Terminal discipline:**
+- [ ] Termios struct — full `struct termios` with c_iflag, c_oflag, c_cflag, c_lflag, c_cc
+- [ ] Raw mode — `cfmakeraw()` equivalent: disable echo, line buffering, signal generation
+- [ ] Cooked mode — line editing, echo, ^C/^Z signal generation
+- [ ] `TCGETS` / `TCSETS` / `TCSETSW` / `TCSETSF` ioctls
+- [ ] `TIOCGWINSZ` / `TIOCSWINSZ` — window size query/set (report 1920/8 × 1080/16 in chars)
+- [ ] `SIGWINCH` — send to foreground process on terminal resize
+
+**Additional syscalls for terminal apps:**
+- [ ] `readlink` (#85) — resolve symlinks (vim checks `/proc/self/exe`)
+- [ ] `/proc/self/exe` — return path to current executable
+- [ ] `clock_gettime` (#265) — `CLOCK_REALTIME` and `CLOCK_MONOTONIC`
+- [ ] `gettimeofday` (#78) — time with microsecond precision
+- [ ] `mkdir` (#39) / `rmdir` (#40) / `unlink` (#10) / `rename` (#38) — filesystem mutations
+- [ ] `link` (#9) / `symlink` (#83) — hard/soft links
+- [ ] `chmod` (#15) / `fchmod` (#94) — permission changes
+- [ ] `chown` (#182) / `fchown` (#207) — ownership changes
+- [ ] `umask` (#60) — file creation mask
+- [ ] `getrlimit` (#76) — resource limits (return generous defaults)
+
+**Test:** `vim` opens files, syntax highlighting works. `htop` shows processes.
+`tmux` splits terminal. `python3` REPL with line editing. `nano` edits files.
+
+### Phase 8: NetSurf Browser (Graphical Web Browsing)
+_A real web browser on ImposOS. NetSurf has a "ram" framebuffer surface that renders to raw memory._
+
+**NetSurf ImposOS backend (~200 lines):**
+- [ ] Cross-compile NetSurf with `TARGET=framebuffer` and `NETSURF_FB_FRONTEND=ram`
+- [ ] ImposOS surface driver — point NetSurf's framebuffer at a WM window's pixel buffer
+- [ ] Input routing — translate WM mouse/keyboard events to NetSurf's input format
+- [ ] Window integration — NetSurf runs inside a WM window, draggable, resizable, closeable
+
+**Dependencies (cross-compile as static libs):**
+- [ ] libcurl (for HTTP/HTTPS) — links against ImposOS socket syscalls
+- [ ] libpng (for images) — ~60KB, no OS deps
+- [ ] libjpeg (for JPEG images) — optional but nice
+- [ ] freetype2 (for fonts) — ~400KB, renders TrueType/OpenType
+- [ ] NetSurf internal libs — libcss, hubbub, libdom, etc. (bundled in NetSurf source tree)
+- [ ] Bundle .ttf fonts — Liberation Sans/Serif/Mono in initrd
+
+**Alternative fast path:**
+- [ ] Static `links -g` — graphical Links browser, simpler deps, still a real browser
+- [ ] Static `w3m` — text-mode browser works right now with just terminal support
+
+**Test:** Browse real websites. Render HTML, CSS, images. Click links. Fill forms.
+View documentation, read news, use web-based tools — all on ImposOS.
+
+### Phase 9: X11 — The Mega Leapfrog
+_One port unlocks EVERY X11 application from the last 40 years._
+
+**Port TinyX/Xfbdev (~950KB X11 server):**
+- [ ] Cross-compile TinyX (github.com/idunham/tinyxserver) targeting ImposOS
+- [ ] Xfbdev backend — point at ImposOS framebuffer memory, route PS/2 input
+- [ ] X11 socket — Unix domain sockets (AF_UNIX) for client↔server communication
+- [ ] `AF_UNIX` socket support — add to socketcall dispatcher (local IPC, no networking needed)
+- [ ] SHM extension — `shmget`/`shmat`/`shmdt` for shared memory image transfer (map to existing SHM)
+
+**Port dwm (~30KB tiling window manager):**
+- [ ] Cross-compile dwm (suckless.org) against libX11
+- [ ] Port libX11 (~1.5MB) — X11 client library, talks to TinyX via AF_UNIX socket
+- [ ] Configuration — keybindings, colors, fonts
+
+**Port st (~50KB terminal emulator):**
+- [ ] Cross-compile st (suckless.org) against libX11
+- [ ] Runs inside X11, provides terminal for all CLI apps
+- [ ] All Track B applications (bash, vim, htop, python) now run inside X11 windows
+
+**Result:** Full X11 desktop. Tile windows with dwm. Run xterm. Every X11 app from
+the last 40 years is now available — just cross-compile and run.
+
+### Phase 10: Network Hardening & Package Management
+_Polish the foundation. Make it reliable and user-friendly._
+
+**Network hardening (ported apps will stress-test the stack):**
+- [ ] TCP retransmission & congestion control — Reno or Cubic
+- [ ] TCP window scaling — high-bandwidth support
 - [ ] DNS caching — local resolver cache with TTL expiry
-- [ ] DNS over TCP — fallback for large responses
-- [ ] Multiple simultaneous connections — proper socket multiplexing for apps opening 50+ sockets
-- [ ] Non-blocking I/O correctness — `select`, `WSAPoll`, `WSAAsyncSelect` all handle edge cases
-- [ ] `SO_LINGER` / `SO_RCVBUF` / `SO_SNDBUF` — socket options that apps actually set
-- [ ] Loopback interface — `127.0.0.1` connections without hitting the wire
+- [ ] Multiple simultaneous connections — proper multiplexing for 50+ sockets
+- [ ] Loopback interface — `127.0.0.1` without hitting the wire
 - [ ] Connection tracking — proper FIN/RST handling, TIME_WAIT state
-- [ ] Network error codes — map real failures to `WSAGetLastError` codes (WSAECONNREFUSED, WSAETIMEDOUT, etc.)
 
-### Phase 5: HTTP/HTTPS Client Library
-_An internal HTTP engine that WinInet, WinHTTP, and eventually a browser can use._
-- [ ] HTTP/1.1 client — full request/response parser, chunked transfer encoding, content-length
-- [ ] Connection pooling — keep-alive with connection reuse per host
-- [ ] Redirect following — 301, 302, 307, 308 with configurable max redirects
-- [ ] Cookie engine — parse Set-Cookie, store, send on matching requests (RFC 6265)
-- [ ] HTTPS via your TLS stack — TLS 1.2 mandatory, TLS 1.3 optional
-- [ ] Certificate chain validation — verify against embedded root CA bundle
-- [ ] Certificate pinning stubs — for apps that pin specific certs
-- [ ] Proxy support — HTTP CONNECT for HTTPS-through-proxy, basic/digest proxy auth
-- [ ] Compression — gzip and deflate `Accept-Encoding` / `Content-Encoding`
-- [ ] Content-Type parsing — charset detection, MIME type handling
-- [ ] Multipart form data — `multipart/form-data` for file uploads
-- [ ] Authentication — Basic and Digest `WWW-Authenticate` / `Authorization`
-- [ ] Timeout handling — connect timeout, read timeout, total request timeout
-- [ ] Download progress — callback mechanism for progress reporting
-- [ ] Map to WinInet API — `InternetOpenUrl` → HTTP engine, `InternetReadFile` → buffered read
-- [ ] Map to WinHTTP API — `WinHttpSendRequest` → HTTP engine
-
-### Phase 6: Lightweight HTML Renderer
-_Not Chromium. A simple HTML viewer that can render basic web pages and help text._
-- [ ] HTML parser — tokenizer + tree builder for HTML5 subset (div, span, p, h1-h6, a, img, ul, ol, li, table, form, input, br, hr)
-- [ ] CSS parser — basic selectors (element, class, id), box model properties, colors, fonts, display, position
-- [ ] Layout engine — block and inline flow layout, margin collapsing, basic table layout
-- [ ] Box model — margin, border, padding, content with correct sizing
-- [ ] Text layout — word wrap, line height, text-align, vertical-align
-- [ ] Image loading — fetch `<img src>` via HTTP client, decode PNG/JPEG, inline display
-- [ ] Hyperlinks — clickable `<a href>`, history stack (back/forward), URL bar
-- [ ] Forms — `<input type=text>`, `<textarea>`, `<select>`, `<button>`, `<input type=submit>`, POST form data
-- [ ] CSS cascade — specificity, inheritance, !important
-- [ ] Colors and backgrounds — background-color, background-image (solid + simple gradients)
-- [ ] Scrolling — vertical scroll with scrollbar for overflow content
-- [ ] Basic JavaScript stubs — `document.getElementById`, `alert()`, `console.log` (enough that pages don't error out)
-- [ ] DOM manipulation (basic) — `innerHTML`, `textContent`, `style.*` property changes
-- [ ] `<style>` and `<link rel=stylesheet>` — embedded and external CSS
-- [ ] View source — show raw HTML for debugging
-- [ ] about:blank, data: URIs, file:// protocol
-- [ ] Wrap in Win32 window — register as a Win32 app, handle WM_SIZE for responsive layout
-
-### Phase 7: POSIX Compatibility Layer
-_Many open-source apps target POSIX. A basic layer dramatically expands what you can compile and run._
-- [ ] `fork()` — process duplication via page directory COW (copy-on-write)
-- [ ] `exec()` family — `execvp`, `execve`, `execl` (replace process image with new ELF/PE)
-- [ ] `pipe()` — anonymous pipe pair
-- [ ] `dup()` / `dup2()` — file descriptor duplication
-- [ ] `open` / `read` / `write` / `close` / `lseek` — POSIX file I/O (separate from Win32 handles)
-- [ ] `stat` / `fstat` / `lstat` — file info with `struct stat`
-- [ ] `opendir` / `readdir` / `closedir` — directory enumeration
-- [ ] `mkdir` / `rmdir` / `unlink` / `rename` / `link` — filesystem operations
-- [ ] `mmap` / `munmap` / `mprotect` — memory-mapped I/O (map to VirtualAlloc internally)
-- [ ] `waitpid` / `wait` — child process reaping
-- [ ] `kill` / `signal` / `sigaction` — signal delivery between processes
-- [ ] `getpid` / `getppid` / `getuid` / `getgid` — process and user identity
-- [ ] `select` / `poll` — I/O multiplexing on file descriptors
-- [ ] `socket` / `bind` / `listen` / `accept` / `connect` (BSD socket API) — map to ImposOS sockets
-- [ ] `gettimeofday` / `clock_gettime` — high-resolution time
-- [ ] `getcwd` / `chdir` — working directory
-- [ ] `environ` global — environment variable access
-- [ ] `pthreads` — `pthread_create`, `pthread_join`, `pthread_mutex_*`, `pthread_cond_*`, `pthread_key_*` (TLS)
-- [ ] `dlopen` / `dlsym` / `dlclose` — dynamic library loading (map to LoadLibrary internally)
-- [ ] `cygwin1.dll` / `msys-2.0.dll` style bridge — or native POSIX subsystem linked at compile time
-
-### Phase 8: ELF Binary Loader
-_With POSIX in place, you can run Linux-targeted binaries — massively expanding your software library._
-- [ ] ELF32 parser — read ELF header, program headers (PT_LOAD, PT_DYNAMIC, PT_INTERP, PT_PHDR)
-- [ ] Section loading — map PT_LOAD segments with correct permissions (RX for .text, RW for .data/.bss)
-- [ ] Dynamic linker (ld.so) — resolve DT_NEEDED shared libraries, symbol lookup, relocation
-- [ ] Relocation types — R_386_32, R_386_PC32, R_386_GLOB_DAT, R_386_JMP_SLOT, R_386_RELATIVE
-- [ ] PLT/GOT — lazy binding via procedure linkage table
-- [ ] Symbol versioning — `DT_VERSYM`, `DT_VERNEED` (glibc uses this)
-- [ ] `__libc_start_main` — CRT entry point calling constructors, then main()
-- [ ] ELF TLS — thread-local storage model (initial-exec and local-exec at minimum)
-- [ ] Built-in libc — port musl or newlib as your C library for ELF binaries
-- [ ] `vDSO` page — fast `gettimeofday` / `clock_gettime` without syscall overhead
-- [ ] `/proc/self` stubs — `/proc/self/exe`, `/proc/self/maps` (many Linux apps read these)
-- [ ] Mixed PE/ELF environment — both loaders coexist, file extension or magic number determines loader
-- [ ] ELF `.interp` custom dynamic linker — ImposOS ships its own ld-imposos.so
-- [ ] `LD_LIBRARY_PATH` equivalent — search paths for shared objects
-
-### Phase 9: ImposOS Native App Framework
-_Give developers a proper API to write native ImposOS apps — not just Win32 compatibility._
-- [ ] `imposui.h` — native C API: `imposui_create_window`, `imposui_button`, `imposui_label`, `imposui_textbox`, `imposui_list`, `imposui_menu`
-- [ ] Event system — callback-based: `imposui_on_click(widget, callback, userdata)`
-- [ ] Layout engine — auto-layout: `imposui_vbox`, `imposui_hbox`, `imposui_grid` with padding, spacing, alignment
-- [ ] Theme system — JSON-based themes with colors, fonts, border radius, spacing
-- [ ] Custom drawing — `imposui_canvas` widget with `imposgfx_*` drawing API (backed by your Phase 1 renderer)
-- [ ] File dialogs — native open/save/folder picker
-- [ ] Standard dialogs — message box, input box, confirmation, progress
-- [ ] Drag and drop — native DnD between ImposOS apps
-- [ ] Clipboard integration — read/write text, images, custom formats
-- [ ] App manifest format — `app.json` with name, icon, version, permissions, entry point
-- [ ] App packaging — `/apps/appname/` directory with manifest, binary, resources
-- [ ] IPC mechanism — lightweight message passing between native apps
-- [ ] SDK toolchain — headers, static libs, example apps, Makefile templates
-- [ ] Documentation — man pages or built-in help viewer for API reference
-
-### Phase 10: Package Manager & Software Repository
-_Let users install real software without manually copying files._
-- [ ] `winget` improvements — search, install, update, remove, list commands
-- [ ] Package manifest format — JSON with name, version, description, author, dependencies, download URL, checksum
-- [ ] Remote repository — HTTPS-based package index (JSON catalog file)
-- [ ] Dependency resolution — install required packages before the requested one
-- [ ] Version constraints — `>=1.0`, `<2.0`, `~1.5` semver-style
-- [ ] Integrity verification — SHA-256 checksum on downloaded packages
-- [ ] Install scripts — pre-install, post-install, pre-remove, post-remove hooks
-- [ ] Uninstall — clean removal of files, registry entries, shortcuts
-- [ ] Upgrade path — `winget upgrade --all` to update everything
-- [ ] Local package cache — avoid re-downloading on reinstall
-- [ ] Multiple repositories — add community repos beyond the default
-- [ ] Package signing — RSA/Ed25519 signature verification on packages
-- [ ] Self-hosted repo tooling — scripts to build and publish a package index
-- [ ] Built-in packages — ship 10-20 pre-packaged apps (text editor, file manager, calculator, hex editor, etc.)
-
-### Phase 11: Accessibility & Input Methods
-_Making the OS usable for everyone and supporting non-English input._
-- [ ] Keyboard layouts — US QWERTY, UK, AZERTY, QWERTZ, Dvorak (switchable)
-- [ ] Dead key support — compose sequences for accented characters (é, ñ, ü)
-- [ ] IME framework — input method editor stub for CJK text entry
-- [ ] Screen reader hooks — expose window tree, control labels, focus state via accessibility API
-- [ ] `IAccessible` COM interface stubs — MSAA for Win32 apps
-- [ ] High contrast mode — system-wide theme swap with configurable colors
-- [ ] Large cursor option — 2x/3x cursor size
-- [ ] Font scaling — system-wide DPI scaling (100%, 125%, 150%, 200%)
-- [ ] Sticky keys — modifier key latching for one-handed use
-- [ ] Mouse keys — keyboard arrow keys control cursor movement
-- [ ] `SystemParametersInfo` — `SPI_GETWORKAREA`, `SPI_GETNONCLIENTMETRICS`, `SPI_GETHIGHCONTRAST`
-- [ ] Caret (text cursor) — system-wide blinking caret with `CreateCaret`, `ShowCaret`, `SetCaretPos`
-- [ ] Focus management — `SetFocus`, `GetFocus`, `WM_SETFOCUS`/`WM_KILLFOCUS` correct across all windows
-
-### Phase 12: Developer Tools & Debugging
-_If developers can't debug apps on your platform, they won't develop for it._
-- [ ] Built-in debugger — attach to running process, set breakpoints (INT3), single-step
-- [ ] Stack trace — walk EBP chain, resolve symbols from PE/ELF symbol tables
-- [ ] `OutputDebugString` viewer — real-time log window for debug output
-- [ ] Memory inspector — view/edit process memory, search for patterns
-- [ ] Handle viewer — list all open handles (files, windows, GDI, threads) per process
-- [ ] PE/ELF inspector — built-in tool to dump headers, imports, exports, resources
-- [ ] System monitor — CPU usage, memory usage, process list, thread count, handle count (like Task Manager)
-- [ ] API trace — log Win32/POSIX API calls per process with timestamps and return values
-- [ ] GDI debug overlay — show window bounds, clipping regions, dirty rects
-- [ ] Network monitor — show active sockets, connections, bytes sent/received
-- [ ] Registry editor — GUI tool to browse and edit the emulated registry
-- [ ] Profiler — sampling profiler that records instruction pointer samples, generates flame graph
-- [ ] Core dump — on crash, write process state to file for post-mortem analysis
-- [ ] Remote debugging — serial or network debug protocol for kernel-level debugging
+**Package management (use what BusyBox gives us):**
+- [ ] `pkg` command — thin wrapper around BusyBox `wget` + `tar`
+- [ ] Remote package index — HTTPS JSON catalog of pre-built static binaries
+- [ ] Dependency tracking — simple metadata file per package
+- [ ] Install/remove/update — download, extract to `/usr/bin`, register in manifest
+- [ ] Pre-built packages — host static i386 binaries for all tested software
+- [ ] `pkg search`, `pkg install`, `pkg remove`, `pkg update` — simple CLI interface
 
 ### Target Software by Phase Completion
 
-| After Phase | What's Now Possible |
+| After Phase | What Runs on ImposOS |
 |---|---|
-| 1–2 | Apps look professional — anti-aliased text, smooth rendering, real fonts |
-| 3 | OpenGL 1.x apps and games — Quake, GLXGears, simple 3D viewers |
-| 4–5 | Reliable networking — apps that download, update, communicate over HTTP/HTTPS |
-| 6 | Built-in web browser — view documentation, basic web pages, HTML help files |
-| 7–8 | Run Linux CLI tools — busybox, coreutils, gcc, Python, Lua, many FOSS tools |
-| 9 | Native ImposOS app ecosystem — developers can build polished apps without Win32 |
-| 10 | Users can install software easily — app store experience |
-| 11 | Usable by non-English speakers and people with disabilities |
-| 12 | Developers can build and debug software *on* ImposOS |
+| 1 | **DOOM** (native, compiled with i686-elf-gcc) |
+| 2 | Filesystem holds 32MB+, initrd loads at boot |
+| 3 | Static musl hello world — first Linux binary runs unchanged |
+| 4 | **BusyBox** — 300+ Unix tools (ls, cat, grep, sed, awk, vi, wget, sh...) |
+| 5 | **bash** + process management — shell pipelines, I/O redirection, job control |
+| 6 | **curl, wget, links** — networking apps, text-mode web browsing |
+| 7 | **vim, nano, htop, tmux, python3** — full interactive terminal environment |
+| 8 | **NetSurf** — graphical web browser rendering real websites |
+| 9 | **X11 desktop** — dwm + st + every X11 app from the last 40 years |
+| 10 | Reliable networking + easy package installation |
 
-### What This Unlocks (Realistic Software Targets)
+### What This Unlocks
 
-#### After Full Tier 1.7:
+#### Pre-built static Linux binaries (download and run, no porting):
+- **BusyBox** — 300+ tools in 1MB
+- **bash, vim, nano, tmux, htop** — full terminal environment
+- **curl, wget, links, w3m** — HTTP clients and text browsers
+- **GCC, make, binutils, git** — compile software ON ImposOS
+- **Python 3, Lua, Perl** — scripting languages
+- **sqlite3** — embeddable database
+- **openssh, dropbear** — SSH client/server
+- **ffmpeg, mpg123** — media tools
+- **redis, civetweb** — servers
 
-**Win32 apps (expanded):**
-- Winamp 2.x/5.x (full plugin support with DLL loading + audio)
-- PuTTY, WinSCP (networking + crypto + GUI)
-- 7-Zip (GUI version)
-- IrfanView (image viewing + GDI + plugins)
-- Notepad++/AkelPad (full-featured text editing)
-- XP-era games: Minesweeper, Solitaire, Pinball
-- Small Delphi/VB6 apps from the shareware era
+#### Cross-compiled for ImposOS (Track A):
+- **Doom** — native, via doomgeneric (5 callbacks)
+- **NetSurf** — graphical browser via framebuffer surface
+- **TinyGL** — software OpenGL (4000 LOC) for 3D demos
 
-**OpenGL apps:**
-- Quake 1 (software or GL) — if you can run Quake, that's a legendary milestone
-- GLXGears and GL demos
-- Simple CAD viewers
-- Tux Racer / other simple GL games
+#### Via X11 (Phase 9):
+- **dwm** — tiling window manager
+- **st, xterm** — terminal emulators
+- **surf** — suckless web browser
+- **feh, sxiv** — image viewers
+- **xfe** — file manager
+- **Any X11 application ever written**
 
-**Linux/POSIX apps (via ELF + POSIX layer):**
-- BusyBox — 300+ Unix utilities in one binary
-- Lua / Python (compiled for your target) — scripting language runtime
-- SQLite CLI — database tool
-- Nano / Vim (terminal) — text editors
-- curl / wget — command-line HTTP
-- gcc (self-hosted compilation milestone!)
-- Git (command-line)
-
-**Native ImposOS apps:**
-- Whatever developers build with your framework
-- Your own bundled app suite: editor, calculator, file manager, image viewer, terminal, settings
+#### Win32 apps (via Tier 1.6):
+- PuTTY, 7-Zip, Notepad++, XP-era games, Delphi/VB6 shareware
 
 ### After Tier 1.7: What's Next?
 
-At this point ImposOS is a real, usable operating system. Future tiers continue below.
+At this point ImposOS runs Doom, has 300+ Unix tools, a real web browser, and an X11
+desktop with 40 years of application history available. Future tiers continue below.
 
 ## Tier 1.8 — GPU, Graphics & Display Infrastructure
 
@@ -1078,212 +1210,80 @@ _BIOS is legacy. Modern hardware requires UEFI to boot. This unlocks real machin
 
 ## Tier 2.0 — Self-Hosting & Sovereignty
 
-> **Goal:** ImposOS can build itself. A compiler, assembler, linker, and full toolchain
-> run natively on ImposOS, producing working ImposOS binaries. This is the ultimate
-> milestone for any operating system — the moment it becomes truly independent.
-> Estimated total: 12 phases.
+> **Goal:** ImposOS can build itself. Tier 1.7 provides pre-built static GCC, Make, and
+> binutils binaries running via Linux compat. Tier 2.0 formalizes the target triple,
+> adds autotools, compiles the kernel natively, and ships the OS.
+> Estimated total: 6 phases.
+>
+> **Note:** GCC, Make, binutils, bash, coreutils, and all dev tools already run on ImposOS
+> as pre-built static Linux binaries (Tier 1.7 Phase 4-5). Tier 2.0 focuses on the
+> self-build verification loop and distribution.
 
-### Phase 1: Cross-Compiler Preparation
-_Before self-hosting, you need a cross-compiler on your development host that targets ImposOS._
-- [ ] ImposOS target triple — define `i686-pc-imposos` (or similar) as a compiler target
-- [ ] GCC cross-compiler — build `i686-pc-imposos-gcc` on your Linux host
-- [ ] Binutils cross — `i686-pc-imposos-as`, `i686-pc-imposos-ld`, `i686-pc-imposos-objcopy`
-- [ ] C library port (musl) — port musl libc to ImposOS, implement syscall interface
-- [ ] Syscall interface — define stable syscall numbers and calling convention (INT 0x80 or SYSENTER)
-- [ ] C library tests — run musl test suite on ImposOS via cross-compiled binaries
-- [ ] libgcc — build libgcc for ImposOS target (software integer division, 64-bit ops, etc.)
-- [ ] libstdc++ (basic) — enough C++ standard library for the compiler itself
+### Phase 1: Target Triple & Native Cross-Compiler
+_Formalize `i686-pc-imposos` so GCC produces ImposOS-native binaries (not just Linux-compat static)._
+- [ ] ImposOS target triple — define `i686-pc-imposos` in GCC and binutils
+- [ ] GCC cross-compiler — build `i686-pc-imposos-gcc` on Linux host
+- [ ] Binutils cross — `i686-pc-imposos-as`, `i686-pc-imposos-ld`
+- [ ] musl for ImposOS — build musl targeting `i686-pc-imposos` (uses Linux compat syscalls internally)
+- [ ] libgcc + libstdc++ — build for ImposOS target
+- [ ] `config.guess` / `config.sub` — recognize `i686-pc-imposos`
 - [ ] Cross-compile ImposOS — build the entire OS using the new cross-compiler (prove it works)
-- [ ] ELF output — cross-compiler produces ELF binaries that ImposOS's ELF loader runs
 
-### Phase 2: Native Assembler
-_The first tool that must run natively. An assembler turns .s files into .o object files._
-- [ ] x86 instruction encoder — encode all common x86 instructions to machine code
-- [ ] AT&T and Intel syntax — support both (GAS uses AT&T, NASM uses Intel)
-- [ ] Pseudo-ops — `.section`, `.global`, `.extern`, `.byte`, `.word`, `.long`, `.ascii`, `.asciz`, `.align`, `.comm`
-- [ ] ELF object output — produce ELF relocatable objects (.o files) with proper sections and symbols
-- [ ] Symbol table — local and global symbols, section symbols
-- [ ] Relocation entries — R_386_32, R_386_PC32, R_386_GOT32, R_386_PLT32
-- [ ] Expression evaluation — constant expressions in operands: `mov $CONST+4, %eax`
-- [ ] Macro support — `.macro` / `.endm` definitions
-- [ ] Conditional assembly — `.if`, `.else`, `.endif`
-- [ ] Include files — `.include "header.inc"`
-- [ ] Debug info — `.file`, `.line` directives for basic debug info generation
-- [ ] Error messages — useful error messages with line numbers and source context
-- [ ] Self-test — assembler can assemble its own assembly output correctly
-
-### Phase 3: Native Linker
-_Combine .o files into executables and shared libraries._
-- [ ] ELF input — read ELF relocatable objects, parse section headers, symbol tables, relocations
-- [ ] Symbol resolution — match undefined symbols to definitions across all input objects and libraries
-- [ ] Section merging — combine `.text`, `.data`, `.bss`, `.rodata` sections from all inputs
-- [ ] Relocation processing — apply all relocation entries, patch addresses
-- [ ] ELF executable output — produce ELF executables with program headers, entry point, proper layout
-- [ ] Static linking — archive (.a) file reading, selective object inclusion based on undefined symbols
-- [ ] Shared library output — produce ELF shared objects (.so) with dynamic symbol table and PLT/GOT
-- [ ] Dynamic linking support — `DT_NEEDED`, `DT_SONAME`, `DT_RPATH`, `DT_RUNPATH` entries
-- [ ] Linker script (basic) — `SECTIONS`, `ENTRY`, `OUTPUT_FORMAT` directives
-- [ ] `--gc-sections` — garbage collect unused sections
-- [ ] Map file — output linker map showing section addresses and symbol locations
-- [ ] Common symbol handling — merge COMMON symbols into .bss
-- [ ] Weak symbols — `__attribute__((weak))` support
-- [ ] Version scripts — symbol versioning for shared library compatibility
-- [ ] PE output mode — optionally produce PE .exe files for Win32 compatibility
-
-### Phase 4: Port GCC (C Compiler)
-_GCC is the workhorse. Getting GCC running natively is the biggest single milestone._
-- [ ] GCC source preparation — configure GCC for `i686-pc-imposos` target
-- [ ] Cross-compile GCC — build GCC on host targeting ImposOS, producing an ImposOS ELF binary
-- [ ] GCC stage 1 — run cross-compiled GCC on ImposOS, compile a hello world
-- [ ] libgcc native build — compile libgcc on ImposOS using stage 1 GCC
-- [ ] GCC stage 2 — compile GCC again on ImposOS using stage 1 GCC
-- [ ] GCC stage 3 — compile GCC with stage 2, compare output with stage 2 (bootstrap verification)
-- [ ] C99 compliance — full C99 features work: variable-length arrays, designated initializers, _Bool, etc.
-- [ ] C11 basics — `_Static_assert`, `_Alignof`, anonymous structs/unions
-- [ ] Optimization levels — -O0, -O1, -O2 produce correct code (full -O3 can be deferred)
-- [ ] Debug info — -g produces DWARF debug information
-- [ ] Preprocessor — cpp works correctly (macros, includes, conditionals)
-- [ ] Inline assembly — `asm volatile(...)` with constraints
-- [ ] C++ support — g++ compiles basic C++ (classes, templates, exceptions, STL)
-- [ ] `configure` / `make` compatibility — enough POSIX that autotools-based projects can configure
-
-### Phase 5: Port Make & Core Build Tools
-_A compiler alone isn't enough. You need make, shell, and utilities to run build systems._
-- [ ] GNU Make — `make` with pattern rules, variables, functions, recursive make
-- [ ] Shell improvements — your shell needs: `if/then/else/fi`, `for/do/done`, `while`, `case`, functions, variables, backtick substitution, `$()`, `&&`, `||`, `|`, `>`, `>>`, `<`, `2>&1`
-- [ ] `ar` — create and manipulate static archives (.a files)
-- [ ] `ranlib` — generate archive index
-- [ ] `objcopy` — copy/convert object files
-- [ ] `objdump` — disassemble and display object file info
-- [ ] `nm` — list symbols from object files
-- [ ] `strip` — remove symbols from binaries
-- [ ] `size` — display section sizes
-- [ ] `find` — search for files by name, type, time
-- [ ] `grep` — pattern searching in files
-- [ ] `sed` — stream editor for text processing
-- [ ] `awk` — pattern processing language
-- [ ] `diff` / `patch` — compare files, apply patches
-- [ ] `tar` — archive creation/extraction
-- [ ] `gzip` / `gunzip` — compression (used by tar for .tar.gz)
-- [ ] `install` — copy files with permission setting
-- [ ] `which` / `test` / `expr` / `basename` / `dirname` — shell utilities
-- [ ] `env` — run command with modified environment
-- [ ] `sort` / `uniq` / `wc` / `head` / `tail` / `tee` / `tr` / `cut` — text processing pipeline
-
-### Phase 6: Port Autotools & pkg-config
-_Most open-source projects use autotools. Without this, you can't build almost anything._
-- [ ] GNU Autoconf — `configure` scripts run correctly in ImposOS shell
+### Phase 2: Autotools & Build Infrastructure
+_Make `./configure && make && make install` work on ImposOS._
+- [ ] GNU Autoconf — `configure` scripts run in bash on ImposOS
 - [ ] GNU Automake — `Makefile.in` processing
 - [ ] GNU Libtool — shared library build abstraction
-- [ ] `pkg-config` — library discovery (.pc files in `/lib/pkgconfig/`)
-- [ ] `config.guess` / `config.sub` — recognize `i686-pc-imposos` as a valid target
+- [ ] `pkg-config` — library discovery (.pc files)
 - [ ] m4 macro processor — required by autoconf
-- [ ] `/usr/include` layout — standard header locations that configure scripts expect
-- [ ] `/usr/lib` layout — library locations, `.a` and `.so` files where expected
-- [ ] Standard POSIX headers — `<unistd.h>`, `<fcntl.h>`, `<sys/stat.h>`, `<sys/types.h>`, `<sys/wait.h>`, `<dirent.h>`, `<dlfcn.h>`, `<pthread.h>`
+- [ ] perl (static binary) — needed by many configure scripts
+- [ ] `/usr/include` + `/usr/lib` layout — standard locations
 - [ ] Feature test macros — `_POSIX_VERSION`, `_GNU_SOURCE`, `__imposos__`
-- [ ] CMake port (bonus) — many modern projects use CMake instead of autotools
+- [ ] CMake (static binary) — modern build system alternative
 
-### Phase 7: Build ImposOS Kernel on ImposOS
+### Phase 3: Build ImposOS Kernel on ImposOS
 _The defining moment: compile the kernel on the OS it runs on._
-- [ ] Kernel source available on disk — full ImposOS source tree at `/usr/src/imposos/`
-- [ ] Kernel Makefile — builds kernel image from source using native GCC + Make
-- [ ] Assembly files — kernel .s files assemble with native assembler
-- [ ] Linker script — kernel linker script works with native linker
-- [ ] Kernel headers — exported headers match what user-space libc was built against
-- [ ] Build succeeds — `make` in kernel source produces a bootable kernel image
-- [ ] Binary comparison — native-built kernel matches cross-compiled kernel (bit-for-bit or functionally)
-- [ ] Boot test — boot the self-compiled kernel, it works identically to the cross-compiled one
-- [ ] Module compilation (if modular) — compile kernel modules natively, load with `insmod`
-- [ ] Kernel rebuild cycle — edit kernel source, rebuild, reboot, verify change — all on ImposOS
-- [ ] Rebuild time tracking — measure compilation time, optimize Makefile for incremental builds
+- [ ] Kernel source on disk — full ImposOS source tree at `/usr/src/imposos/`
+- [ ] Kernel Makefile — builds kernel using native GCC + Make
+- [ ] Assembly files — assemble with native `as`
+- [ ] Linker script — works with native `ld`
+- [ ] Build succeeds — `make` produces a bootable kernel image
+- [ ] Binary comparison — native-built kernel matches cross-compiled kernel
+- [ ] Boot test — boot the self-compiled kernel, it works identically
+- [ ] Kernel rebuild cycle — edit, rebuild, reboot, verify — all on ImposOS
 
-### Phase 8: Build User-Space on ImposOS
-_Compile all of user-space natively — libc, core apps, drivers, everything._
-- [ ] musl libc — native rebuild from source on ImposOS
-- [ ] Core utilities — native build of your shell, file manager, editor, settings apps
-- [ ] GCC rebuild — full GCC bootstrap on ImposOS (stage 1 → 2 → 3)
-- [ ] Binutils rebuild — native build of assembler, linker, and all binutils tools
-- [ ] Window manager — native rebuild of WM and compositor
-- [ ] Win32 shim layer — native rebuild of all Win32 API shims
-- [ ] Device drivers — native rebuild of all hardware drivers
-- [ ] Init system — native rebuild of init/service manager
-- [ ] Package manager — `winget` / package tools built natively
-- [ ] Full system image — script that builds entire ImposOS from source on ImposOS
-- [ ] Reproducible builds — same source + same compiler = identical output binaries
-- [ ] Build log — capture full build output, flag any warnings or errors
-
-### Phase 9: Port Essential Development Tools
-_A self-hosting OS needs more than just a compiler — developers need a full environment._
-- [ ] Text editor (native) — your built-in editor with syntax highlighting, line numbers, search/replace
-- [ ] `vi` / `vim` (ported) — the universal Unix editor
-- [ ] `nano` (ported) — friendly terminal editor
-- [ ] `gdb` (ported) — debugger with breakpoints, stepping, stack traces, variable inspection
-- [ ] `git` (ported) — version control (requires networking, SSL, zlib, POSIX)
-- [ ] `python3` (ported) — Python interpreter (massive ecosystem, useful for build scripts)
-- [ ] `perl` (basic port) — many autotools scripts and configure checks need perl
-- [ ] `bash` (ported) — full-featured shell replacing your built-in shell (or make yours bash-compatible)
-- [ ] `less` / `more` — pagers for reading files and command output
-- [ ] `man` — manual page viewer with nroff/groff rendering
-- [ ] Terminal multiplexer — `screen` or `tmux` equivalent (multiple shells in one terminal)
-- [ ] `strace` equivalent — trace syscalls for debugging (your own implementation)
-- [ ] `ldd` — list shared library dependencies of a binary
-- [ ] `file` — identify file types by magic bytes
-
-### Phase 10: Port Essential Libraries
-_Software depends on libraries. These are the most commonly needed._
-- [ ] zlib — compression (used by everything: PNG, HTTP gzip, git, Python, etc.)
-- [ ] libpng — PNG encode/decode (replace your built-in decoder with the real one)
-- [ ] libjpeg-turbo — JPEG decode/encode with SIMD optimizations
-- [ ] freetype2 — font rendering (replace your built-in TrueType engine or upgrade it)
-- [ ] harfbuzz — text shaping for complex scripts (Arabic, Devanagari, etc.)
-- [ ] fontconfig — font matching and discovery
-- [ ] libffi — foreign function interface (Python ctypes needs this)
-- [ ] openssl / mbedtls — TLS library (replace or supplement your built-in TLS)
-- [ ] sqlite3 — embeddable SQL database
-- [ ] expat or libxml2 — XML parsing
-- [ ] ncurses — terminal UI library (needed by vim, nano, htop, etc.)
-- [ ] readline — line editing for interactive shells and REPLs
-- [ ] libevent / libev — event loop library (used by many servers and tools)
-- [ ] pcre2 — regular expressions (used by grep, many languages)
-- [ ] curl (library) — HTTP/HTTPS client library
-
-### Phase 11: Testing & Validation Infrastructure
-_Prove that the self-hosted OS is correct and stable._
-- [ ] Unit test framework — C test framework for kernel and user-space components
-- [ ] Kernel test suite — memory allocation, scheduler, filesystem, IPC, networking
-- [ ] Syscall test suite — test every syscall with edge cases
-- [ ] Win32 API test suite — test every shimmed function against expected behavior
+### Phase 4: Testing & Validation
+_Prove the self-hosted OS is correct and stable._
+- [ ] Syscall test suite — test every Linux compat syscall with edge cases
+- [ ] Win32 API test suite — test shimmed functions against expected behavior
 - [ ] POSIX conformance tests — subset of Open POSIX Test Suite
-- [ ] GCC test suite — `make check` on GCC passes (or documented failures with reasons)
-- [ ] libc test suite — musl/libc tests pass
-- [ ] Regression tests — automated tests that catch breakage in nightly builds
-- [ ] Boot test automation — script that builds, installs to disk image, boots in QEMU, runs tests, checks results
-- [ ] Stress tests — fork bombs, memory exhaustion, disk full, network flood — OS recovers gracefully
-- [ ] Fuzz testing — fuzz syscall interface, filesystem parser, PE/ELF loaders
-- [ ] Code coverage — measure which kernel paths are exercised by tests
-- [ ] CI/CD pipeline — automatic build + test on every commit (can run on Linux host initially)
-- [ ] Performance benchmarks — track compilation time, boot time, context switch latency, IPC throughput
+- [ ] Boot test automation — build → install → boot in QEMU → run tests → check results
+- [ ] Stress tests — fork bombs, memory exhaustion, network flood — OS recovers gracefully
+- [ ] Fuzz testing — fuzz syscall interface, ELF/PE loaders
+- [ ] CI/CD pipeline — automatic build + test on every commit
 
-### Phase 12: Distribution & Installation
+### Phase 5: Distribution & Installation
 _Make ImposOS installable by other people._
-- [ ] ISO image builder — create bootable .iso with kernel, initrd, base system
-- [ ] Boot loader — GRUB integration or custom boot loader that chainloads from BIOS/UEFI
-- [ ] Installer — text-mode or GUI installer: partition disk, format, copy files, install bootloader
-- [ ] Partition editor — create/delete/resize partitions during install
-- [ ] Package selection — minimal install vs full install with development tools
-- [ ] User account creation — set hostname, create user account, set password during install
-- [ ] First-boot wizard — timezone, keyboard layout, network configuration
-- [ ] Live environment — boot from ISO without installing, try ImposOS before committing
-- [ ] Disk image distribution — pre-built .img files for QEMU: `qemu-system-i386 -hda imposos.img`
-- [ ] Release versioning — semantic versioning, changelog, release notes
-- [ ] Documentation — installation guide, user manual, developer guide
-- [ ] Website — project website with downloads, screenshots, documentation, wiki
-- [ ] Community infrastructure — git repository, issue tracker, mailing list or forum
+- [ ] ISO image builder — bootable .iso with kernel, initrd (BusyBox + tools), base system
+- [ ] Installer — text-mode installer: partition, format, copy files, install bootloader
+- [ ] Package selection — minimal vs full install (with dev tools, X11, NetSurf)
+- [ ] User account creation — hostname, user, password during install
+- [ ] First-boot wizard — timezone, keyboard layout, network
+- [ ] Disk image distribution — pre-built .img for QEMU: `qemu-system-i386 -hda imposos.img`
+- [ ] Release versioning — semver, changelog, release notes
+- [ ] Documentation — install guide, user manual, developer guide
+
+### Phase 6: Community & Ecosystem
+_An OS without a community is a dead OS._
+- [ ] Community infrastructure — git repo, issue tracker, forum
+- [ ] Contributing guide — how to add drivers, port software, submit patches
+- [ ] Package contribution — how others can add packages to the repository
+- [ ] Showcase — screenshots, demos, videos of ImposOS running Doom, NetSurf, X11, BusyBox
+- [ ] Performance benchmarks — boot time, compilation time, context switch latency
 
 ### The Self-Hosting Milestone
 
-When Phase 7 passes — when ImposOS compiles its own kernel and boots the result — you've joined an elite group. Very few hobby operating systems ever achieve self-hosting. Here's the short list of OSes that have done it:
+When Phase 3 passes — when ImposOS compiles its own kernel and boots the result — you've joined an elite group:
 
 - **Linux** (1994 — Linus compiled Linux on Linux)
 - **FreeBSD/OpenBSD/NetBSD** (inherited from 4.4BSD)
@@ -1293,16 +1293,18 @@ When Phase 7 passes — when ImposOS compiles its own kernel and boots the resul
 - **Sortix** (Jonas 'Sortie' Termansen)
 - **Managarm** (microkernel OS, self-hosted with GCC)
 
-If ImposOS reaches this point — with a Win32 compatibility layer, POSIX support, ELF loading, real hardware drivers, a compositing desktop, *and* self-hosting — it would be one of the most ambitious and complete hobby OS projects ever built.
+If ImposOS reaches this point — with a Win32 compatibility layer, Linux binary compat running
+thousands of pre-built programs, Doom, a real web browser, an X11 desktop, real hardware
+drivers, *and* self-hosting — it would be one of the most ambitious hobby OS projects ever built.
 
 ### Complete Tier Map
 
 | Tier | Theme | Status |
 |---|---|---|
 | 1.0 | Core OS: kernel, shell, filesystem, basic GUI | Done |
-| 1.5 | Win32 bridge: PE loader, API shims, Phase 1-13 | Done |
-| 1.6 | Real software: full CRT, controls, networking, stability | In Progress |
-| 1.7 | Polished platform: renderer, fonts, OpenGL, browser, POSIX, ELF | Planned |
+| 1.5 | Win32 bridge: PE loader, API shims, Phase 1–13 | Done |
+| 1.6 | Real Win32 software: full CRT, controls, networking, stability | In Progress |
+| 1.7 | Linux compat: 45 syscalls + ELF loader → Doom, BusyBox, bash, NetSurf, X11 | Planned |
 | 1.8 | Graphics: GPU, compositing, multi-monitor, animations | Planned |
 | 1.9 | Hardware: USB, AHCI, audio, NIC drivers, ACPI, power management | Planned |
-| 2.0 | Self-hosting: GCC, Make, build tools, build ImposOS on ImposOS | Planned |
+| 2.0 | Self-hosting: target triple, autotools, kernel self-build, distribution | Planned |
