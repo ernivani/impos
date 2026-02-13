@@ -8,14 +8,27 @@ DISK_SIZE := 40M
 # Use KVM if available and accessible, otherwise fall back to TCG
 KVM_FLAG := $(shell if [ -w /dev/kvm ] 2>/dev/null; then echo "$(KVM_FLAG)"; fi)
 
-.PHONY: all build iso run run-disk run-us clean rebuild clean-disk help
+# Cross-compiler tools
+CROSS_AS := $(HOME)/opt/cross/bin/i686-elf-as
+CROSS_LD := $(HOME)/opt/cross/bin/i686-elf-ld
+
+.PHONY: all build iso run run-disk run-us clean rebuild clean-disk help test-programs
 
 all: iso
 
 build:
 	./build.sh
 
-initrd.tar:
+# Build test ELF binaries
+test_programs/hello: test_programs/hello.S test_programs/hello.ld
+	@echo "Building test ELF: hello"
+	$(CROSS_AS) test_programs/hello.S -o test_programs/hello.o
+	$(CROSS_LD) -T test_programs/hello.ld -o test_programs/hello test_programs/hello.o
+	@rm -f test_programs/hello.o
+
+test-programs: test_programs/hello
+
+initrd.tar: test-programs
 	@echo "Creating initrd.tar..."
 	@rm -rf initrd_staging
 	@mkdir -p initrd_staging/etc
@@ -23,6 +36,7 @@ initrd.tar:
 	@mkdir -p initrd_staging/usr/bin
 	@mkdir -p initrd_staging/tmp
 	@echo "Welcome to ImposOS!" > initrd_staging/etc/motd
+	@cp test_programs/hello initrd_staging/bin/hello
 	@cd initrd_staging && tar cf ../initrd.tar --format=ustar .
 	@rm -rf initrd_staging
 
@@ -107,6 +121,7 @@ clean:
 	./clean.sh
 	rm -f initrd.tar
 	rm -rf initrd_staging
+	rm -f test_programs/hello test_programs/*.o
 
 clean-disk:
 	@echo "Removing disk image: $(DISK_IMAGE)"

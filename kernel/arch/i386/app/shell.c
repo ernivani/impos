@@ -31,6 +31,7 @@
 #include <kernel/rtc.h>
 #include <kernel/beep.h>
 #include <kernel/pe_loader.h>
+#include <kernel/elf_loader.h>
 #include <kernel/tls.h>
 #include <kernel/io.h>
 #include <kernel/multiboot.h>
@@ -1961,12 +1962,31 @@ void shell_process_command(char* command) {
         }
     }
 
-    /* Try to run as a .exe file via PE loader */
+    /* Try to run as an executable via ELF or PE loader */
     {
         const char *name = argv[0];
         size_t nlen = strlen(name);
 
-        /* Check if it ends with .exe or try appending .exe */
+        /* Try ELF: exact path first, then /bin/<name> */
+        int ret = elf_run(name);
+        if (ret >= 0) {
+            task_info_t *t = task_get(ret);
+            while (t && t->active && t->state != TASK_STATE_ZOMBIE)
+                task_yield();
+            return;
+        }
+
+        char path_buf[64];
+        snprintf(path_buf, sizeof(path_buf), "/bin/%s", name);
+        ret = elf_run(path_buf);
+        if (ret >= 0) {
+            task_info_t *t = task_get(ret);
+            while (t && t->active && t->state != TASK_STATE_ZOMBIE)
+                task_yield();
+            return;
+        }
+
+        /* Try PE: append .exe if needed */
         char exe_name[64];
         if (nlen > 4 && strcmp(name + nlen - 4, ".exe") == 0) {
             strncpy(exe_name, name, sizeof(exe_name) - 1);
@@ -1975,8 +1995,7 @@ void shell_process_command(char* command) {
             snprintf(exe_name, sizeof(exe_name), "%s.exe", name);
         }
 
-        /* Try to load and run — pe_run returns < 0 if file not found */
-        int ret = pe_run(exe_name);
+        ret = pe_run(exe_name);
         if (ret >= 0) {
             for (int i = 0; i < 5; i++) task_yield();
             return;
@@ -4474,12 +4493,24 @@ static void cmd_beep(int argc, char* argv[]) {
 
 static void cmd_run(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Usage: run <file.exe>\n");
+        printf("Usage: run <file>\n");
         return;
     }
 
+    /* Try ELF first (elf_run reads the file internally and validates) */
+    int ret = elf_run(argv[1]);
+    if (ret >= 0) {
+        task_info_t *t = task_get(ret);
+        printf("Started ELF process '%s' (PID %d)\n", argv[1],
+               t ? t->pid : ret);
+        while (t && t->active && t->state != TASK_STATE_ZOMBIE)
+            task_yield();
+        return;
+    }
+
+    /* Try PE */
     DBG("cmd_run: calling pe_run('%s')", argv[1]);
-    int ret = pe_run(argv[1]);
+    ret = pe_run(argv[1]);
     DBG("cmd_run: pe_run returned %d", ret);
     if (ret < 0) {
         printf("Failed to run '%s' (error %d)\n", argv[1], ret);

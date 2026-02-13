@@ -34,4 +34,7 @@ void tss_set_esp0(uint32_t esp0);
 /* Update GDT entry 6 base for per-thread FS segment (TEB) */
 void gdt_set_fs_base(uint32_t base);
 
+/* Update GDT entry 6 base for per-thread GS segment (Linux TLS) */
+void gdt_set_gs_base(uint32_t base);
+
 #endif

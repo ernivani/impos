@@ -2,11 +2,11 @@
 #include <kernel/task.h>
 #include <kernel/vmm.h>
 #include <kernel/idt.h>
-#include <kernel/io.h>
 #include <kernel/pmm.h>
 #include <kernel/pipe.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 extern volatile uint32_t pit_ticks;
 
@@ -78,6 +78,12 @@ registers_t* schedule(registers_t* regs) {
                     pmm_free_frame(t->user_stack);
                     t->user_stack = 0;
                 }
+                /* Free ELF segment frames (brk/mmap/PT_LOAD pages) */
+                for (int f = 0; f < t->num_elf_frames; f++) {
+                    if (t->elf_frames[f])
+                        pmm_free_frame(t->elf_frames[f]);
+                }
+                t->num_elf_frames = 0;
                 if (t->user_page_table) {
                     pmm_free_frame(t->user_page_table);
                     t->user_page_table = 0;
@@ -129,6 +135,8 @@ registers_t* schedule(registers_t* regs) {
                 tss_set_esp0(nxt->kernel_esp);
             if (nxt->tib)
                 gdt_set_fs_base(nxt->tib);
+            if (nxt->is_elf && nxt->tls_base)
+                gdt_set_gs_base(nxt->tls_base);
             sched_switch_cr3(nxt->page_dir);
             return (registers_t*)nxt->esp;
         }
@@ -149,6 +157,8 @@ registers_t* schedule(registers_t* regs) {
                 tss_set_esp0(nxt->kernel_esp);
             if (nxt->tib)
                 gdt_set_fs_base(nxt->tib);
+            if (nxt->is_elf && nxt->tls_base)
+                gdt_set_gs_base(nxt->tls_base);
             sched_switch_cr3(nxt->page_dir);
             return (registers_t*)nxt->esp;
         }
