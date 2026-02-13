@@ -84,8 +84,10 @@ typedef struct __attribute__((packed)) {
     uint32_t reserved;
 } multiboot_module_t;
 
-/* Globals for DOOM WAD loaded as multiboot module */
+/* Globals for multiboot modules */
 extern uint8_t *doom_wad_data;
 extern uint32_t doom_wad_size;
+extern uint8_t *initrd_data;
+extern uint32_t initrd_size;
 
 #endif

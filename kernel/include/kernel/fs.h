@@ -4,19 +4,22 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define BLOCK_SIZE      512
-#define NUM_BLOCKS      256
-#define NUM_INODES      64
+#define BLOCK_SIZE      4096
+#define NUM_BLOCKS      8192
+#define NUM_INODES      256
 #define DIRECT_BLOCKS   8
 #define MAX_NAME_LEN    28
-#define INDIRECT_PTRS   (BLOCK_SIZE / sizeof(uint32_t))
-#define MAX_DIRECT_SIZE (DIRECT_BLOCKS * BLOCK_SIZE)
-#define MAX_FILE_SIZE   (MAX_DIRECT_SIZE + INDIRECT_PTRS * BLOCK_SIZE)
+#define INDIRECT_PTRS   (BLOCK_SIZE / sizeof(uint32_t))   /* 1024 */
+#define MAX_DIRECT_SIZE (DIRECT_BLOCKS * BLOCK_SIZE)       /* 32KB */
+#define MAX_FILE_SIZE   (MAX_DIRECT_SIZE + INDIRECT_PTRS * BLOCK_SIZE) /* ~4MB */
+
+#define FS_VERSION      2
 
 #define INODE_FREE      0
 #define INODE_FILE      1
 #define INODE_DIR       2
 #define INODE_SYMLINK   3
+#define INODE_CHARDEV   4
 
 #define ROOT_INODE      0
 
@@ -28,13 +31,19 @@
 #define PERM_W          2
 #define PERM_X          1
 
-#define DISK_SECTOR_SUPERBLOCK  0
-#define DISK_SECTOR_BITMAPS     1
-#define DISK_SECTOR_INODES      3
-#define DISK_SECTOR_DATA        35
+/* Device major numbers */
+#define DEV_MAJOR_NULL    1
+#define DEV_MAJOR_ZERO    2
+#define DEV_MAJOR_TTY     3
+#define DEV_MAJOR_URANDOM 4
 
-/* Number of sectors needed for inode table */
-#define INODE_SECTORS   ((sizeof(inode_t) * NUM_INODES + BLOCK_SIZE - 1) / BLOCK_SIZE)
+/* Disk sector layout (512-byte sectors) */
+#define DISK_SECTOR_SUPERBLOCK  0       /* Sectors 0-7: superblock (4KB) */
+#define DISK_SUPERBLOCK_SECTORS 8
+#define DISK_SECTOR_INODES      8       /* Sectors 8-39: inode table */
+#define DISK_INODE_SECTORS      32      /* 32 sectors = 16KB >= 256*60 bytes */
+#define DISK_SECTOR_DATA        40      /* Sectors 40+: data blocks */
+#define SECTORS_PER_BLOCK       (BLOCK_SIZE / 512)  /* 8 */
 
 typedef struct {
     uint32_t inode;
@@ -56,13 +65,15 @@ typedef struct __attribute__((packed)) {
 } inode_t;
 
 typedef struct {
-    uint32_t magic;      /* FS magic number */
+    uint32_t magic;
+    uint32_t version;
     uint32_t num_inodes;
     uint32_t num_blocks;
+    uint32_t block_size;
     uint32_t cwd_inode;
-    uint8_t block_bitmap[NUM_BLOCKS / 8];
-    uint8_t inode_bitmap[NUM_INODES / 8];
-    uint8_t _pad[456];   /* Pad to 512 bytes */
+    uint8_t  inode_bitmap[NUM_INODES / 8];   /* 32 bytes */
+    uint8_t  block_bitmap[NUM_BLOCKS / 8];   /* 1024 bytes */
+    uint8_t  _pad[4096 - 24 - 32 - 1024];    /* Pad to 4096 total */
 } superblock_t;
 
 #define FS_MAGIC 0x494D504F
@@ -88,10 +99,16 @@ int fs_chown(const char* path, uint16_t uid, uint16_t gid);
 int fs_create_symlink(const char* target, const char* linkname);
 int fs_readlink(const char* path, char* buf, size_t bufsize);
 
+/* Device nodes */
+int fs_create_device(const char* path, uint8_t major, uint8_t minor);
+
+/* Initrd mounting */
+int fs_mount_initrd(const uint8_t* data, uint32_t size);
+
 /* Directory enumeration for GUI apps */
 typedef struct {
     char     name[MAX_NAME_LEN];
-    uint8_t  type;       /* INODE_FILE, INODE_DIR, etc */
+    uint8_t  type;       /* INODE_FILE, INODE_DIR, INODE_CHARDEV, etc */
     uint32_t size;
     uint32_t inode;
     uint32_t modified_at; /* epoch: seconds since 2000-01-01 */

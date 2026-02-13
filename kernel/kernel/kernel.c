@@ -368,25 +368,53 @@ void shell_loop(void) {
     }
 }
 
-/* Multiboot module globals (for DOOM WAD) */
+/* Multiboot module globals */
 uint8_t *doom_wad_data = 0;
 uint32_t doom_wad_size = 0;
+uint8_t *initrd_data = 0;
+uint32_t initrd_size = 0;
+
+static int str_ends_with(const char *str, const char *suffix) {
+    size_t slen = strlen(str);
+    size_t sfxlen = strlen(suffix);
+    if (sfxlen > slen) return 0;
+    return strcmp(str + slen - sfxlen, suffix) == 0;
+}
 
 void kernel_main(multiboot_info_t* mbi) {
-    /* FIRST: Copy multiboot module (DOOM WAD) before any malloc overwrites it.
+    /* FIRST: Copy multiboot modules before any malloc overwrites them.
        GRUB places modules after the kernel in physical memory, which overlaps
-       with our linear heap. Copy to a malloc'd buffer immediately. */
+       with our linear heap. Copy to malloc'd buffers immediately. */
     if ((mbi->flags & (1 << 3)) && mbi->mods_count > 0) {
-        multiboot_module_t *mod = (multiboot_module_t *)mbi->mods_addr;
-        uint32_t wad_src = mod->mod_start;
-        uint32_t wad_len = mod->mod_end - mod->mod_start;
-        if (wad_len > 0 && wad_len < 16 * 1024 * 1024) { /* sanity: <16MB */
-            uint8_t *copy = (uint8_t *)malloc(wad_len);
-            if (copy) {
-                /* Forward memcpy is safe: dest (heap start) < src (module addr) */
-                memcpy(copy, (uint8_t *)wad_src, wad_len);
+        multiboot_module_t *mods = (multiboot_module_t *)mbi->mods_addr;
+        for (uint32_t m = 0; m < mbi->mods_count; m++) {
+            uint32_t mod_start = mods[m].mod_start;
+            uint32_t mod_len = mods[m].mod_end - mods[m].mod_start;
+            const char *cmdline = mods[m].cmdline ? (const char *)mods[m].cmdline : "";
+
+            if (mod_len == 0 || mod_len >= 32 * 1024 * 1024) continue;
+
+            uint8_t *copy = (uint8_t *)malloc(mod_len);
+            if (!copy) continue;
+            memcpy(copy, (uint8_t *)mod_start, mod_len);
+
+            if (str_ends_with(cmdline, ".wad") || str_ends_with(cmdline, ".WAD")) {
                 doom_wad_data = copy;
-                doom_wad_size = wad_len;
+                doom_wad_size = mod_len;
+            } else if (str_ends_with(cmdline, ".tar")) {
+                initrd_data = copy;
+                initrd_size = mod_len;
+            } else {
+                /* Try to identify by content */
+                if (mod_len > 4 && copy[0] == 'I' && copy[1] == 'W' &&
+                    copy[2] == 'A' && copy[3] == 'D') {
+                    doom_wad_data = copy;
+                    doom_wad_size = mod_len;
+                } else {
+                    /* Default: treat as initrd */
+                    initrd_data = copy;
+                    initrd_size = mod_len;
+                }
             }
         }
     }
@@ -411,6 +439,10 @@ void kernel_main(multiboot_info_t* mbi) {
                doom_wad_size, (uint32_t)doom_wad_data,
                doom_wad_data[0], doom_wad_data[1],
                doom_wad_data[2], doom_wad_data[3]);
+    }
+    if (initrd_data && initrd_size > 0) {
+        printf("[BOOT] Initrd: %u bytes at 0x%x\n",
+               initrd_size, (uint32_t)initrd_data);
     }
 
     /* Initialize task tracking (before any tasks are created) */

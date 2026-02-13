@@ -3,13 +3,18 @@
 #include <kernel/user.h>
 #include <kernel/group.h>
 #include <kernel/rtc.h>
+#include <kernel/crypto.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static superblock_t sb;
 static inode_t inodes[NUM_INODES];
-static uint8_t data_blocks[NUM_BLOCKS][BLOCK_SIZE];
+static uint8_t *data_blocks = NULL;
+#define BLOCK_PTR(i) (data_blocks + (size_t)(i) * BLOCK_SIZE)
+
 static int fs_dirty = 0;
+static uint8_t dirty_bitmap[NUM_BLOCKS / 8];
 static uint32_t fs_rd_ops = 0, fs_rd_bytes = 0;
 static uint32_t fs_wr_ops = 0, fs_wr_bytes = 0;
 
@@ -59,6 +64,10 @@ static int bitmap_find_free(const uint8_t* map, uint32_t count) {
     return -1;
 }
 
+static void mark_dirty(uint32_t block) {
+    bitmap_set(dirty_bitmap, block);
+}
+
 /* ---- permission check ---- */
 
 static int check_permission(inode_t* node, int required) {
@@ -98,7 +107,8 @@ static int alloc_block(void) {
     int idx = bitmap_find_free(sb.block_bitmap, NUM_BLOCKS);
     if (idx < 0) return -1;
     bitmap_set(sb.block_bitmap, idx);
-    memset(data_blocks[idx], 0, BLOCK_SIZE);
+    memset(BLOCK_PTR(idx), 0, BLOCK_SIZE);
+    mark_dirty(idx);
     fs_dirty = 1;
     return idx;
 }
@@ -114,12 +124,61 @@ static void free_block(int idx) {
     fs_dirty = 1;
 }
 
+/* ---- device node I/O ---- */
+
+static int dev_read(inode_t* node, uint8_t* buffer, size_t* size) {
+    uint8_t major = (uint8_t)node->blocks[0];
+    size_t requested = *size;
+    /* Cap infinite sources to 256 bytes per read */
+    if (requested > 256) requested = 256;
+
+    switch (major) {
+    case DEV_MAJOR_NULL:
+        *size = 0;
+        return 0;
+    case DEV_MAJOR_ZERO:
+        memset(buffer, 0, requested);
+        *size = requested;
+        return 0;
+    case DEV_MAJOR_TTY: {
+        extern char getchar(void);
+        buffer[0] = (uint8_t)getchar();
+        *size = 1;
+        return 0;
+    }
+    case DEV_MAJOR_URANDOM:
+        prng_random(buffer, requested);
+        *size = requested;
+        return 0;
+    default:
+        return -1;
+    }
+}
+
+static int dev_write(inode_t* node, const uint8_t* data, size_t size) {
+    uint8_t major = (uint8_t)node->blocks[0];
+
+    switch (major) {
+    case DEV_MAJOR_NULL:
+    case DEV_MAJOR_ZERO:
+        return 0;  /* discard */
+    case DEV_MAJOR_TTY:
+        for (size_t i = 0; i < size; i++)
+            putchar((char)data[i]);
+        return 0;
+    case DEV_MAJOR_URANDOM:
+        return 0;  /* discard */
+    default:
+        return -1;
+    }
+}
+
 /* ---- directory operations ---- */
 
 static int dir_lookup(uint32_t dir_inode, const char* name) {
     inode_t* dir = &inodes[dir_inode];
     for (uint8_t b = 0; b < dir->num_blocks; b++) {
-        dir_entry_t* entries = (dir_entry_t*)data_blocks[dir->blocks[b]];
+        dir_entry_t* entries = (dir_entry_t*)BLOCK_PTR(dir->blocks[b]);
         int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
         for (int e = 0; e < entries_per_block; e++) {
             if (entries[e].name[0] != '\0' &&
@@ -136,13 +195,14 @@ static int dir_add_entry(uint32_t dir_inode, const char* name, uint32_t child_in
 
     /* try to find a free slot in existing blocks */
     for (uint8_t b = 0; b < dir->num_blocks; b++) {
-        dir_entry_t* entries = (dir_entry_t*)data_blocks[dir->blocks[b]];
+        dir_entry_t* entries = (dir_entry_t*)BLOCK_PTR(dir->blocks[b]);
         int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
         for (int e = 0; e < entries_per_block; e++) {
             if (entries[e].name[0] == '\0') {
                 entries[e].inode = child_inode;
                 local_strncpy(entries[e].name, name, MAX_NAME_LEN);
                 dir->size += sizeof(dir_entry_t);
+                mark_dirty(dir->blocks[b]);
                 fs_dirty = 1;
                 return 0;
             }
@@ -155,7 +215,7 @@ static int dir_add_entry(uint32_t dir_inode, const char* name, uint32_t child_in
     if (blk < 0) return -1;
     dir->blocks[dir->num_blocks++] = blk;
 
-    dir_entry_t* entries = (dir_entry_t*)data_blocks[blk];
+    dir_entry_t* entries = (dir_entry_t*)BLOCK_PTR(blk);
     entries[0].inode = child_inode;
     local_strncpy(entries[0].name, name, MAX_NAME_LEN);
     dir->size += sizeof(dir_entry_t);
@@ -166,13 +226,14 @@ static int dir_add_entry(uint32_t dir_inode, const char* name, uint32_t child_in
 static int dir_remove_entry(uint32_t dir_inode, const char* name) {
     inode_t* dir = &inodes[dir_inode];
     for (uint8_t b = 0; b < dir->num_blocks; b++) {
-        dir_entry_t* entries = (dir_entry_t*)data_blocks[dir->blocks[b]];
+        dir_entry_t* entries = (dir_entry_t*)BLOCK_PTR(dir->blocks[b]);
         int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
         for (int e = 0; e < entries_per_block; e++) {
             if (entries[e].name[0] != '\0' &&
                 local_strncmp(entries[e].name, name, MAX_NAME_LEN) == 0) {
                 memset(&entries[e], 0, sizeof(dir_entry_t));
                 dir->size -= sizeof(dir_entry_t);
+                mark_dirty(dir->blocks[b]);
                 fs_dirty = 1;
                 return 0;
             }
@@ -229,10 +290,11 @@ static int resolve_path_depth(const char* path, uint32_t* out_parent, char* out_
             if (child < 0) return -1;
             /* Follow symlinks in intermediate components */
             if (inodes[child].type == INODE_SYMLINK) {
-                char target[BLOCK_SIZE];
+                char target[256];
                 if (inodes[child].num_blocks == 0) return -1;
-                memcpy(target, data_blocks[inodes[child].blocks[0]], inodes[child].size);
-                target[inodes[child].size] = '\0';
+                size_t tlen = inodes[child].size < 255 ? inodes[child].size : 255;
+                memcpy(target, BLOCK_PTR(inodes[child].blocks[0]), tlen);
+                target[tlen] = '\0';
                 child = resolve_path_depth(target, NULL, NULL, depth + 1);
                 if (child < 0) return -1;
             }
@@ -267,7 +329,7 @@ static int init_dir_inode(int inode_idx, uint32_t parent_inode) {
     inode->blocks[0] = blk;
     inode->num_blocks = 1;
 
-    dir_entry_t* entries = (dir_entry_t*)data_blocks[blk];
+    dir_entry_t* entries = (dir_entry_t*)BLOCK_PTR(blk);
     entries[0].inode = inode_idx;
     local_strncpy(entries[0].name, ".", MAX_NAME_LEN);
     entries[1].inode = parent_inode;
@@ -294,7 +356,7 @@ int fs_read_block(uint32_t block_num, uint8_t* out_data) {
     if (block_num >= NUM_BLOCKS) {
         return -1;
     }
-    memcpy(out_data, data_blocks[block_num], BLOCK_SIZE);
+    memcpy(out_data, BLOCK_PTR(block_num), BLOCK_SIZE);
     return 0;
 }
 
@@ -306,24 +368,27 @@ int fs_sync(void) {
     }
 
     if (!fs_dirty) {
-        return 0;  /* Nothing to sync */
+        return 0;
     }
 
-    /* Write superblock */
+    /* Write superblock (8 sectors) */
     sb.magic = FS_MAGIC;
-    if (ata_write_sectors(DISK_SECTOR_SUPERBLOCK, 1, (uint8_t*)&sb) != 0) {
+    sb.version = FS_VERSION;
+    sb.block_size = BLOCK_SIZE;
+    if (ata_write_sectors(DISK_SECTOR_SUPERBLOCK, DISK_SUPERBLOCK_SECTORS, (uint8_t*)&sb) != 0) {
         return -1;
     }
 
-    /* Write inodes */
-    if (ata_write_sectors(DISK_SECTOR_INODES, INODE_SECTORS, (uint8_t*)inodes) != 0) {
+    /* Write inode table (32 sectors) */
+    if (ata_write_sectors(DISK_SECTOR_INODES, DISK_INODE_SECTORS, (uint8_t*)inodes) != 0) {
         return -1;
     }
 
-    /* Write data blocks (256 blocks of 512 bytes each) */
+    /* Write only dirty + allocated data blocks (8 sectors each) */
     for (int i = 0; i < NUM_BLOCKS; i++) {
-        if (bitmap_test(sb.block_bitmap, i)) {
-            if (ata_write_sectors(DISK_SECTOR_DATA + i, 1, data_blocks[i]) != 0) {
+        if (bitmap_test(dirty_bitmap, i) && bitmap_test(sb.block_bitmap, i)) {
+            uint32_t lba = DISK_SECTOR_DATA + (uint32_t)i * SECTORS_PER_BLOCK;
+            if (ata_write_sectors(lba, SECTORS_PER_BLOCK, BLOCK_PTR(i)) != 0) {
                 return -1;
             }
         }
@@ -334,6 +399,7 @@ int fs_sync(void) {
         return -1;
     }
 
+    memset(dirty_bitmap, 0, sizeof(dirty_bitmap));
     fs_dirty = 0;
     return 0;
 }
@@ -343,8 +409,8 @@ int fs_load(void) {
         return -1;
     }
 
-    /* Read superblock */
-    if (ata_read_sectors(DISK_SECTOR_SUPERBLOCK, 1, (uint8_t*)&sb) != 0) {
+    /* Read superblock (8 sectors) */
+    if (ata_read_sectors(DISK_SECTOR_SUPERBLOCK, DISK_SUPERBLOCK_SECTORS, (uint8_t*)&sb) != 0) {
         return -1;
     }
 
@@ -353,20 +419,29 @@ int fs_load(void) {
         return -1;
     }
 
+    /* Check FS version */
+    if (sb.version != FS_VERSION) {
+        printf("[FS] Incompatible FS version %u (expected %u) — reformatting\n",
+               sb.version, FS_VERSION);
+        return -1;
+    }
+
     /* Validate superblock fields */
-    if (sb.num_inodes != NUM_INODES || sb.num_blocks != NUM_BLOCKS) {
+    if (sb.num_inodes != NUM_INODES || sb.num_blocks != NUM_BLOCKS ||
+        sb.block_size != BLOCK_SIZE) {
         return -1;
     }
 
-    /* Read inodes */
-    if (ata_read_sectors(DISK_SECTOR_INODES, INODE_SECTORS, (uint8_t*)inodes) != 0) {
+    /* Read inode table (32 sectors) */
+    if (ata_read_sectors(DISK_SECTOR_INODES, DISK_INODE_SECTORS, (uint8_t*)inodes) != 0) {
         return -1;
     }
 
-    /* Read data blocks */
+    /* Read allocated data blocks (8 sectors each) */
     for (int i = 0; i < NUM_BLOCKS; i++) {
         if (bitmap_test(sb.block_bitmap, i)) {
-            if (ata_read_sectors(DISK_SECTOR_DATA + i, 1, data_blocks[i]) != 0) {
+            uint32_t lba = DISK_SECTOR_DATA + (uint32_t)i * SECTORS_PER_BLOCK;
+            if (ata_read_sectors(lba, SECTORS_PER_BLOCK, BLOCK_PTR(i)) != 0) {
                 return -1;
             }
         }
@@ -377,7 +452,7 @@ int fs_load(void) {
         if (!bitmap_test(sb.inode_bitmap, i))
             continue;
         inode_t* node = &inodes[i];
-        if (node->type > INODE_SYMLINK) {
+        if (node->type > INODE_CHARDEV) {
             return -1;
         }
         if (node->num_blocks > DIRECT_BLOCKS) {
@@ -400,6 +475,7 @@ int fs_load(void) {
         sb.cwd_inode = ROOT_INODE;
     }
 
+    memset(dirty_bitmap, 0, sizeof(dirty_bitmap));
     fs_dirty = 0;
     return 0;
 }
@@ -407,19 +483,36 @@ int fs_load(void) {
 /* ---- public API ---- */
 
 void fs_initialize(void) {
+    /* Allocate data blocks memory (32MB) */
+    if (!data_blocks) {
+        data_blocks = (uint8_t *)malloc((size_t)NUM_BLOCKS * BLOCK_SIZE);
+        if (!data_blocks) {
+            printf("[FS] FATAL: cannot allocate %u MB for data blocks\n",
+                   (NUM_BLOCKS * BLOCK_SIZE) / (1024 * 1024));
+            return;
+        }
+    }
+    memset(data_blocks, 0, (size_t)NUM_BLOCKS * BLOCK_SIZE);
+    memset(dirty_bitmap, 0, sizeof(dirty_bitmap));
+
     /* Try to load from disk first */
     if (ata_is_available() && fs_load() == 0) {
+        printf("[FS] Loaded v%u filesystem: %u inodes, %u blocks (%u KB each)\n",
+               sb.version, sb.num_inodes, sb.num_blocks, BLOCK_SIZE / 1024);
         return;
     }
 
     /* Otherwise initialize new filesystem in memory */
     memset(&sb, 0, sizeof(sb));
     memset(inodes, 0, sizeof(inodes));
-    memset(data_blocks, 0, sizeof(data_blocks));
+    memset(data_blocks, 0, (size_t)NUM_BLOCKS * BLOCK_SIZE);
+    memset(dirty_bitmap, 0, sizeof(dirty_bitmap));
 
     sb.magic = FS_MAGIC;
+    sb.version = FS_VERSION;
     sb.num_inodes = NUM_INODES;
     sb.num_blocks = NUM_BLOCKS;
+    sb.block_size = BLOCK_SIZE;
 
     /* allocate root inode */
     bitmap_set(sb.inode_bitmap, ROOT_INODE);
@@ -433,10 +526,27 @@ void fs_initialize(void) {
     /* create default directory hierarchy */
     fs_create_file("/home", 1);
     fs_create_file("/home/root", 1);
+    fs_create_file("/bin", 1);
+    fs_create_file("/usr", 1);
+    fs_create_file("/usr/bin", 1);
+    fs_create_file("/dev", 1);
+    fs_create_file("/etc", 1);
+    fs_create_file("/tmp", 1);
+
+    /* create device nodes */
+    fs_create_device("/dev/null", DEV_MAJOR_NULL, 0);
+    fs_create_device("/dev/zero", DEV_MAJOR_ZERO, 0);
+    fs_create_device("/dev/tty", DEV_MAJOR_TTY, 0);
+    fs_create_device("/dev/urandom", DEV_MAJOR_URANDOM, 0);
+
     fs_change_directory("/home/root");
 
+    printf("[FS] Formatted new v%u filesystem: %u inodes, %u blocks (%u KB each) = %u MB\n",
+           FS_VERSION, NUM_INODES, NUM_BLOCKS, BLOCK_SIZE / 1024,
+           (NUM_BLOCKS * (BLOCK_SIZE / 1024)) / 1024);
+
     fs_dirty = 1;
-    
+
     /* Auto-sync if disk available */
     if (ata_is_available()) {
         fs_sync();
@@ -494,6 +604,46 @@ int fs_create_file(const char* filename, uint8_t is_directory) {
     return 0;
 }
 
+int fs_create_device(const char* path, uint8_t major, uint8_t minor) {
+    uint32_t parent;
+    char name[MAX_NAME_LEN];
+
+    resolve_path(path, &parent, name);
+    if (name[0] == '\0') return -1;
+
+    /* check if already exists */
+    if (dir_lookup(parent, name) >= 0) return -1;
+
+    int idx = alloc_inode();
+    if (idx < 0) return -1;
+
+    inodes[idx].type = INODE_CHARDEV;
+    inodes[idx].mode = 0666;
+    inodes[idx].size = 0;
+    inodes[idx].num_blocks = 0;
+    inodes[idx].indirect_block = 0;
+    inodes[idx].blocks[0] = major;  /* major device number */
+    inodes[idx].blocks[1] = minor;  /* minor device number */
+    inodes[idx].owner_uid = 0;
+    inodes[idx].owner_gid = 0;
+
+    uint32_t now = rtc_get_epoch();
+    inodes[idx].created_at = now;
+    inodes[idx].modified_at = now;
+    inodes[idx].accessed_at = now;
+
+    if (dir_add_entry(parent, name, idx) < 0) {
+        free_inode(idx);
+        return -1;
+    }
+
+    fs_dirty = 1;
+    if (ata_is_available()) {
+        fs_sync();
+    }
+    return 0;
+}
+
 int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
     uint32_t parent;
     char name[MAX_NAME_LEN];
@@ -501,6 +651,12 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
 
     if (inode_idx < 0) return -1;
     inode_t* inode = &inodes[inode_idx];
+
+    /* Handle device nodes */
+    if (inode->type == INODE_CHARDEV) {
+        return dev_write(inode, data, size);
+    }
+
     if (inode->type != INODE_FILE) return -1;
     if (size > MAX_FILE_SIZE) return -1;
     if (!check_permission(inode, PERM_W)) return -1;
@@ -511,7 +667,7 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
 
     /* free old indirect blocks */
     if (inode->indirect_block != 0) {
-        uint32_t* ptrs = (uint32_t*)data_blocks[inode->indirect_block];
+        uint32_t* ptrs = (uint32_t*)BLOCK_PTR(inode->indirect_block);
         for (size_t i = 0; i < INDIRECT_PTRS; i++) {
             if (ptrs[i] != 0)
                 free_block(ptrs[i]);
@@ -534,7 +690,7 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
         inode->blocks[inode->num_blocks++] = blk;
 
         size_t chunk = remaining > BLOCK_SIZE ? BLOCK_SIZE : remaining;
-        memcpy(data_blocks[blk], data + offset, chunk);
+        memcpy(BLOCK_PTR(blk), data + offset, chunk);
         offset += chunk;
         remaining -= chunk;
     }
@@ -544,7 +700,7 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
         int ind_blk = alloc_block();
         if (ind_blk < 0) return -1;
         inode->indirect_block = ind_blk;
-        uint32_t* ptrs = (uint32_t*)data_blocks[ind_blk];
+        uint32_t* ptrs = (uint32_t*)BLOCK_PTR(ind_blk);
         memset(ptrs, 0, BLOCK_SIZE);
 
         size_t ind_idx = 0;
@@ -554,7 +710,7 @@ int fs_write_file(const char* filename, const uint8_t* data, size_t size) {
             ptrs[ind_idx++] = blk;
 
             size_t chunk = remaining > BLOCK_SIZE ? BLOCK_SIZE : remaining;
-            memcpy(data_blocks[blk], data + offset, chunk);
+            memcpy(BLOCK_PTR(blk), data + offset, chunk);
             offset += chunk;
             remaining -= chunk;
         }
@@ -584,11 +740,17 @@ int fs_read_file(const char* filename, uint8_t* buffer, size_t* size) {
 
     /* Follow symlinks */
     if (inode->type == INODE_SYMLINK) {
-        char target[BLOCK_SIZE];
+        char target[256];
         if (inode->num_blocks == 0) return -1;
-        memcpy(target, data_blocks[inode->blocks[0]], inode->size);
-        target[inode->size] = '\0';
+        size_t tlen = inode->size < 255 ? inode->size : 255;
+        memcpy(target, BLOCK_PTR(inode->blocks[0]), tlen);
+        target[tlen] = '\0';
         return fs_read_file(target, buffer, size);
+    }
+
+    /* Handle device nodes */
+    if (inode->type == INODE_CHARDEV) {
+        return dev_read(inode, buffer, size);
     }
 
     if (inode->type != INODE_FILE) return -1;
@@ -600,18 +762,18 @@ int fs_read_file(const char* filename, uint8_t* buffer, size_t* size) {
     /* Read direct blocks */
     for (uint8_t b = 0; b < inode->num_blocks && remaining > 0; b++) {
         size_t chunk = remaining > BLOCK_SIZE ? BLOCK_SIZE : remaining;
-        memcpy(buffer + offset, data_blocks[inode->blocks[b]], chunk);
+        memcpy(buffer + offset, BLOCK_PTR(inode->blocks[b]), chunk);
         offset += chunk;
         remaining -= chunk;
     }
 
     /* Read indirect blocks */
     if (remaining > 0 && inode->indirect_block != 0) {
-        uint32_t* ptrs = (uint32_t*)data_blocks[inode->indirect_block];
+        uint32_t* ptrs = (uint32_t*)BLOCK_PTR(inode->indirect_block);
         for (size_t i = 0; i < INDIRECT_PTRS && remaining > 0; i++) {
             if (ptrs[i] == 0) break;
             size_t chunk = remaining > BLOCK_SIZE ? BLOCK_SIZE : remaining;
-            memcpy(buffer + offset, data_blocks[ptrs[i]], chunk);
+            memcpy(buffer + offset, BLOCK_PTR(ptrs[i]), chunk);
             offset += chunk;
             remaining -= chunk;
         }
@@ -640,7 +802,7 @@ int fs_delete_file(const char* filename) {
     /* if directory, check it's empty (only . and ..) */
     if (inode->type == INODE_DIR) {
         for (uint8_t b = 0; b < inode->num_blocks; b++) {
-            dir_entry_t* entries = (dir_entry_t*)data_blocks[inode->blocks[b]];
+            dir_entry_t* entries = (dir_entry_t*)BLOCK_PTR(inode->blocks[b]);
             int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
             for (int e = 0; e < entries_per_block; e++) {
                 if (entries[e].name[0] != '\0' &&
@@ -652,30 +814,33 @@ int fs_delete_file(const char* filename) {
         }
     }
 
-    /* free direct data blocks */
-    for (uint8_t b = 0; b < inode->num_blocks; b++)
-        free_block(inode->blocks[b]);
+    /* Device nodes have no data blocks to free */
+    if (inode->type != INODE_CHARDEV) {
+        /* free direct data blocks */
+        for (uint8_t b = 0; b < inode->num_blocks; b++)
+            free_block(inode->blocks[b]);
 
-    /* free indirect blocks */
-    if (inode->indirect_block != 0) {
-        uint32_t* ptrs = (uint32_t*)data_blocks[inode->indirect_block];
-        for (size_t i = 0; i < INDIRECT_PTRS; i++) {
-            if (ptrs[i] != 0)
-                free_block(ptrs[i]);
+        /* free indirect blocks */
+        if (inode->indirect_block != 0) {
+            uint32_t* ptrs = (uint32_t*)BLOCK_PTR(inode->indirect_block);
+            for (size_t i = 0; i < INDIRECT_PTRS; i++) {
+                if (ptrs[i] != 0)
+                    free_block(ptrs[i]);
+            }
+            free_block(inode->indirect_block);
         }
-        free_block(inode->indirect_block);
     }
 
     free_inode(inode_idx);
 
     /* remove from parent */
     dir_remove_entry(parent, name);
-    
+
     /* Auto-sync if disk available */
     if (ata_is_available()) {
         fs_sync();
     }
-    
+
     return 0;
 }
 
@@ -685,9 +850,10 @@ static void print_long_entry(const char* name, uint32_t ino) {
     uint16_t m = node->mode;
 
     /* Type character */
-    if (node->type == INODE_DIR)       perm[0] = 'd';
+    if (node->type == INODE_DIR)          perm[0] = 'd';
     else if (node->type == INODE_SYMLINK) perm[0] = 'l';
-    else                                perm[0] = '-';
+    else if (node->type == INODE_CHARDEV) perm[0] = 'c';
+    else                                  perm[0] = '-';
 
     /* Owner */
     perm[1] = (m & 0400) ? 'r' : '-';
@@ -710,13 +876,21 @@ static void print_long_entry(const char* name, uint32_t ino) {
 
     char timebuf[16];
     rtc_format_epoch(node->modified_at, timebuf, sizeof(timebuf));
-    printf("%s  %s  %5d  %s  %s", perm, owner, (int)node->size, timebuf, name);
+
+    if (node->type == INODE_CHARDEV) {
+        printf("%s  %s  %u, %u  %s  %s",
+               perm, owner,
+               (unsigned)node->blocks[0], (unsigned)node->blocks[1],
+               timebuf, name);
+    } else {
+        printf("%s  %s  %5d  %s  %s", perm, owner, (int)node->size, timebuf, name);
+    }
 
     /* Print symlink target */
     if (node->type == INODE_SYMLINK && node->num_blocks > 0) {
-        char target[BLOCK_SIZE];
-        size_t tlen = node->size < BLOCK_SIZE ? node->size : BLOCK_SIZE - 1;
-        memcpy(target, data_blocks[node->blocks[0]], tlen);
+        char target[256];
+        size_t tlen = node->size < 255 ? node->size : 255;
+        memcpy(target, BLOCK_PTR(node->blocks[0]), tlen);
         target[tlen] = '\0';
         printf(" -> %s", target);
     }
@@ -731,7 +905,7 @@ void fs_list_directory(int flags) {
     int col = 0;
 
     for (uint8_t b = 0; b < dir->num_blocks; b++) {
-        dir_entry_t* entries = (dir_entry_t*)data_blocks[dir->blocks[b]];
+        dir_entry_t* entries = (dir_entry_t*)BLOCK_PTR(dir->blocks[b]);
         int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
         for (int e = 0; e < entries_per_block; e++) {
             if (entries[e].name[0] == '\0') continue;
@@ -756,7 +930,7 @@ int fs_enumerate_directory(fs_dir_entry_info_t *out, int max, int show_dot) {
     int count = 0;
 
     for (uint8_t b = 0; b < dir->num_blocks && count < max; b++) {
-        dir_entry_t* entries = (dir_entry_t*)data_blocks[dir->blocks[b]];
+        dir_entry_t* entries = (dir_entry_t*)BLOCK_PTR(dir->blocks[b]);
         int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
         for (int e = 0; e < entries_per_block && count < max; e++) {
             if (entries[e].name[0] == '\0') continue;
@@ -830,7 +1004,7 @@ const char* fs_get_cwd(void) {
         inode_t* pdir = &inodes[parent_inode];
         int found = 0;
         for (uint8_t b = 0; b < pdir->num_blocks && !found; b++) {
-            dir_entry_t* entries = (dir_entry_t*)data_blocks[pdir->blocks[b]];
+            dir_entry_t* entries = (dir_entry_t*)BLOCK_PTR(pdir->blocks[b]);
             int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
             for (int e = 0; e < entries_per_block; e++) {
                 if (entries[e].inode == cur && entries[e].name[0] != '\0' &&
@@ -927,7 +1101,7 @@ int fs_create_symlink(const char* target, const char* linkname) {
         return -1;
     }
 
-    memcpy(data_blocks[blk], target, tlen);
+    memcpy(BLOCK_PTR(blk), target, tlen);
     inodes[idx].blocks[0] = blk;
     inodes[idx].num_blocks = 1;
     inodes[idx].size = tlen;
@@ -956,7 +1130,7 @@ int fs_readlink(const char* path, char* buf, size_t bufsize) {
     size_t tlen = node->size;
     if (tlen >= bufsize) tlen = bufsize - 1;
 
-    memcpy(buf, data_blocks[node->blocks[0]], tlen);
+    memcpy(buf, BLOCK_PTR(node->blocks[0]), tlen);
     buf[tlen] = '\0';
     return 0;
 }
@@ -972,12 +1146,13 @@ int fs_rename(const char* old_name, const char* new_name) {
     /* Find and rename the directory entry in-place */
     inode_t *dir = &inodes[sb.cwd_inode];
     for (uint8_t b = 0; b < dir->num_blocks; b++) {
-        dir_entry_t *entries = (dir_entry_t *)data_blocks[dir->blocks[b]];
+        dir_entry_t *entries = (dir_entry_t *)BLOCK_PTR(dir->blocks[b]);
         int entries_per_block = BLOCK_SIZE / sizeof(dir_entry_t);
         for (int e = 0; e < entries_per_block; e++) {
             if (entries[e].name[0] != '\0' &&
                 local_strncmp(entries[e].name, old_name, MAX_NAME_LEN) == 0) {
                 local_strncpy(entries[e].name, new_name, MAX_NAME_LEN);
+                mark_dirty(dir->blocks[b]);
                 fs_dirty = 1;
                 if (ata_is_available()) fs_sync();
                 return 0;
@@ -985,6 +1160,94 @@ int fs_rename(const char* old_name, const char* new_name) {
         }
     }
     return -1;
+}
+
+/* ---- initrd mounting ---- */
+
+int fs_mount_initrd(const uint8_t* data, uint32_t size) {
+    if (!data || size < 512) return -1;
+
+    /* Parse tar headers and materialize files into the real FS */
+    const uint8_t* ptr = data;
+    const uint8_t* end = data + size;
+    int files_loaded = 0;
+
+    while (ptr + 512 <= end) {
+        /* Check for end-of-archive (two zero blocks) */
+        int all_zero = 1;
+        for (int i = 0; i < 512; i++) {
+            if (ptr[i] != 0) { all_zero = 0; break; }
+        }
+        if (all_zero) break;
+
+        /* Parse tar header */
+        char name[100];
+        memcpy(name, ptr, 100);
+        name[99] = '\0';
+
+        /* Parse octal size field (offset 124, 12 bytes) */
+        uint32_t fsize = 0;
+        for (int i = 0; i < 11; i++) {
+            char c = (char)ptr[124 + i];
+            if (c >= '0' && c <= '7')
+                fsize = fsize * 8 + (uint32_t)(c - '0');
+        }
+
+        /* File type: offset 156 */
+        char typeflag = (char)ptr[156];
+
+        /* Skip past header */
+        ptr += 512;
+
+        /* Strip leading ./ if present */
+        char *fname = name;
+        if (fname[0] == '.' && fname[1] == '/') fname += 2;
+        if (fname[0] == '\0') {
+            /* Skip data blocks */
+            ptr += ((fsize + 511) / 512) * 512;
+            continue;
+        }
+
+        /* Remove trailing slash for directories */
+        size_t nlen = strlen(fname);
+        if (nlen > 0 && fname[nlen - 1] == '/') fname[nlen - 1] = '\0';
+
+        /* Build absolute path */
+        char abspath[256];
+        abspath[0] = '/';
+        abspath[1] = '\0';
+        local_strcat(abspath, fname);
+
+        if (typeflag == '5' || typeflag == '\0' && fsize == 0 && nlen > 0 && name[nlen - 1] == '/') {
+            /* Directory — create if doesn't exist */
+            uint32_t parent;
+            char dname[MAX_NAME_LEN];
+            int existing = resolve_path(abspath, &parent, dname);
+            if (existing < 0) {
+                fs_create_file(abspath, 1);
+            }
+        } else if (typeflag == '0' || typeflag == '\0') {
+            /* Regular file */
+            uint32_t parent;
+            char dname[MAX_NAME_LEN];
+            int existing = resolve_path(abspath, &parent, dname);
+            if (existing < 0 && fsize <= MAX_FILE_SIZE) {
+                /* Create and write file */
+                if (fs_create_file(abspath, 0) == 0) {
+                    if (fsize > 0 && ptr + fsize <= end) {
+                        fs_write_file(abspath, ptr, fsize);
+                    }
+                    files_loaded++;
+                }
+            }
+        }
+
+        /* Advance past data blocks (512-byte aligned) */
+        ptr += ((fsize + 511) / 512) * 512;
+    }
+
+    printf("[INITRD] Loaded %d files from initrd\n", files_loaded);
+    return files_loaded;
 }
 
 void fs_get_io_stats(uint32_t *rd_ops, uint32_t *rd_bytes, uint32_t *wr_ops, uint32_t *wr_bytes) {
