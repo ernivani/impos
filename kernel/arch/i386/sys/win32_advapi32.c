@@ -1,5 +1,6 @@
 #include <kernel/win32_types.h>
 #include <kernel/crypto.h>
+#include <kernel/user.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -580,14 +581,30 @@ static BOOL WINAPI shim_GetTokenInformation(HANDLE tok, DWORD cls, LPVOID info,
 }
 
 static BOOL WINAPI shim_GetUserNameA(LPSTR buf, LPDWORD size) {
-    const char *name = "user";
-    DWORD needed = strlen(name) + 1;
+    const char *name = user_get_current();
+    if (!name) name = "user";
+    DWORD needed = (DWORD)strlen(name) + 1;
     if (!size) return FALSE;
     if (!buf || *size < needed) {
         *size = needed;
         return FALSE;
     }
     strcpy(buf, name);
+    *size = needed;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_GetUserNameW(LPWSTR buf, LPDWORD size) {
+    const char *name = user_get_current();
+    if (!name) name = "user";
+    DWORD needed = (DWORD)strlen(name) + 1;
+    if (!size) return FALSE;
+    if (!buf || *size < needed) {
+        *size = needed;
+        return FALSE;
+    }
+    for (DWORD i = 0; i < needed; i++)
+        buf[i] = (WCHAR)(unsigned char)name[i];
     *size = needed;
     return TRUE;
 }
@@ -644,6 +661,7 @@ static const win32_export_entry_t advapi32_exports[] = {
     { "CryptReleaseContext",      (void *)shim_CryptReleaseContext },
     { "GetTokenInformation",      (void *)shim_GetTokenInformation },
     { "GetUserNameA",             (void *)shim_GetUserNameA },
+    { "GetUserNameW",             (void *)shim_GetUserNameW },
     { "OpenProcessToken",         (void *)shim_OpenProcessToken },
     { "RegCloseKey",              (void *)shim_RegCloseKey },
     { "RegCreateKeyExA",          (void *)shim_RegCreateKeyExA },
