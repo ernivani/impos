@@ -5,6 +5,7 @@
 #include <kernel/sched.h>
 #include <kernel/syscall.h>
 #include <kernel/signal.h>
+#include <kernel/win32_seh.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -28,7 +29,7 @@ typedef struct {
     uint32_t base;
 } __attribute__((packed)) gdt_ptr_t;
 
-static gdt_entry_t gdt_entries[6];
+static gdt_entry_t gdt_entries[7];
 static gdt_ptr_t gdt_ptr;
 
 /* ========== TSS ========== */
@@ -82,6 +83,9 @@ static void gdt_install(void) {
     uint32_t tss_limit = sizeof(tss) - 1;
     gdt_set_entry(5, tss_base, tss_limit, 0x89, 0x00);
 
+    /* GDT entry 6: FS segment for per-thread TEB (DPL=3, base=0 initially) */
+    gdt_set_entry(6, 0, 4095, 0xF2, 0x00);  /* data, DPL=3, present, r/w */
+
     gdt_ptr.limit = sizeof(gdt_entries) - 1;
     gdt_ptr.base  = (uint32_t)&gdt_entries;
 
@@ -101,6 +105,19 @@ static void gdt_install(void) {
 
     /* Load TSS register */
     __asm__ volatile ("ltr %%ax" : : "a"(0x28));
+}
+
+/* Update GDT entry 6 base for per-thread FS segment and reload FS */
+void gdt_set_fs_base(uint32_t base) {
+    gdt_entries[6].base_low  = base & 0xFFFF;
+    gdt_entries[6].base_mid  = (base >> 16) & 0xFF;
+    gdt_entries[6].base_high = (base >> 24) & 0xFF;
+    /* Selector 0x33 = index 6, TI=0 (GDT), RPL=3 */
+    __asm__ volatile (
+        "mov $0x33, %%ax\n\t"
+        "mov %%ax, %%fs\n\t"
+        : : : "ax"
+    );
 }
 
 /* ========== IDT ========== */
@@ -345,6 +362,12 @@ registers_t* isr_handler(registers_t* regs) {
                               (err & 4) ? "user" : "kernel",
                               (err & 8) ? " reserved-bit" : "",
                               (err & 16) ? " instruction-fetch" : "");
+            }
+
+            /* PE task with TEB: try SEH dispatch first */
+            if (t && t->is_pe && t->tib) {
+                if (seh_dispatch_exception(t, regs, int_no))
+                    return regs;  /* SEH handler handled it */
             }
 
             /* Check if this task is recoverable */

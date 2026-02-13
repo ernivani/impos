@@ -1,4 +1,7 @@
 #include <kernel/win32_types.h>
+#include <kernel/win32_seh.h>
+#include <kernel/task.h>
+#include <kernel/io.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -362,6 +365,133 @@ static WCHAR shim_towlower(WCHAR c) {
     return c;
 }
 
+/* ── Security Cookie ─────────────────────────────────────────── */
+
+/* Global security cookie — MSVC's /GS buffer overrun protection.
+ * Must be a well-known value that the compiler checks at function epilogue. */
+DWORD __security_cookie = 0xBB40E64E;
+
+static void shim___security_init_cookie(void) {
+    /* In a real OS, randomize the cookie. For now, keep the default. */
+}
+
+static void shim___report_gsfailure(void) {
+    serial_printf("[msvcrt] __report_gsfailure: buffer overrun detected!\n");
+    printf("[msvcrt] buffer overrun detected — killing task\n");
+    extern void task_exit(void);
+    task_exit();
+}
+
+/* shim___security_cookie_ptr removed — __security_cookie exported directly */
+
+/* ── SEH Frame Handlers ─────────────────────────────────────── */
+
+/* MSVC scope table entry for _except_handler3 */
+typedef struct {
+    int32_t  enclosing_level;   /* -1 = outermost */
+    void    *filter;            /* __except filter function, or NULL for __finally */
+    void    *handler;           /* __except/__finally body */
+} seh_scope_table_entry_t;
+
+/* _except_handler3 — SEH frame walker for MSVC-compiled code.
+ * Called by the OS for each frame during exception dispatch.
+ * Walks the scope table to find matching __except filters. */
+static EXCEPTION_DISPOSITION shim__except_handler3(
+    EXCEPTION_RECORD *er, void *frame,
+    CONTEXT *ctx, void *dispatcher_ctx)
+{
+    (void)ctx;
+    (void)dispatcher_ctx;
+
+    /* If unwinding, just return */
+    if (er->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND))
+        return ExceptionContinueSearch;
+
+    /* The frame layout for MSVC is:
+     * frame[-1] = trylevel (current scope depth)
+     * frame[+0] = Next pointer
+     * frame[+4] = Handler (_except_handler3)
+     * frame[+8] = scope table pointer
+     * frame[+12] = trylevel
+     * We approximate by reading fields relative to the frame pointer. */
+
+    /* Get scope table and trylevel from the registration frame.
+     * In MSVC's calling convention for _except_handler3:
+     *   [frame + 8] = scope_table pointer
+     *   [frame + 12] = trylevel */
+    uint32_t *fp = (uint32_t *)frame;
+    seh_scope_table_entry_t *scope_table = (seh_scope_table_entry_t *)fp[2];
+    int32_t trylevel = (int32_t)fp[3];
+
+    if (!scope_table)
+        return ExceptionContinueSearch;
+
+    /* Walk scope table from current trylevel up to outermost */
+    while (trylevel >= 0) {
+        seh_scope_table_entry_t *entry = &scope_table[trylevel];
+
+        if (entry->filter) {
+            /* Call the filter.
+             * Filter signature: int filter(EXCEPTION_POINTERS *ep)
+             * Returns: EXCEPTION_EXECUTE_HANDLER, CONTINUE_SEARCH, or CONTINUE_EXECUTION */
+            typedef int (*filter_fn_t)(void);
+            /* In real MSVC code, the filter has access to the exception pointers
+             * through __exception_info() / GetExceptionInformation().
+             * For now, just call the filter. */
+            filter_fn_t filter = (filter_fn_t)entry->filter;
+            int result = filter();
+
+            if (result == EXCEPTION_EXECUTE_HANDLER) {
+                /* Found a handler — execute it */
+                serial_printf("[SEH] _except_handler3: executing handler at level %d\n",
+                              trylevel);
+                return ExceptionContinueSearch; /* Let the OS call us back during unwind */
+            } else if (result == EXCEPTION_CONTINUE_EXECUTION) {
+                return ExceptionContinueExecution;
+            }
+            /* EXCEPTION_CONTINUE_SEARCH: try enclosing level */
+        }
+
+        trylevel = entry->enclosing_level;
+    }
+
+    return ExceptionContinueSearch;
+}
+
+/* _except_handler4 — enhanced version (with security cookie XOR).
+ * For now, forwards to handler3. */
+static EXCEPTION_DISPOSITION shim__except_handler4(
+    EXCEPTION_RECORD *er, void *frame,
+    CONTEXT *ctx, void *dispatcher_ctx)
+{
+    return shim__except_handler3(er, frame, ctx, dispatcher_ctx);
+}
+
+/* __CxxFrameHandler3 — C++ exception handler (try/catch via SEH).
+ * Full implementation requires catchable type matching; stub for now. */
+static EXCEPTION_DISPOSITION shim___CxxFrameHandler3(
+    EXCEPTION_RECORD *er, void *frame,
+    CONTEXT *ctx, void *dispatcher_ctx)
+{
+    (void)frame; (void)ctx; (void)dispatcher_ctx;
+
+    if (er->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND))
+        return ExceptionContinueSearch;
+
+    serial_printf("[SEH] __CxxFrameHandler3: C++ exception code=0x%x\n",
+                  er->ExceptionCode);
+    return ExceptionContinueSearch;
+}
+
+/* _CxxThrowException — throw a C++ exception (maps to RaiseException) */
+static void shim__CxxThrowException(void *object, void *throw_info) {
+    DWORD args[3];
+    args[0] = 0x19930520;         /* MSVC magic number */
+    args[1] = (DWORD)object;
+    args[2] = (DWORD)throw_info;
+    seh_RaiseException(EXCEPTION_MSVC_CPP, EXCEPTION_NONCONTINUABLE, 3, args);
+}
+
 /* ── Export Table ─────────────────────────────────────────────── */
 
 static const win32_export_entry_t msvcrt_exports[] = {
@@ -453,6 +583,18 @@ static const win32_export_entry_t msvcrt_exports[] = {
 
     /* Delay-load */
     { "__delayLoadHelper2", (void *)shim___delayLoadHelper2 },
+
+    /* Security cookie */
+    { "__security_cookie",      (void *)&__security_cookie },
+    { "__security_init_cookie", (void *)shim___security_init_cookie },
+    { "__report_gsfailure",     (void *)shim___report_gsfailure },
+    { "@__security_check_cookie@4", (void *)shim___security_init_cookie }, /* stdcall alias — no-op check */
+
+    /* SEH / C++ exception handlers */
+    { "_except_handler3",       (void *)shim__except_handler3 },
+    { "_except_handler4",       (void *)shim__except_handler4 },
+    { "__CxxFrameHandler3",     (void *)shim___CxxFrameHandler3 },
+    { "_CxxThrowException",     (void *)shim__CxxThrowException },
 
     /* Wide string functions */
     { "wcslen",         (void *)shim_wcslen },

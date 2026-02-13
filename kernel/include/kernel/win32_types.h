@@ -534,6 +534,117 @@ typedef struct {
 int win32_utf8_to_wchar(const char *utf8, int utf8_len, WCHAR *out, int out_len);
 int win32_wchar_to_utf8(const WCHAR *wstr, int wstr_len, char *out, int out_len);
 
+/* ── Structured Exception Handling ────────────────────────────── */
+
+/* Exception codes */
+#define EXCEPTION_ACCESS_VIOLATION          0xC0000005
+#define EXCEPTION_ARRAY_BOUNDS_EXCEEDED     0xC000008C
+#define EXCEPTION_BREAKPOINT                0x80000003
+#define EXCEPTION_DATATYPE_MISALIGNMENT     0x80000002
+#define EXCEPTION_FLT_DIVIDE_BY_ZERO        0xC000008E
+#define EXCEPTION_FLT_OVERFLOW              0xC0000091
+#define EXCEPTION_ILLEGAL_INSTRUCTION       0xC000001D
+#define EXCEPTION_INT_DIVIDE_BY_ZERO        0xC0000094
+#define EXCEPTION_INT_OVERFLOW              0xC0000095
+#define EXCEPTION_NONCONTINUABLE_EXCEPTION  0xC0000025
+#define EXCEPTION_PRIV_INSTRUCTION          0xC0000096
+#define EXCEPTION_SINGLE_STEP              0x80000004
+#define EXCEPTION_STACK_OVERFLOW            0xC00000FD
+#define STATUS_UNWIND                       0xC0000027
+
+/* C++ exception code (MSVC magic) */
+#define EXCEPTION_MSVC_CPP                  0xE06D7363
+
+/* Exception flags */
+#define EXCEPTION_NONCONTINUABLE    0x01
+#define EXCEPTION_UNWINDING         0x02
+#define EXCEPTION_EXIT_UNWIND       0x04
+
+/* Exception filter return values */
+#define EXCEPTION_EXECUTE_HANDLER     1
+#define EXCEPTION_CONTINUE_SEARCH     0
+#define EXCEPTION_CONTINUE_EXECUTION (-1)
+
+#define EXCEPTION_MAXIMUM_PARAMETERS 15
+
+/* SEH chain end sentinel */
+#define SEH_CHAIN_END  0xFFFFFFFF
+
+/* Exception disposition (return from handler) */
+typedef enum {
+    ExceptionContinueExecution = 0,
+    ExceptionContinueSearch    = 1,
+    ExceptionNestedException   = 2,
+    ExceptionCollidedUnwind    = 3
+} EXCEPTION_DISPOSITION;
+
+/* EXCEPTION_RECORD — describes the exception */
+typedef struct _EXCEPTION_RECORD {
+    DWORD ExceptionCode;
+    DWORD ExceptionFlags;
+    struct _EXCEPTION_RECORD *ExceptionRecord;
+    PVOID ExceptionAddress;
+    DWORD NumberParameters;
+    DWORD ExceptionInformation[EXCEPTION_MAXIMUM_PARAMETERS];
+} EXCEPTION_RECORD, *PEXCEPTION_RECORD;
+
+/* CONTEXT — i386 register state */
+#define CONTEXT_i386               0x00010000
+#define CONTEXT_CONTROL            (CONTEXT_i386 | 0x01)
+#define CONTEXT_INTEGER            (CONTEXT_i386 | 0x02)
+#define CONTEXT_SEGMENTS           (CONTEXT_i386 | 0x04)
+#define CONTEXT_FULL               (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS)
+
+typedef struct {
+    DWORD ContextFlags;
+    /* Debug registers (DR0-DR3, DR6, DR7) */
+    DWORD Dr0, Dr1, Dr2, Dr3, Dr6, Dr7;
+    /* Floating point (stub — no FPU state for now) */
+    BYTE  FloatSave[112];
+    /* Segment registers */
+    DWORD SegGs, SegFs, SegEs, SegDs;
+    /* Integer registers (from PUSHA order) */
+    DWORD Edi, Esi, Ebx, Edx, Ecx, Eax;
+    /* Control registers */
+    DWORD Ebp, Eip, SegCs, EFlags, Esp, SegSs;
+} CONTEXT, *PCONTEXT, *LPCONTEXT;
+
+/* EXCEPTION_POINTERS — passed to exception filters */
+typedef struct {
+    PEXCEPTION_RECORD ExceptionRecord;
+    PCONTEXT          ContextRecord;
+} EXCEPTION_POINTERS, *PEXCEPTION_POINTERS, *LPEXCEPTION_POINTERS;
+
+/* Top-level exception filter */
+typedef LONG (*LPTOP_LEVEL_EXCEPTION_FILTER)(EXCEPTION_POINTERS *);
+
+/* SEH registration record (linked list via FS:[0]) */
+typedef struct _EXCEPTION_REGISTRATION_RECORD {
+    struct _EXCEPTION_REGISTRATION_RECORD *Next;
+    PVOID Handler;
+} EXCEPTION_REGISTRATION_RECORD;
+
+/* NT_TIB — Thread Information Block (first part of TEB) */
+typedef struct _NT_TIB {
+    uint32_t ExceptionList;   /* offset 0x00: ptr to EXCEPTION_REGISTRATION_RECORD */
+    uint32_t StackBase;       /* offset 0x04 */
+    uint32_t StackLimit;      /* offset 0x08 */
+    uint32_t SubSystemTib;    /* offset 0x0C */
+    uint32_t FiberData;       /* offset 0x10 */
+    uint32_t ArbitraryUser;   /* offset 0x14 */
+    uint32_t Self;            /* offset 0x18: linear address of this TIB */
+} NT_TIB;
+
+/* WIN32_TEB — Thread Environment Block, padded to 4KB */
+typedef struct {
+    NT_TIB   tib;             /* offset 0x00 */
+    uint32_t EnvironmentPtr;  /* offset 0x1C */
+    uint32_t ClientId[2];     /* offset 0x20: ProcessId, ThreadId */
+    uint32_t Reserved1[2];    /* offset 0x28 */
+    uint32_t LastError;       /* offset 0x30: GetLastError() value */
+    uint8_t  _pad[4096 - 0x34];
+} __attribute__((packed)) WIN32_TEB;
+
 /* ── Win32 shim DLL lookup ───────────────────────────────────── */
 typedef struct {
     const char *name;
