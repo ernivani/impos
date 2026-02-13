@@ -4,3 +4,5 @@ isodir
 sysroot 
 
 *.log
+
+*.exe

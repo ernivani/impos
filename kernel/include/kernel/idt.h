@@ -31,4 +31,7 @@ extern volatile int cpu_halting;
 /* TSS: update kernel stack pointer for ring 3→0 transitions */
 void tss_set_esp0(uint32_t esp0);
 
+/* Update GDT entry 6 base for per-thread FS segment (TEB) */
+void gdt_set_fs_base(uint32_t base);
+
 #endif
