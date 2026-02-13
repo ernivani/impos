@@ -94,6 +94,13 @@ int keyboard_get_shift(void) { return shift_pressed; }
 int keyboard_get_ctrl(void)  { return ctrl_pressed; }
 int keyboard_get_alt(void)   { return alt_pressed; }
 
+/* Raw scancode reader for Doom: returns raw PS/2 scancode (including
+   release bit 7 and E0 prefix as 0xE0), or -1 if none available. */
+int keyboard_get_raw_scancode(void) {
+    if (!kbd_available()) return -1;
+    return (int)kbd_pop();
+}
+
 /* -------------------------------------------------------------------
  * Scancode-to-character tables  (PS/2 Scancode Set 1, indices 0x00-0x58)
  * 89 entries each.  Numpad keys (0x47-0x53) are handled separately.
@@ -572,4 +579,5 @@ void keyboard_run_idle(void) { }
 int  keyboard_get_shift(void) { return 0; }
 int  keyboard_get_ctrl(void)  { return 0; }
 int  keyboard_get_alt(void)   { return 0; }
+int  keyboard_get_raw_scancode(void) { return -1; }
 #endif

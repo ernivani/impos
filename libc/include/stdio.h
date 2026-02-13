@@ -63,6 +63,7 @@ void keyboard_run_idle(void);
 int  keyboard_get_shift(void);
 int  keyboard_get_ctrl(void);
 int  keyboard_get_alt(void);
+int  keyboard_get_raw_scancode(void);  /* raw PS/2 scancode or -1 */
 
 /* FILE I/O */
 FILE* fopen(const char* path, const char* mode);
