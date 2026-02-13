@@ -7,6 +7,10 @@
 
 #define EOF (-1)
 
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
 /* Special key codes - using CP437 box-drawing range to avoid
    conflicts with French accented characters (0x80-0x9F range) */
 #define KEY_ESCAPE  27
@@ -72,6 +76,12 @@ int   feof(FILE* f);
 int   ferror(FILE* f);
 int   fputs(const char* s, FILE* f);
 char* fgets(char* s, int size, FILE* f);
+
+/* Seeking */
+int   fseek(FILE* f, long offset, int whence);
+long  ftell(FILE* f);
+void  rewind(FILE* f);
+int   ungetc(int c, FILE* f);
 
 /* Formatted I/O */
 int fprintf(FILE* f, const char* format, ...);

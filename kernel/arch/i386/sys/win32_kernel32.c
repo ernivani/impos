@@ -1406,12 +1406,22 @@ static uint32_t valloc_next = 0x05000000;
 
 /* Convert Win32 protection flags to PTE flags */
 static uint32_t win32_prot_to_pte(DWORD protect) {
+    /* Strip PAGE_GUARD modifier — handled separately */
+    DWORD base_prot = protect & ~0x100; /* ~PAGE_GUARD */
     uint32_t flags = PTE_PRESENT | PTE_USER;
-    if (protect == PAGE_NOACCESS)
-        return PTE_USER;  /* present=0, will fault */
-    if (protect == PAGE_READONLY || protect == PAGE_EXECUTE_READ)
-        return flags;  /* read-only (no PTE_WRITABLE) */
-    return flags | PTE_WRITABLE;  /* PAGE_READWRITE and others */
+    if (base_prot == PAGE_NOACCESS)
+        flags = PTE_USER;  /* present=0, will fault */
+    else if (base_prot == PAGE_READONLY || base_prot == PAGE_EXECUTE_READ)
+        { /* read-only (no PTE_WRITABLE) */ }
+    else
+        flags |= PTE_WRITABLE;  /* PAGE_READWRITE and others */
+
+    /* PAGE_GUARD: remove PRESENT, set PTE_GUARD so page fault handler
+     * can recognize it as a one-shot guard page violation */
+    if (protect & 0x100) {
+        flags = (flags & ~PTE_PRESENT) | PTE_GUARD;
+    }
+    return flags;
 }
 
 static LPVOID WINAPI shim_VirtualAlloc(
@@ -1872,19 +1882,150 @@ int win32_wchar_to_utf8(const WCHAR *wstr, int wstr_len, char *out, int out_len)
     return bi;
 }
 
-static int WINAPI shim_MultiByteToWideChar(
-    UINT cp, DWORD flags, LPCSTR mb, int cbMB, void *wc, int cchWC)
+/* ── Code Page Definitions ────────────────────────────────────── */
+#define CP_ACP    0
+#define CP_OEMCP  1
+#define CP_UTF8   65001
+
+/* CP1252 (Windows-1252) high byte table: bytes 0x80-0xFF → Unicode codepoints */
+static const uint16_t cp1252_to_unicode[128] = {
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,  /* 80-87 */
+    0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,  /* 88-8F */
+    0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,  /* 90-97 */
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,  /* 98-9F */
+    0x00A0, 0x00A1, 0x00A2, 0x00A3, 0x00A4, 0x00A5, 0x00A6, 0x00A7,  /* A0-A7 */
+    0x00A8, 0x00A9, 0x00AA, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,  /* A8-AF */
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7,  /* B0-B7 */
+    0x00B8, 0x00B9, 0x00BA, 0x00BB, 0x00BC, 0x00BD, 0x00BE, 0x00BF,  /* B8-BF */
+    0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x00C7,  /* C0-C7 */
+    0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF,  /* C8-CF */
+    0x00D0, 0x00D1, 0x00D2, 0x00D3, 0x00D4, 0x00D5, 0x00D6, 0x00D7,  /* D0-D7 */
+    0x00D8, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x00DD, 0x00DE, 0x00DF,  /* D8-DF */
+    0x00E0, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x00E7,  /* E0-E7 */
+    0x00E8, 0x00E9, 0x00EA, 0x00EB, 0x00EC, 0x00ED, 0x00EE, 0x00EF,  /* E8-EF */
+    0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7,  /* F0-F7 */
+    0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF,  /* F8-FF */
+};
+
+/* CP437 (DOS/OEM) high byte table: bytes 0x80-0xFF → Unicode codepoints */
+static const uint16_t cp437_to_unicode[128] = {
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7,  /* 80-87 */
+    0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,  /* 88-8F */
+    0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,  /* 90-97 */
+    0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192,  /* 98-9F */
+    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,  /* A0-A7 */
+    0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,  /* A8-AF */
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,  /* B0-B7 */
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,  /* B8-BF */
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,  /* C0-C7 */
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,  /* C8-CF */
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,  /* D0-D7 */
+    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,  /* D8-DF */
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,  /* E0-E7 */
+    0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,  /* E8-EF */
+    0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,  /* F0-F7 */
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,  /* F8-FF */
+};
+
+/* Convert single-byte code page to wide char */
+static int cp_sbcs_to_wchar(const uint16_t *table, const char *mb, int cbMB,
+                             WCHAR *wc, int cchWC)
 {
-    (void)cp; (void)flags;
-    return win32_utf8_to_wchar(mb, cbMB, (WCHAR *)wc, cchWC);
+    const uint8_t *s = (const uint8_t *)mb;
+    int src_len = cbMB;
+    int include_null = 0;
+    if (src_len < 0) {
+        src_len = (int)strlen(mb);
+        include_null = 1;
+    }
+
+    int wi = 0;
+    for (int i = 0; i < src_len; i++) {
+        uint16_t cp;
+        if (s[i] < 0x80)
+            cp = s[i];
+        else
+            cp = table[s[i] - 0x80];
+        if (wc && wi < cchWC) wc[wi] = cp;
+        wi++;
+    }
+    if (include_null) {
+        if (wc && wi < cchWC) wc[wi] = 0;
+        wi++;
+    }
+    return wi;
+}
+
+/* Convert wide char to single-byte code page */
+static int wchar_to_cp_sbcs(const uint16_t *table, const WCHAR *wc, int cchWC,
+                             char *mb, int cbMB, char defCh)
+{
+    int src_len = cchWC;
+    int include_null = 0;
+    if (src_len < 0) {
+        src_len = 0;
+        while (wc[src_len]) src_len++;
+        include_null = 1;
+    }
+
+    int bi = 0;
+    for (int i = 0; i < src_len; i++) {
+        uint16_t ch = wc[i];
+        uint8_t out = (uint8_t)defCh;
+        if (ch < 0x80) {
+            out = (uint8_t)ch;
+        } else {
+            /* Reverse lookup in the table */
+            for (int j = 0; j < 128; j++) {
+                if (table[j] == ch) {
+                    out = (uint8_t)(j + 0x80);
+                    break;
+                }
+            }
+        }
+        if (mb && bi < cbMB) mb[bi] = (char)out;
+        bi++;
+    }
+    if (include_null) {
+        if (mb && bi < cbMB) mb[bi] = '\0';
+        bi++;
+    }
+    return bi;
+}
+
+static int WINAPI shim_MultiByteToWideChar(
+    UINT codepage, DWORD flags, LPCSTR mb, int cbMB, void *wc, int cchWC)
+{
+    (void)flags;
+    /* Resolve CP_ACP and CP_OEMCP */
+    if (codepage == CP_ACP)   codepage = 1252;
+    if (codepage == CP_OEMCP) codepage = 437;
+
+    if (codepage == CP_UTF8 || codepage == 65001)
+        return win32_utf8_to_wchar(mb, cbMB, (WCHAR *)wc, cchWC);
+    if (codepage == 437)
+        return cp_sbcs_to_wchar(cp437_to_unicode, mb, cbMB, (WCHAR *)wc, cchWC);
+    /* Default to CP1252 for all other code pages */
+    return cp_sbcs_to_wchar(cp1252_to_unicode, mb, cbMB, (WCHAR *)wc, cchWC);
 }
 
 static int WINAPI shim_WideCharToMultiByte(
-    UINT cp, DWORD flags, const void *wc, int cchWC,
+    UINT codepage, DWORD flags, const void *wc, int cchWC,
     LPSTR mb, int cbMB, LPCSTR defChar, LPVOID usedDef)
 {
-    (void)cp; (void)flags; (void)defChar; (void)usedDef;
-    return win32_wchar_to_utf8((const WCHAR *)wc, cchWC, mb, cbMB);
+    (void)flags; (void)usedDef;
+    char dc = (defChar && *defChar) ? *defChar : '?';
+
+    /* Resolve CP_ACP and CP_OEMCP */
+    if (codepage == CP_ACP)   codepage = 1252;
+    if (codepage == CP_OEMCP) codepage = 437;
+
+    if (codepage == CP_UTF8 || codepage == 65001)
+        return win32_wchar_to_utf8((const WCHAR *)wc, cchWC, mb, cbMB);
+    if (codepage == 437)
+        return wchar_to_cp_sbcs(cp437_to_unicode, (const WCHAR *)wc, cchWC, mb, cbMB, dc);
+    /* Default to CP1252 */
+    return wchar_to_cp_sbcs(cp1252_to_unicode, (const WCHAR *)wc, cchWC, mb, cbMB, dc);
 }
 
 static BOOL WINAPI shim_QueryPerformanceCounter(void *lpCounter) {
@@ -2600,6 +2741,28 @@ static void WINAPI shim_RtlUnwind(void *target_frame, void *target_ip,
     seh_RtlUnwind(target_frame, target_ip, er, return_value);
 }
 
+/* ── Vectored Exception Handling ─────────────────────────────── */
+
+static PVOID WINAPI shim_AddVectoredExceptionHandler(ULONG first,
+    PVECTORED_EXCEPTION_HANDLER handler)
+{
+    return seh_AddVectoredExceptionHandler(first, handler);
+}
+
+static ULONG WINAPI shim_RemoveVectoredExceptionHandler(PVOID handle) {
+    return seh_RemoveVectoredExceptionHandler(handle);
+}
+
+static PVOID WINAPI shim_AddVectoredContinueHandler(ULONG first,
+    PVECTORED_EXCEPTION_HANDLER handler)
+{
+    return seh_AddVectoredContinueHandler(first, handler);
+}
+
+static ULONG WINAPI shim_RemoveVectoredContinueHandler(PVOID handle) {
+    return seh_RemoveVectoredContinueHandler(handle);
+}
+
 /* ── Phase 13: System Info ────────────────────────────────────── */
 
 typedef struct {
@@ -2854,6 +3017,75 @@ static BOOL WINAPI shim_IsValidCodePage(UINT cp) {
     return (cp == 437 || cp == 1252 || cp == 65001); /* CP437, 1252, UTF-8 */
 }
 
+/* ── CompareStringW / lstrcmpiW ──────────────────────────────── */
+
+#define CSTR_LESS_THAN    1
+#define CSTR_EQUAL        2
+#define CSTR_GREATER_THAN 3
+#define NORM_IGNORECASE   0x00000001
+
+/* Latin-1-aware towlower for comparison */
+static WCHAR cmp_towlower(WCHAR c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    if (c >= 0x00C0 && c <= 0x00D6) return c + 0x20;
+    if (c >= 0x00D8 && c <= 0x00DE) return c + 0x20;
+    return c;
+}
+
+static int WINAPI shim_CompareStringW(LCID Locale, DWORD dwCmpFlags,
+    LPCWSTR lpString1, int cchCount1, LPCWSTR lpString2, int cchCount2)
+{
+    (void)Locale;
+    if (!lpString1 || !lpString2) return 0;
+
+    int len1 = cchCount1;
+    int len2 = cchCount2;
+    if (len1 < 0) { len1 = 0; while (lpString1[len1]) len1++; }
+    if (len2 < 0) { len2 = 0; while (lpString2[len2]) len2++; }
+
+    int minlen = len1 < len2 ? len1 : len2;
+    for (int i = 0; i < minlen; i++) {
+        WCHAR c1 = lpString1[i];
+        WCHAR c2 = lpString2[i];
+        if (dwCmpFlags & NORM_IGNORECASE) {
+            c1 = cmp_towlower(c1);
+            c2 = cmp_towlower(c2);
+        }
+        if (c1 < c2) return CSTR_LESS_THAN;
+        if (c1 > c2) return CSTR_GREATER_THAN;
+    }
+    if (len1 < len2) return CSTR_LESS_THAN;
+    if (len1 > len2) return CSTR_GREATER_THAN;
+    return CSTR_EQUAL;
+}
+
+static int WINAPI shim_CompareStringOrdinal(
+    LPCWSTR lpString1, int cchCount1, LPCWSTR lpString2, int cchCount2,
+    BOOL bIgnoreCase)
+{
+    return shim_CompareStringW(0, bIgnoreCase ? NORM_IGNORECASE : 0,
+                                lpString1, cchCount1, lpString2, cchCount2);
+}
+
+static int WINAPI shim_lstrcmpW(LPCWSTR s1, LPCWSTR s2) {
+    if (!s1 || !s2) return 0;
+    while (*s1 && *s1 == *s2) { s1++; s2++; }
+    return (int)*s1 - (int)*s2;
+}
+
+static int WINAPI shim_lstrcmpiW(LPCWSTR s1, LPCWSTR s2) {
+    if (!s1 || !s2) return 0;
+    while (*s1 && cmp_towlower(*s1) == cmp_towlower(*s2)) { s1++; s2++; }
+    return (int)cmp_towlower(*s1) - (int)cmp_towlower(*s2);
+}
+
+static int WINAPI shim_lstrlenW(LPCWSTR s) {
+    if (!s) return 0;
+    int len = 0;
+    while (s[len]) len++;
+    return len;
+}
+
 /* ── Phase 13: Time ──────────────────────────────────────────── */
 
 typedef struct {
@@ -2942,6 +3174,145 @@ static DWORD WINAPI shim_GetTimeZoneInformation(LPTIME_ZONE_INFORMATION tzi) {
     tzi->StandardName[0] = 'U'; tzi->StandardName[1] = 'T';
     tzi->StandardName[2] = 'C'; tzi->StandardName[3] = 0;
     return TIME_ZONE_ID_UNKNOWN;
+}
+
+/* ── NLS Format Stubs ────────────────────────────────────────── */
+
+static int WINAPI shim_GetDateFormatW(LCID Locale, DWORD dwFlags,
+    const SYSTEMTIME *lpDate, LPCWSTR lpFormat, LPWSTR lpDateStr, int cchDate)
+{
+    (void)Locale; (void)dwFlags; (void)lpFormat;
+    SYSTEMTIME st;
+    if (lpDate) {
+        st = *lpDate;
+    } else {
+        fill_systemtime(&st);
+    }
+    /* Default format: M/d/yyyy */
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%u/%u/%04u",
+             (unsigned)st.wMonth, (unsigned)st.wDay, (unsigned)st.wYear);
+    int len = (int)strlen(buf) + 1;
+    if (cchDate == 0) return len;
+    if (!lpDateStr) return 0;
+    int copy = (len <= cchDate) ? len : cchDate;
+    for (int i = 0; i < copy; i++)
+        lpDateStr[i] = (WCHAR)(unsigned char)buf[i];
+    return copy;
+}
+
+static int WINAPI shim_GetDateFormatA(LCID Locale, DWORD dwFlags,
+    const SYSTEMTIME *lpDate, LPCSTR lpFormat, LPSTR lpDateStr, int cchDate)
+{
+    (void)lpFormat;
+    WCHAR wbuf[64];
+    int len = shim_GetDateFormatW(Locale, dwFlags, lpDate, NULL, wbuf, 64);
+    if (cchDate == 0) return len;
+    if (!lpDateStr) return 0;
+    int copy = (len <= cchDate) ? len : cchDate;
+    for (int i = 0; i < copy; i++)
+        lpDateStr[i] = (char)wbuf[i];
+    return copy;
+}
+
+static int WINAPI shim_GetTimeFormatW(LCID Locale, DWORD dwFlags,
+    const SYSTEMTIME *lpTime, LPCWSTR lpFormat, LPWSTR lpTimeStr, int cchTime)
+{
+    (void)Locale; (void)dwFlags; (void)lpFormat;
+    SYSTEMTIME st;
+    if (lpTime) {
+        st = *lpTime;
+    } else {
+        fill_systemtime(&st);
+    }
+    /* Default format: h:mm:ss tt */
+    int h12 = st.wHour % 12;
+    if (h12 == 0) h12 = 12;
+    const char *ampm = st.wHour >= 12 ? "PM" : "AM";
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%d:%02u:%02u %s",
+             h12, (unsigned)st.wMinute, (unsigned)st.wSecond, ampm);
+    int len = (int)strlen(buf) + 1;
+    if (cchTime == 0) return len;
+    if (!lpTimeStr) return 0;
+    int copy = (len <= cchTime) ? len : cchTime;
+    for (int i = 0; i < copy; i++)
+        lpTimeStr[i] = (WCHAR)(unsigned char)buf[i];
+    return copy;
+}
+
+static int WINAPI shim_GetTimeFormatA(LCID Locale, DWORD dwFlags,
+    const SYSTEMTIME *lpTime, LPCSTR lpFormat, LPSTR lpTimeStr, int cchTime)
+{
+    (void)lpFormat;
+    WCHAR wbuf[64];
+    int len = shim_GetTimeFormatW(Locale, dwFlags, lpTime, NULL, wbuf, 64);
+    if (cchTime == 0) return len;
+    if (!lpTimeStr) return 0;
+    int copy = (len <= cchTime) ? len : cchTime;
+    for (int i = 0; i < copy; i++)
+        lpTimeStr[i] = (char)wbuf[i];
+    return copy;
+}
+
+static int WINAPI shim_GetNumberFormatW(LCID Locale, DWORD dwFlags,
+    LPCWSTR lpValue, const void *lpFormat, LPWSTR lpNumberStr, int cchNumber)
+{
+    (void)Locale; (void)dwFlags; (void)lpFormat;
+    if (!lpValue) return 0;
+    int len = 0;
+    while (lpValue[len]) len++;
+    len++; /* include null */
+    if (cchNumber == 0) return len;
+    if (!lpNumberStr) return 0;
+    int copy = (len <= cchNumber) ? len : cchNumber;
+    for (int i = 0; i < copy; i++)
+        lpNumberStr[i] = lpValue[i];
+    return copy;
+}
+
+static WORD WINAPI shim_GetUserDefaultLangID(void) { return 0x0409; }
+static WORD WINAPI shim_GetSystemDefaultLangID(void) { return 0x0409; }
+
+/* ── Console Code Page ───────────────────────────────────────── */
+
+static UINT console_input_cp = 437;
+static UINT console_output_cp = 437;
+
+static BOOL WINAPI shim_SetConsoleCP(UINT cp) { console_input_cp = cp; return TRUE; }
+static UINT WINAPI shim_GetConsoleCP(void) { return console_input_cp; }
+static BOOL WINAPI shim_SetConsoleOutputCP(UINT cp) { console_output_cp = cp; return TRUE; }
+static UINT WINAPI shim_GetConsoleOutputCP(void) { return console_output_cp; }
+
+static BOOL WINAPI shim_WriteConsoleW(HANDLE hConsole, const void *lpBuffer,
+    DWORD nChars, LPDWORD lpCharsWritten, LPVOID lpReserved)
+{
+    (void)hConsole; (void)lpReserved;
+    const WCHAR *ws = (const WCHAR *)lpBuffer;
+    char utf8[512];
+    win32_wchar_to_utf8(ws, (int)nChars, utf8, sizeof(utf8) - 1);
+    utf8[sizeof(utf8) - 1] = '\0';
+    for (int i = 0; utf8[i]; i++) putchar(utf8[i]);
+    if (lpCharsWritten) *lpCharsWritten = nChars;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_ReadConsoleW(HANDLE hConsole, void *lpBuffer,
+    DWORD nChars, LPDWORD lpCharsRead, LPVOID lpInputControl)
+{
+    (void)hConsole; (void)lpInputControl;
+    WCHAR *ws = (WCHAR *)lpBuffer;
+    DWORD i = 0;
+    while (i < nChars) {
+        int c = getchar();
+        if (c == '\n' || c == '\r' || c < 0) {
+            if (i < nChars) ws[i++] = '\n';
+            break;
+        }
+        ws[i++] = (WCHAR)c;
+    }
+    if (lpCharsRead) *lpCharsRead = i;
+    return TRUE;
 }
 
 /* ── Phase 13: Thread Pool Stubs ─────────────────────────────── */
@@ -3186,6 +3557,10 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "UnhandledExceptionFilter",   (void *)shim_UnhandledExceptionFilter },
     { "RaiseException",             (void *)shim_RaiseException },
     { "RtlUnwind",                  (void *)shim_RtlUnwind },
+    { "AddVectoredExceptionHandler",  (void *)shim_AddVectoredExceptionHandler },
+    { "RemoveVectoredExceptionHandler", (void *)shim_RemoveVectoredExceptionHandler },
+    { "AddVectoredContinueHandler",   (void *)shim_AddVectoredContinueHandler },
+    { "RemoveVectoredContinueHandler", (void *)shim_RemoveVectoredContinueHandler },
 
     /* System info */
     { "GetSystemInfo",              (void *)shim_GetSystemInfo },
@@ -3214,6 +3589,30 @@ static const win32_export_entry_t kernel32_exports[] = {
     { "GetACP",                     (void *)shim_GetACP },
     { "GetOEMCP",                   (void *)shim_GetOEMCP },
     { "IsValidCodePage",            (void *)shim_IsValidCodePage },
+
+    /* String comparison */
+    { "CompareStringW",             (void *)shim_CompareStringW },
+    { "CompareStringOrdinal",       (void *)shim_CompareStringOrdinal },
+    { "lstrcmpW",                   (void *)shim_lstrcmpW },
+    { "lstrcmpiW",                  (void *)shim_lstrcmpiW },
+    { "lstrlenW",                   (void *)shim_lstrlenW },
+
+    /* NLS format */
+    { "GetDateFormatW",             (void *)shim_GetDateFormatW },
+    { "GetDateFormatA",             (void *)shim_GetDateFormatA },
+    { "GetTimeFormatW",             (void *)shim_GetTimeFormatW },
+    { "GetTimeFormatA",             (void *)shim_GetTimeFormatA },
+    { "GetNumberFormatW",           (void *)shim_GetNumberFormatW },
+    { "GetUserDefaultLangID",       (void *)shim_GetUserDefaultLangID },
+    { "GetSystemDefaultLangID",     (void *)shim_GetSystemDefaultLangID },
+
+    /* Console code page */
+    { "SetConsoleCP",               (void *)shim_SetConsoleCP },
+    { "GetConsoleCP",               (void *)shim_GetConsoleCP },
+    { "SetConsoleOutputCP",         (void *)shim_SetConsoleOutputCP },
+    { "GetConsoleOutputCP",         (void *)shim_GetConsoleOutputCP },
+    { "WriteConsoleW",              (void *)shim_WriteConsoleW },
+    { "ReadConsoleW",               (void *)shim_ReadConsoleW },
 
     /* Time */
     { "GetLocalTime",               (void *)shim_GetLocalTime },

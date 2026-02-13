@@ -215,3 +215,54 @@ char* fgets(char* s, int size, FILE* f) {
     s[i] = '\0';
     return s;
 }
+
+int fseek(FILE* f, long offset, int whence) {
+    if (!f || f->is_std) return -1;
+
+    long new_pos;
+    switch (whence) {
+        case 0: /* SEEK_SET */
+            new_pos = offset;
+            break;
+        case 1: /* SEEK_CUR */
+            new_pos = (long)f->buf_pos + offset;
+            break;
+        case 2: /* SEEK_END */
+            new_pos = (long)f->buf_len + offset;
+            break;
+        default:
+            return -1;
+    }
+
+    if (new_pos < 0) new_pos = 0;
+    if ((size_t)new_pos > f->buf_len) new_pos = (long)f->buf_len;
+
+    f->buf_pos = (size_t)new_pos;
+    f->eof = 0;
+    return 0;
+}
+
+long ftell(FILE* f) {
+    if (!f || f->is_std) return -1;
+    return (long)f->buf_pos;
+}
+
+void rewind(FILE* f) {
+    if (!f) return;
+    if (f->is_std) return;
+    f->buf_pos = 0;
+    f->eof = 0;
+    f->error = 0;
+}
+
+int ungetc(int c, FILE* f) {
+    if (!f || c == EOF) return EOF;
+    if (f->is_std) return EOF;
+    if (f->buf_pos > 0) {
+        f->buf_pos--;
+        f->buf[f->buf_pos] = (uint8_t)c;
+        f->eof = 0;
+        return c;
+    }
+    return EOF;
+}
