@@ -1968,7 +1968,7 @@ void shell_process_command(char* command) {
         size_t nlen = strlen(name);
 
         /* Try ELF: exact path first, then /bin/<name> */
-        int ret = elf_run(name);
+        int ret = elf_run_argv(name, argc, (const char **)argv);
         if (ret >= 0) {
             task_info_t *t = task_get(ret);
             while (t && t->active && t->state != TASK_STATE_ZOMBIE)
@@ -1978,7 +1978,7 @@ void shell_process_command(char* command) {
 
         char path_buf[64];
         snprintf(path_buf, sizeof(path_buf), "/bin/%s", name);
-        ret = elf_run(path_buf);
+        ret = elf_run_argv(path_buf, argc, (const char **)argv);
         if (ret >= 0) {
             task_info_t *t = task_get(ret);
             while (t && t->active && t->state != TASK_STATE_ZOMBIE)
@@ -4498,7 +4498,7 @@ static void cmd_run(int argc, char* argv[]) {
     }
 
     /* Try ELF first (elf_run reads the file internally and validates) */
-    int ret = elf_run(argv[1]);
+    int ret = elf_run_argv(argv[1], argc - 1, (const char **)&argv[1]);
     if (ret >= 0) {
         task_info_t *t = task_get(ret);
         printf("Started ELF process '%s' (PID %d)\n", argv[1],

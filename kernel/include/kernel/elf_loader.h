@@ -59,7 +59,9 @@ typedef struct __attribute__((packed)) {
 int elf_detect(const uint8_t *data, size_t size);
 
 /* Load and run a static ELF32 binary from the filesystem.
- * Returns task ID on success, <0 on error. */
+ * Returns task ID on success, <0 on error.
+ * argc/argv are passed to the ELF process on its user stack. */
 int elf_run(const char *filename);
+int elf_run_argv(const char *filename, int argc, const char **argv);
 
 #endif

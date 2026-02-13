@@ -608,30 +608,33 @@ _Prove Linux binary compat works. Run a static musl hello world._
 _Add ~10 more syscalls. Download static BusyBox (1MB). Run it. Instant Unix userland._
 
 **Per-process kernel file descriptor table:**
-- [ ] Expand fd_entry_t — support pipes, files, sockets, and device types
-- [ ] Per-task FD table — 64 entries (up from 16), inherited on exec, closed on exit
-- [ ] FD allocation — lowest-available-number semantics (POSIX requirement)
-- [ ] Stdin/stdout/stderr — auto-open fd 0/1/2 for each new process
+- [x] Expand fd_entry_t — support pipes, files, sockets, and device types
+- [x] Per-task FD table — 64 entries (up from 16), inherited on exec, closed on exit
+- [x] FD allocation — lowest-available-number semantics (POSIX requirement)
+- [x] Stdin/stdout/stderr — auto-open fd 0/1/2 for each new process
 
 **Linux syscalls (file I/O — makes ls, cat, grep, find work):**
-- [ ] `open` (#5) — map to fs_open_file, allocate kernel fd, return fd number
-- [ ] `close` (#6) — release fd entry, decrement refcount
-- [ ] `read` (#3) — dispatch by fd type: file → fs_read_file, pipe → pipe_read, device → handler
-- [ ] `stat64` (#195) — map fs_stat → populate Linux `struct stat64` (inode, mode, size, times, uid, gid)
-- [ ] `fstat64` (#197) — same via fd lookup
-- [ ] `lstat64` (#196) — stat without following symlinks
-- [ ] `getdents64` (#220) — fs_readdir → Linux `struct linux_dirent64` format
-- [ ] `lseek` (#19) — per-fd file offset tracking (SEEK_SET, SEEK_CUR, SEEK_END)
-- [ ] `ioctl` (#54) — terminal: `TIOCGWINSZ` (window size), `TCGETS`/`TCSETS` (termios)
-- [ ] `fcntl64` (#221) — `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL` (O_NONBLOCK)
+- [x] `open` (#5) — map to fs_open_file, allocate kernel fd, return fd number
+- [x] `close` (#6) — release fd entry, decrement refcount
+- [x] `read` (#3) — dispatch by fd type: file → fs_read_at, pipe → pipe_read, device → handler
+- [x] `stat64` (#195) — map fs_stat → populate Linux `struct stat64` (inode, mode, size, times, uid, gid)
+- [x] `fstat64` (#197) — same via fd lookup
+- [x] `lstat64` (#196) — stat without following symlinks
+- [x] `getdents64` (#220) — fs_readdir → Linux `struct linux_dirent64` format
+- [x] `lseek` (#19) / `_llseek` (#140) — per-fd file offset tracking (SEEK_SET, SEEK_CUR, SEEK_END)
+- [x] `ioctl` (#54) — terminal: `TIOCGWINSZ` (window size), `TCGETS` (termios)
+- [x] `fcntl64` (#221) — `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL` (O_NONBLOCK)
 
 **Misc syscalls (identity, environment):**
-- [ ] `getcwd` (#183) — return current working directory path
-- [ ] `uname` (#122) — return sysname="ImposOS", release, version, machine="i686"
-- [ ] `getuid32` (#199) / `geteuid32` (#201) — map to user_get_current_uid()
-- [ ] `getgid32` (#200) / `getegid32` (#202) — map to user_get_current_gid()
-- [ ] `munmap` (#91) — free mapped pages
-- [ ] `access` (#33) — check file permissions via fs_stat + mode check
+- [x] `getcwd` (#183) — return current working directory path
+- [x] `uname` (#122) — return sysname="Linux" (musl requires this), machine="i686"
+- [x] `getuid32` (#199) / `geteuid32` (#201) — map to user_get_current_uid()
+- [x] `getgid32` (#200) / `getegid32` (#202) — map to user_get_current_gid()
+- [x] `munmap` (#91) — stub returning 0 (cleanup on task exit)
+- [x] `access` (#33) — check file existence via fs_resolve_path
+- [x] `readlink` (#85) — supports /proc/self/exe + filesystem symlinks
+- [x] `set_tid_address` (#258) — musl startup stub, returns current pid
+- [x] `getpid` (#20) — return current task PID
 
 **Test:** `busybox sh` launches shell. `busybox ls /bin` lists files. `busybox cat`, `busybox grep`,
 `busybox vi`, `busybox wget` — 300+ tools work from a single 1MB binary.
@@ -1306,7 +1309,7 @@ drivers, *and* self-hosting — it would be one of the most ambitious hobby OS p
 | 1.0 | Core OS: kernel, shell, filesystem, basic GUI | Done |
 | 1.5 | Win32 bridge: PE loader, API shims, Phase 1–13 | Done |
 | 1.6 | Real Win32 software: full CRT, controls, networking, stability | In Progress |
-| 1.7 | Linux compat: 45 syscalls + ELF loader → Doom, BusyBox, bash, NetSurf, X11 | Planned |
+| 1.7 | Linux compat: 45 syscalls + ELF loader → Doom, BusyBox, bash, NetSurf, X11 | In Progress (Phase 4 done) |
 | 1.8 | Graphics: GPU, compositing, multi-monitor, animations | Planned |
 | 1.9 | Hardware: USB, AHCI, audio, NIC drivers, ACPI, power management | Planned |
 | 2.0 | Self-hosting: target triple, autotools, kernel self-build, distribution | Planned |
