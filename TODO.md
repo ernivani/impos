@@ -586,21 +586,21 @@ _Current FS: 64 inodes, 128KB total — way too small. Need 32MB+ for Linux bina
 _Prove Linux binary compat works. Run a static musl hello world._
 
 **ELF Loader (static only — NO dynamic linker):**
-- [ ] ELF32 header validation — check magic, class (32-bit), data (little-endian), machine (EM_386)
-- [ ] Program header parsing — iterate PT_LOAD segments
-- [ ] Segment loading — allocate pages via PMM, map into per-process PD with correct RX/RW permissions
-- [ ] BSS zeroing — zero-fill memory beyond file-backed segment data
-- [ ] Entry point — jump to `e_entry` in Ring 3 with fresh user stack
-- [ ] Mixed PE/ELF detection — check magic bytes (0x7F ELF vs MZ) to choose loader
+- [x] ELF32 header validation — check magic, class (32-bit), data (little-endian), machine (EM_386)
+- [x] Program header parsing — iterate PT_LOAD segments
+- [x] Segment loading — allocate pages via PMM, map into per-process PD with correct RX/RW permissions
+- [x] BSS zeroing — zero-fill memory beyond file-backed segment data
+- [x] Entry point — jump to `e_entry` in Ring 3 with fresh user stack
+- [x] Mixed PE/ELF detection — check magic bytes (0x7F ELF vs MZ) to choose loader
 
 **Linux i386 Syscall ABI (first 6 — enough for hello world):**
-- [ ] Remap INT 0x80 handler — add Linux syscall dispatch alongside existing ImposOS syscalls
-- [ ] `write` (#4) — route fd 1/2 to tty_write, other fds to pipe/file write
-- [ ] `writev` (#146) — loop calling write for each iovec entry
-- [ ] `exit_group` (#252) — terminate process via task_exit
-- [ ] `brk` (#45) — per-process heap pointer, extend by mapping new pages
-- [ ] `mmap2` (#192) — anonymous only: allocate pages, map into PD, return address
-- [ ] `set_thread_area` (#243) — write `user_desc` struct to GDT entry, set %gs segment (musl TLS)
+- [x] Remap INT 0x80 handler — add Linux syscall dispatch alongside existing ImposOS syscalls
+- [x] `write` (#4) — route fd 1/2 to tty_write, other fds to pipe/file write
+- [x] `writev` (#146) — loop calling write for each iovec entry
+- [x] `exit_group` (#252) — terminate process via task_exit
+- [x] `brk` (#45) — per-process heap pointer, extend by mapping new pages
+- [x] `mmap2` (#192) — anonymous only: allocate pages, map into PD, return address
+- [x] `set_thread_area` (#243) — write `user_desc` struct to GDT entry, set %gs segment (musl TLS)
 
 **Test:** Download static musl i386 hello world → boot ImposOS → it prints "Hello, world!"
 

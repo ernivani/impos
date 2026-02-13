@@ -68,6 +68,13 @@ int task_register(const char *name, int killable, int wm_id) {
     return -1;
 }
 
+/* Assign a unique PID to a task slot (used by external loaders like ELF) */
+int task_assign_pid(int tid) {
+    if (tid < 0 || tid >= TASK_MAX) return -1;
+    tasks[tid].pid = next_pid++;
+    return tasks[tid].pid;
+}
+
 void task_unregister(int tid) {
     uint32_t flags = irq_save();
     if (tid >= 0 && tid < TASK_MAX) {

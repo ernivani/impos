@@ -12,6 +12,14 @@
 static uint32_t kernel_page_directory[1024] __attribute__((aligned(4096)));
 uint32_t kernel_page_tables[IDENTITY_TABLES][1024] __attribute__((aligned(4096)));
 
+/* Check if a PT physical address points into the shared kernel_page_tables.
+ * Used to implement copy-on-write: if a user PD still references a kernel PT,
+ * we must allocate a private copy before modifying it. */
+static int is_kernel_pt(uint32_t pt_phys) {
+    uint32_t start = (uint32_t)&kernel_page_tables[0];
+    return (pt_phys >= start && pt_phys < start + sizeof(kernel_page_tables));
+}
+
 void vmm_init(multiboot_info_t *mbi) {
     (void)mbi;
 
@@ -138,6 +146,15 @@ uint32_t vmm_map_user_page(uint32_t pd_phys, uint32_t virt, uint32_t phys, uint3
         pd[pde_idx] = pt_phys | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
     } else {
         pt_phys = pd[pde_idx] & PAGE_MASK;
+        /* COW: if this PDE still points to a shared kernel page table,
+         * allocate a private copy before modifying it */
+        if (is_kernel_pt(pt_phys)) {
+            uint32_t new_pt = pmm_alloc_frame();
+            if (!new_pt) return 0;
+            memcpy((void *)new_pt, (void *)pt_phys, 4096);
+            pd[pde_idx] = new_pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+            pt_phys = new_pt;
+        }
     }
 
     uint32_t *pt = (uint32_t *)pt_phys;
@@ -147,6 +164,14 @@ uint32_t vmm_map_user_page(uint32_t pd_phys, uint32_t virt, uint32_t phys, uint3
 }
 
 void vmm_destroy_user_pagedir(uint32_t pd_phys) {
+    uint32_t *pd = (uint32_t *)pd_phys;
+    for (int i = 0; i < 1024; i++) {
+        if (!(pd[i] & PTE_PRESENT) || (pd[i] & PTE_4MB))
+            continue;
+        uint32_t pt = pd[i] & PAGE_MASK;
+        if (!is_kernel_pt(pt))
+            pmm_free_frame(pt);
+    }
     pmm_free_frame(pd_phys);
 }
 

@@ -5,12 +5,19 @@
 #include <kernel/signal.h>
 #include <kernel/shm.h>
 #include <kernel/vmm.h>
+#include <kernel/linux_syscall.h>
 #include <stdint.h>
 
 extern volatile uint32_t pit_ticks;
 #define TARGET_HZ 120
 
 registers_t* syscall_handler(registers_t* regs) {
+    /* Route ELF tasks to Linux syscall handler */
+    int tid = task_get_current();
+    task_info_t *cur = task_get(tid);
+    if (cur && cur->is_elf)
+        return linux_syscall_handler(regs);
+
     switch (regs->eax) {
         case SYS_EXIT: {
             int tid = task_get_current();
