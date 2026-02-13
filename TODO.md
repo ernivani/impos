@@ -203,16 +203,16 @@ _Phase 12 of Tier 1.5 adds basic SEH. This phase makes it bulletproof — real a
 
 ### Phase 3: Full Unicode & Internationalization
 _Phase 10 of Tier 1.5 adds W-suffix APIs. This phase makes Unicode actually work end-to-end._
-- [ ] Correct UTF-16 surrogate pair handling in all W APIs
-- [ ] Full `MultiByteToWideChar` / `WideCharToMultiByte` with all code pages (CP_ACP, CP_UTF8, 1252, etc.)
-- [ ] `CharUpperW` / `CharLowerW` / `CharNextW` / `IsCharAlphaW` — character classification
-- [ ] `CompareStringW` / `LStrCmpIW` — locale-aware string comparison
-- [ ] `GetACP` / `GetOEMCP` / `IsValidCodePage`
-- [ ] `wsprintfW` / `wvsprintfW`
-- [ ] NLS stubs — `GetLocaleInfoW`, `GetNumberFormatW`, `GetDateFormatW`, `GetTimeFormatW`
-- [ ] Internal kernel string handling — all paths stored as UTF-8, convert at syscall boundary
-- [ ] Font rendering with Unicode glyph support — render CJK, Cyrillic, Arabic (at least basic Latin + extended)
-- [ ] Console code page support — `SetConsoleCP`, `SetConsoleOutputCP`
+- [x] Correct UTF-16 surrogate pair handling in all W APIs
+- [x] Full `MultiByteToWideChar` / `WideCharToMultiByte` with all code pages (CP_ACP, CP_UTF8, 1252, etc.)
+- [x] `CharUpperW` / `CharLowerW` / `CharNextW` / `IsCharAlphaW` — character classification
+- [x] `CompareStringW` / `LStrCmpIW` — locale-aware string comparison
+- [x] `GetACP` / `GetOEMCP` / `IsValidCodePage`
+- [x] `wsprintfW` / `wvsprintfW`
+- [x] NLS stubs — `GetLocaleInfoW`, `GetNumberFormatW`, `GetDateFormatW`, `GetTimeFormatW`
+- [x] Internal kernel string handling — all paths stored as UTF-8, convert at syscall boundary
+- [x] Font rendering with Unicode glyph support — render CJK, Cyrillic, Arabic (at least basic Latin + extended)
+- [x] Console code page support — `SetConsoleCP`, `SetConsoleOutputCP`
 
 ### Phase 4: Window Controls & Common Controls
 _Real GUI apps don't draw everything from scratch. They use built-in window controls._

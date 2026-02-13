@@ -1174,6 +1174,45 @@ void gfx_putchar_at(int col, int row, unsigned char c, uint32_t fg, uint32_t bg)
     gfx_draw_char(col * FONT_W, row * FONT_H, (char)c, fg, bg);
 }
 
+/* ═══ Unicode glyph support ═══════════════════════════════════ */
+
+#include "font_latin1.h"
+
+const uint8_t *gfx_get_unicode_glyph(uint32_t codepoint) {
+    /* ASCII range: direct lookup in font8x16 */
+    if (codepoint < 0x80)
+        return font8x16[codepoint];
+    /* Latin-1 Supplement: U+00A0-U+00FF → font_latin1_ext */
+    if (codepoint >= 0x00A0 && codepoint <= 0x00FF)
+        return font_latin1_ext[codepoint - 0x00A0];
+    /* Fallback: '?' glyph */
+    return font8x16['?'];
+}
+
+void gfx_draw_wchar(int px, int py, uint16_t wc, uint32_t fg, uint32_t bg) {
+    const uint8_t *glyph = gfx_get_unicode_glyph((uint32_t)wc);
+    uint32_t pitch4 = fb_pitch / 4;
+
+    for (int row = 0; row < FONT_H; row++) {
+        int yy = py + row;
+        if (yy < 0 || (uint32_t)yy >= fb_height) continue;
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < FONT_W; col++) {
+            int xx = px + col;
+            if (xx < 0 || (uint32_t)xx >= fb_width) continue;
+            backbuf[yy * pitch4 + xx] = (bits & (0x80 >> col)) ? fg : bg;
+        }
+    }
+}
+
+void gfx_draw_wstring(int px, int py, const uint16_t *s, uint32_t fg, uint32_t bg) {
+    while (*s) {
+        gfx_draw_wchar(px, py, *s, fg, bg);
+        px += FONT_W;
+        s++;
+    }
+}
+
 /* ═══ Cursor ══════════════════════════════════════════════════ */
 
 void gfx_set_cursor(int col, int row) {
