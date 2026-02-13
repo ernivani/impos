@@ -66,6 +66,10 @@ typedef struct {
 
     /* Per-task file descriptor table */
     fd_entry_t   fds[MAX_FDS];
+
+    /* Win32 PE task fields */
+    uint32_t     tib;          /* pointer to WIN32_TEB (0 if not a PE task) */
+    int          is_pe;        /* 1 if this is a PE executable task */
 } task_info_t;
 
 void        task_init(void);

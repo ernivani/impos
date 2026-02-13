@@ -94,8 +94,9 @@ int vsnprintf(char* str, size_t size, const char* format, va_list parameters) {
             for (int i = 0; i < pos; i++) EMIT(buf[i]);
             if (left_align)
                 for (int i = 0; i < padding; i++) EMIT(' ');
-        } else if (*format == 'u' || *format == 'x') {
-            int is_hex = (*format == 'x');
+        } else if (*format == 'u' || *format == 'x' || *format == 'X') {
+            int is_hex = (*format == 'x' || *format == 'X');
+            int is_upper = (*format == 'X');
             format++;
             unsigned int value = va_arg(parameters, unsigned int);
             int base = is_hex ? 16 : 10;
@@ -110,7 +111,7 @@ int vsnprintf(char* str, size_t size, const char* format, va_list parameters) {
                 unsigned int temp = value;
                 while (temp > 0) {
                     int digit = temp % base;
-                    tmp[ti++] = digit < 10 ? '0' + digit : 'a' + digit - 10;
+                    tmp[ti++] = digit < 10 ? '0' + digit : (is_upper ? 'A' : 'a') + digit - 10;
                     temp /= base;
                 }
                 while (ti > 0) buf[pos++] = tmp[--ti];

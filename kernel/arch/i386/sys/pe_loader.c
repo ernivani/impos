@@ -46,7 +46,7 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
     size_t file_size;
     uint8_t *file_data = read_file_to_buffer(filename, &file_size);
     if (!file_data) {
-        printf("pe: cannot load '%s'\n", filename);
+        DBG("pe_load: file not found '%s'", filename);
         return -1;
     }
 
@@ -127,6 +127,10 @@ int pe_load(const char *filename, pe_loaded_image_t *out) {
         out->reloc_dir_rva = opt->data_dirs[PE_DIR_BASERELOC].virtual_address;
         out->reloc_dir_size = opt->data_dirs[PE_DIR_BASERELOC].size;
     }
+    if (opt->num_data_dirs > PE_DIR_EXPORT) {
+        out->export_dir_rva = opt->data_dirs[PE_DIR_EXPORT].virtual_address;
+        out->export_dir_size = opt->data_dirs[PE_DIR_EXPORT].size;
+    }
     pe_next_load_addr = align_up(load_base + image_size, 4096);
 
     DBG("pe_load: entry=0x%x subsystem=%u import_rva=0x%x reloc_rva=0x%x",
@@ -147,6 +151,13 @@ static const win32_dll_shim_t *shim_table[] = {
     &win32_gdi32,
     &win32_msvcrt,
     &win32_ucrtbase,
+    &win32_advapi32,
+    &win32_ws2_32,
+    &win32_gdiplus,
+    &win32_ole32,
+    &win32_shell32,
+    &win32_bcrypt,
+    &win32_crypt32,
     NULL
 };
 
@@ -251,10 +262,12 @@ int pe_apply_relocations(pe_loaded_image_t *img) {
         return 0;
     }
 
-    int32_t delta = (int32_t)(img->image_base - img->preferred_base);
+    uint32_t effective_base = img->virtual_base ? img->virtual_base : img->image_base;
+    int32_t delta = (int32_t)(effective_base - img->preferred_base);
     if (delta == 0) return 0;  /* No fixup needed */
 
-    DBG("pe_apply_relocations: delta=0x%x", delta);
+    DBG("pe_apply_relocations: effective_base=0x%x preferred=0x%x staging=0x%x delta=0x%x",
+        effective_base, img->preferred_base, img->image_base, delta);
 
     uint8_t *reloc = (uint8_t *)(img->image_base + img->reloc_dir_rva);
     uint8_t *reloc_end = reloc + img->reloc_dir_size;
@@ -337,6 +350,28 @@ int pe_execute(pe_loaded_image_t *img, const char *name) {
     if (tid < 0) {
         printf("pe: failed to create thread\n");
         return -1;
+    }
+
+    /* Allocate and initialize a WIN32_TEB for this PE task */
+    task_info_t *t = task_get(tid);
+    if (t) {
+        WIN32_TEB *teb = (WIN32_TEB *)calloc(1, sizeof(WIN32_TEB));
+        if (teb) {
+            teb->tib.ExceptionList = SEH_CHAIN_END;
+            teb->tib.StackBase = t->stack_base ?
+                (uint32_t)t->stack_base + t->stack_size : 0;
+            teb->tib.StackLimit = t->stack_base ?
+                (uint32_t)t->stack_base : 0;
+            teb->tib.Self = (uint32_t)&teb->tib;
+            teb->ClientId[0] = t->pid;  /* ProcessId */
+            teb->ClientId[1] = tid;     /* ThreadId */
+            teb->LastError = 0;
+
+            t->tib = (uint32_t)teb;
+            t->is_pe = 1;
+
+            DBG("pe_execute: TEB at 0x%x for task %d", (unsigned)teb, tid);
+        }
     }
 
     DBG("pe_execute: started '%s' as task %d", task_name, tid);
