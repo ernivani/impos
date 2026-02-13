@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 
 /* ── msvcrt shim ─────────────────────────────────────────────
  * Most of msvcrt maps directly to our libc functions.
@@ -472,19 +473,187 @@ static EXCEPTION_DISPOSITION shim__except_handler4(
     return shim__except_handler3(er, frame, ctx, dispatcher_ctx);
 }
 
-/* __CxxFrameHandler3 — C++ exception handler (try/catch via SEH).
- * Full implementation requires catchable type matching; stub for now. */
+/* ── C++ Exception Structures (MSVC ABI) ────────────────────── */
+
+/* type_info — MSVC RTTI type descriptor */
+typedef struct {
+    void  *pVFTable;       /* vtable pointer (points to type_info vtable) */
+    void  *spare;          /* internal use */
+    char   name[1];        /* decorated type name (variable length) */
+} msvc_type_info_t;
+
+/* CatchableType — describes one type a thrown object can be caught as */
+typedef struct {
+    uint32_t  properties;      /* 0x01 = simple type, 0x02 = can be caught by ref */
+    msvc_type_info_t *pType;   /* pointer to type_info for this type */
+    int32_t   thisDisplacement[3]; /* PMD: mdisp, pdisp, vdisp */
+    int32_t   sizeOrOffset;    /* sizeof(type) for simple types */
+    void     *copyFunction;    /* copy constructor (NULL for simple types) */
+} CatchableType;
+
+/* CatchableTypeArray — list of types a thrown object can be caught as */
+typedef struct {
+    int32_t        nCatchableTypes;
+    CatchableType *arrayOfCatchableTypes[1]; /* variable length */
+} CatchableTypeArray;
+
+/* ThrowInfo — describes a thrown C++ exception */
+typedef struct {
+    uint32_t            attributes;     /* 0x01 = const, 0x02 = volatile */
+    void               *pmfnUnwind;     /* destructor for thrown object */
+    void               *pForwardCompat; /* forward compat handler */
+    CatchableTypeArray *pCatchableTypeArray;
+} ThrowInfo;
+
+/* FuncInfo — per-function exception handling data from compiler */
+typedef struct {
+    uint32_t  magicNumber;      /* 0x19930520 = VC7, 0x19930521 = VC8 */
+    int32_t   maxState;         /* max unwind state */
+    void     *pUnwindMap;       /* unwind map entries */
+    uint32_t  nTryBlocks;       /* number of try blocks */
+    void     *pTryBlockMap;     /* try block map entries */
+    uint32_t  nIPMapEntries;
+    void     *pIPtoStateMap;
+    void     *pESTypeList;      /* VC8 only */
+    int32_t   EHFlags;          /* VC8 only */
+} FuncInfo;
+
+/* TryBlockMapEntry */
+typedef struct {
+    int32_t  tryLow;
+    int32_t  tryHigh;
+    int32_t  catchHigh;
+    int32_t  nCatches;
+    void    *pHandlerArray;  /* HandlerType array */
+} TryBlockMapEntry;
+
+/* HandlerType — describes one catch clause */
+typedef struct {
+    uint32_t          adjectives;  /* 0x01 = const, 0x02 = volatile, 0x08 = reference */
+    msvc_type_info_t *pType;       /* type_info for this catch (NULL = catch(...)) */
+    int32_t           dispCatchObj;/* displacement of catch object on stack */
+    void             *addressOfHandler; /* address of catch block code */
+} HandlerType;
+
+/* UnwindMapEntry — one entry in the destructor unwind table */
+typedef struct {
+    int32_t  toState;       /* state to transition to (-1 = base) */
+    void    *action;        /* destructor to call */
+} UnwindMapEntry;
+
+/* __CxxFrameHandler3 — C++ exception handler with proper type matching */
 static EXCEPTION_DISPOSITION shim___CxxFrameHandler3(
     EXCEPTION_RECORD *er, void *frame,
     CONTEXT *ctx, void *dispatcher_ctx)
 {
-    (void)frame; (void)ctx; (void)dispatcher_ctx;
+    (void)ctx; (void)dispatcher_ctx;
 
-    if (er->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND))
+    /* During unwind, call destructors via unwind map */
+    if (er->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND)) {
+        /* Get FuncInfo from the registration frame.
+         * MSVC stores it at [frame + 8] (after Next and Handler). */
+        uint32_t *fp = (uint32_t *)frame;
+        FuncInfo *func_info = (FuncInfo *)fp[2];
+        if (func_info && func_info->pUnwindMap) {
+            int32_t cur_state = (int32_t)fp[3]; /* trylevel */
+            UnwindMapEntry *map = (UnwindMapEntry *)func_info->pUnwindMap;
+            while (cur_state >= 0 && cur_state < func_info->maxState) {
+                UnwindMapEntry *entry = &map[cur_state];
+                if (entry->action) {
+                    /* Call destructor: void __cdecl action(void) */
+                    typedef void (*dtor_fn_t)(void);
+                    dtor_fn_t dtor = (dtor_fn_t)entry->action;
+                    serial_printf("[C++] calling dtor at state %d\n", cur_state);
+                    dtor();
+                }
+                cur_state = entry->toState;
+            }
+        }
         return ExceptionContinueSearch;
+    }
 
-    serial_printf("[SEH] __CxxFrameHandler3: C++ exception code=0x%x\n",
-                  er->ExceptionCode);
+    /* Only handle MSVC C++ exceptions */
+    if (er->ExceptionCode != EXCEPTION_MSVC_CPP) {
+        serial_printf("[C++] __CxxFrameHandler3: non-C++ exception 0x%x\n",
+                      er->ExceptionCode);
+        return ExceptionContinueSearch;
+    }
+
+    /* Validate MSVC magic */
+    if (er->NumberParameters < 3 || er->ExceptionInformation[0] != 0x19930520) {
+        serial_printf("[C++] __CxxFrameHandler3: bad magic\n");
+        return ExceptionContinueSearch;
+    }
+
+    /* Extract throw info */
+    void *thrown_object = (void *)er->ExceptionInformation[1];
+    ThrowInfo *throw_info = (ThrowInfo *)er->ExceptionInformation[2];
+
+    if (!throw_info || !throw_info->pCatchableTypeArray) {
+        serial_printf("[C++] __CxxFrameHandler3: no throw info\n");
+        return ExceptionContinueSearch;
+    }
+
+    /* Get FuncInfo from the frame */
+    uint32_t *fp = (uint32_t *)frame;
+    FuncInfo *func_info = (FuncInfo *)fp[2];
+    if (!func_info) return ExceptionContinueSearch;
+
+    int32_t cur_state = (int32_t)fp[3];
+
+    /* Walk try blocks looking for a matching catch */
+    TryBlockMapEntry *try_map = (TryBlockMapEntry *)func_info->pTryBlockMap;
+    if (!try_map) return ExceptionContinueSearch;
+
+    for (uint32_t i = 0; i < func_info->nTryBlocks; i++) {
+        TryBlockMapEntry *tb = &try_map[i];
+        if (cur_state < tb->tryLow || cur_state > tb->tryHigh)
+            continue;
+
+        /* Check each catch handler in this try block */
+        HandlerType *handlers = (HandlerType *)tb->pHandlerArray;
+        if (!handlers) continue;
+
+        for (int32_t j = 0; j < tb->nCatches; j++) {
+            HandlerType *ht = &handlers[j];
+
+            /* catch(...) — NULL type matches everything */
+            if (ht->pType == NULL) {
+                serial_printf("[C++] catch(...) matched at try block %u\n", i);
+                /* Copy thrown object if needed */
+                if (ht->dispCatchObj && thrown_object) {
+                    char *frame_base = (char *)frame;
+                    memcpy(frame_base + ht->dispCatchObj, &thrown_object, sizeof(void *));
+                }
+                /* Unwind to catch state, then jump to handler */
+                fp[3] = (uint32_t)tb->catchHigh;
+                return ExceptionContinueSearch; /* Let unwind phase handle it */
+            }
+
+            /* Type-based matching: compare type_info names */
+            CatchableTypeArray *cta = throw_info->pCatchableTypeArray;
+            for (int32_t k = 0; k < cta->nCatchableTypes; k++) {
+                CatchableType *ct = cta->arrayOfCatchableTypes[k];
+                if (!ct || !ct->pType) continue;
+
+                /* Compare decorated type names */
+                if (ht->pType && ct->pType &&
+                    strcmp(ht->pType->name, ct->pType->name) == 0) {
+                    serial_printf("[C++] type match: %s at try block %u catch %d\n",
+                                  ht->pType->name, i, j);
+                    if (ht->dispCatchObj && thrown_object) {
+                        char *frame_base = (char *)frame;
+                        memcpy(frame_base + ht->dispCatchObj, &thrown_object,
+                               sizeof(void *));
+                    }
+                    fp[3] = (uint32_t)tb->catchHigh;
+                    return ExceptionContinueSearch;
+                }
+            }
+        }
+    }
+
+    serial_printf("[C++] __CxxFrameHandler3: no matching catch for exception\n");
     return ExceptionContinueSearch;
 }
 
@@ -495,6 +664,21 @@ static void shim__CxxThrowException(void *object, void *throw_info) {
     args[1] = (DWORD)object;
     args[2] = (DWORD)throw_info;
     seh_RaiseException(EXCEPTION_MSVC_CPP, EXCEPTION_NONCONTINUABLE, 3, args);
+}
+
+/* __CppXcptFilter — C++ exception filter used by CRT startup.
+ * Returns EXCEPTION_EXECUTE_HANDLER for C++ exceptions,
+ * EXCEPTION_CONTINUE_SEARCH for others. */
+static int shim___CppXcptFilter(int code, EXCEPTION_POINTERS *ep) {
+    (void)ep;
+    if (code == (int)EXCEPTION_MSVC_CPP)
+        return EXCEPTION_EXECUTE_HANDLER;
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* _set_se_translator — set SEH-to-C++ exception translator */
+static void *shim__set_se_translator(void *func) {
+    return (void *)seh_set_se_translator((_se_translator_function)func);
 }
 
 /* ── stdio additions ─────────────────────────────────────────── */
@@ -1223,6 +1407,8 @@ static const win32_export_entry_t msvcrt_exports[] = {
     { "_except_handler4",       (void *)shim__except_handler4 },
     { "__CxxFrameHandler3",     (void *)shim___CxxFrameHandler3 },
     { "_CxxThrowException",     (void *)shim__CxxThrowException },
+    { "__CppXcptFilter",        (void *)shim___CppXcptFilter },
+    { "_set_se_translator",     (void *)shim__set_se_translator },
 
     /* stdio additions */
     { "fopen",          (void *)shim_fopen },
@@ -1354,6 +1540,12 @@ static const win32_export_entry_t msvcrt_exports[] = {
     { "__RTtypeid",     (void *)shim___RTtypeid },
     { "__RTDynamicCast", (void *)shim___RTDynamicCast },
     { "??_7type_info@@6B@", (void *)_fake_type_info_vtable },
+
+    /* setjmp/longjmp */
+    { "setjmp",         (void *)setjmp },
+    { "longjmp",        (void *)longjmp },
+    { "_setjmp",        (void *)setjmp },
+    { "_longjmp",       (void *)longjmp },
 
     /* Wide string functions */
     { "wcslen",         (void *)shim_wcslen },

@@ -3,12 +3,116 @@
 #include <kernel/idt.h>
 #include <kernel/task.h>
 #include <kernel/io.h>
+#include <kernel/gfx.h>
 #include <string.h>
 #include <stdio.h>
 
 /* ── Global unhandled exception filter ──────────────────────── */
 
 static LPTOP_LEVEL_EXCEPTION_FILTER g_unhandled_filter = NULL;
+
+/* ── Vectored Exception Handling ───────────────────────────── */
+
+#define VEH_MAX_HANDLERS 16
+
+typedef struct {
+    PVECTORED_EXCEPTION_HANDLER handler;
+    int active;
+} veh_entry_t;
+
+static veh_entry_t veh_exception_handlers[VEH_MAX_HANDLERS];
+static int veh_exception_count = 0;
+
+static veh_entry_t veh_continue_handlers[VEH_MAX_HANDLERS];
+static int veh_continue_count = 0;
+
+PVOID seh_AddVectoredExceptionHandler(ULONG first_handler,
+                                       PVECTORED_EXCEPTION_HANDLER handler)
+{
+    if (!handler || veh_exception_count >= VEH_MAX_HANDLERS)
+        return NULL;
+
+    if (first_handler) {
+        /* Insert at head — shift all entries right */
+        for (int i = veh_exception_count; i > 0; i--)
+            veh_exception_handlers[i] = veh_exception_handlers[i - 1];
+        veh_exception_handlers[0].handler = handler;
+        veh_exception_handlers[0].active = 1;
+    } else {
+        veh_exception_handlers[veh_exception_count].handler = handler;
+        veh_exception_handlers[veh_exception_count].active = 1;
+    }
+    veh_exception_count++;
+    return (PVOID)handler;
+}
+
+ULONG seh_RemoveVectoredExceptionHandler(PVOID handle) {
+    for (int i = 0; i < veh_exception_count; i++) {
+        if ((PVOID)veh_exception_handlers[i].handler == handle) {
+            for (int j = i; j < veh_exception_count - 1; j++)
+                veh_exception_handlers[j] = veh_exception_handlers[j + 1];
+            veh_exception_count--;
+            veh_exception_handlers[veh_exception_count].handler = NULL;
+            veh_exception_handlers[veh_exception_count].active = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+PVOID seh_AddVectoredContinueHandler(ULONG first_handler,
+                                      PVECTORED_EXCEPTION_HANDLER handler)
+{
+    if (!handler || veh_continue_count >= VEH_MAX_HANDLERS)
+        return NULL;
+
+    if (first_handler) {
+        for (int i = veh_continue_count; i > 0; i--)
+            veh_continue_handlers[i] = veh_continue_handlers[i - 1];
+        veh_continue_handlers[0].handler = handler;
+        veh_continue_handlers[0].active = 1;
+    } else {
+        veh_continue_handlers[veh_continue_count].handler = handler;
+        veh_continue_handlers[veh_continue_count].active = 1;
+    }
+    veh_continue_count++;
+    return (PVOID)handler;
+}
+
+ULONG seh_RemoveVectoredContinueHandler(PVOID handle) {
+    for (int i = 0; i < veh_continue_count; i++) {
+        if ((PVOID)veh_continue_handlers[i].handler == handle) {
+            for (int j = i; j < veh_continue_count - 1; j++)
+                veh_continue_handlers[j] = veh_continue_handlers[j + 1];
+            veh_continue_count--;
+            veh_continue_handlers[veh_continue_count].handler = NULL;
+            veh_continue_handlers[veh_continue_count].active = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+LONG seh_dispatch_vectored(EXCEPTION_POINTERS *ep) {
+    for (int i = 0; i < veh_exception_count; i++) {
+        if (veh_exception_handlers[i].active && veh_exception_handlers[i].handler) {
+            LONG result = veh_exception_handlers[i].handler(ep);
+            if (result == EXCEPTION_CONTINUE_EXECUTION)
+                return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* ── SE Translator ─────────────────────────────────────────── */
+
+static _se_translator_function g_se_translator = NULL;
+
+_se_translator_function seh_set_se_translator(_se_translator_function func) {
+    _se_translator_function prev = g_se_translator;
+    g_se_translator = func;
+    return prev;
+}
 
 /* ── CPU exception → Win32 exception code mapping ───────────── */
 
@@ -97,6 +201,19 @@ int seh_dispatch_exception(task_info_t *t, registers_t *regs, uint32_t int_no) {
     EXCEPTION_POINTERS ep;
     ep.ExceptionRecord = &er;
     ep.ContextRecord = &ctx;
+
+    /* Try Vectored Exception Handlers first (VEH runs before SEH) */
+    LONG veh_result = seh_dispatch_vectored(&ep);
+    if (veh_result == EXCEPTION_CONTINUE_EXECUTION) {
+        context_to_regs(&ctx, regs);
+        serial_printf("[SEH] VEH returned ContinueExecution\n");
+        return 1;
+    }
+
+    /* Try SE translator (C++ bridge) */
+    if (g_se_translator) {
+        g_se_translator(er.ExceptionCode, &ep);
+    }
 
     /* Walk SEH chain */
     while ((uint32_t)reg != SEH_CHAIN_END && reg != NULL) {
@@ -281,4 +398,142 @@ void seh_RtlUnwind(void *target_frame, void *target_ip,
 
     /* Reached end of chain */
     teb->tib.ExceptionList = SEH_CHAIN_END;
+}
+
+/* ── Crash Dialog ────────────────────────────────────────────── */
+
+static const char *exception_code_name(uint32_t code) {
+    switch (code) {
+        case 0xC0000005: return "EXCEPTION_ACCESS_VIOLATION";
+        case 0xC0000006: return "EXCEPTION_IN_PAGE_ERROR";
+        case 0xC000001D: return "EXCEPTION_ILLEGAL_INSTRUCTION";
+        case 0xC0000094: return "EXCEPTION_INT_DIVIDE_BY_ZERO";
+        case 0xC00000FD: return "EXCEPTION_STACK_OVERFLOW";
+        case 0x80000003: return "EXCEPTION_BREAKPOINT";
+        case 0x80000004: return "EXCEPTION_SINGLE_STEP";
+        case 0xC000008C: return "EXCEPTION_ARRAY_BOUNDS_EXCEEDED";
+        case 0xC0000025: return "EXCEPTION_NONCONTINUABLE";
+        case 0xC0000026: return "EXCEPTION_INVALID_DISPOSITION";
+        case 0x80000001: return "STATUS_GUARD_PAGE_VIOLATION";
+        case 0xC00000FE: return "STATUS_STACK_BUFFER_OVERRUN";
+        case 0xE06D7363: return "C++ Exception (0xE06D7363)";
+        default:         return "Unknown Exception";
+    }
+}
+
+void seh_show_crash_dialog(const char *exception_name, uint32_t int_no,
+                           registers_t *regs, uint32_t cr2, task_info_t *task)
+{
+    if (!gfx_is_active())
+        return;
+
+    /* Dialog dimensions and position (centered) */
+    int dw = 620, dh = 340;
+    int dx = ((int)gfx_width() - dw) / 2;
+    int dy = ((int)gfx_height() - dh) / 2;
+
+    /* Colors */
+    uint32_t bg      = 0x2D2D2D;  /* dark gray background */
+    uint32_t border  = 0xCC0000;  /* red border */
+    uint32_t title_bg= 0xCC0000;  /* red title bar */
+    uint32_t fg      = 0xFFFFFF;  /* white text */
+    uint32_t fg_dim  = 0xBBBBBB;  /* dimmer text */
+    uint32_t fg_val  = 0x55FF55;  /* green for values */
+
+    /* Draw dark overlay behind dialog */
+    gfx_fill_rect_alpha(0, 0, (int)gfx_width(), (int)gfx_height(), 0x80000000);
+
+    /* Dialog background with border */
+    gfx_fill_rect(dx - 2, dy - 2, dw + 4, dh + 4, border);
+    gfx_fill_rect(dx, dy, dw, dh, bg);
+
+    /* Title bar */
+    gfx_fill_rect(dx, dy, dw, 28, title_bg);
+    gfx_draw_string(dx + 10, dy + 6, "Unhandled Exception", fg, title_bg);
+
+    int y = dy + 38;
+    char line[128];
+
+    /* Exception info */
+    DWORD exc_code = 0;
+    switch (int_no) {
+        case 0:  exc_code = 0xC0000094; break;  /* div by zero */
+        case 6:  exc_code = 0xC000001D; break;  /* illegal instruction */
+        case 13: exc_code = 0xC0000005; break;  /* GPF → access violation */
+        case 14: exc_code = 0xC0000005; break;  /* page fault → access violation */
+        default: exc_code = 0xC0000025; break;  /* noncontinuable */
+    }
+
+    snprintf(line, sizeof(line), "Exception:  %s (INT %u)", exception_name, int_no);
+    gfx_draw_string(dx + 14, y, line, fg, bg);
+    y += 18;
+
+    snprintf(line, sizeof(line), "Code:       0x%08X  %s", exc_code, exception_code_name(exc_code));
+    gfx_draw_string(dx + 14, y, line, fg_val, bg);
+    y += 18;
+
+    snprintf(line, sizeof(line), "Task:       '%s'  (PID %d, TID %d)",
+             task->name[0] ? task->name : "?", task->pid, task_get_current());
+    gfx_draw_string(dx + 14, y, line, fg, bg);
+    y += 18;
+
+    snprintf(line, sizeof(line), "Address:    0x%08X", regs->eip);
+    gfx_draw_string(dx + 14, y, line, fg_val, bg);
+    y += 18;
+
+    if (int_no == 14) {
+        snprintf(line, sizeof(line), "Fault Addr: 0x%08X  (%s)",
+                 cr2, (regs->err_code & 2) ? "write" : "read");
+        gfx_draw_string(dx + 14, y, line, fg_val, bg);
+        y += 18;
+    }
+
+    /* Separator line */
+    y += 4;
+    gfx_fill_rect(dx + 10, y, dw - 20, 1, fg_dim);
+    y += 8;
+
+    /* Register dump */
+    gfx_draw_string(dx + 14, y, "Register State:", fg, bg);
+    y += 18;
+
+    snprintf(line, sizeof(line), "EAX=%08X  EBX=%08X  ECX=%08X  EDX=%08X",
+             regs->eax, regs->ebx, regs->ecx, regs->edx);
+    gfx_draw_string(dx + 14, y, line, fg_dim, bg);
+    y += 16;
+
+    snprintf(line, sizeof(line), "ESI=%08X  EDI=%08X  EBP=%08X  ESP=%08X",
+             regs->esi, regs->edi, regs->ebp, regs->useresp);
+    gfx_draw_string(dx + 14, y, line, fg_dim, bg);
+    y += 16;
+
+    snprintf(line, sizeof(line), "EIP=%08X  EFL=%08X  CS=%04X  SS=%04X",
+             regs->eip, regs->eflags, regs->cs, regs->ss);
+    gfx_draw_string(dx + 14, y, line, fg_dim, bg);
+    y += 22;
+
+    /* Stack trace (walk EBP chain) */
+    gfx_draw_string(dx + 14, y, "Stack Trace:", fg, bg);
+    y += 18;
+
+    uint32_t ebp = regs->ebp;
+    for (int frame = 0; frame < 6 && ebp > 0x1000 && ebp < 0x10000000; frame++) {
+        uint32_t ret_addr = *(uint32_t *)(ebp + 4);
+        uint32_t prev_ebp = *(uint32_t *)ebp;
+        snprintf(line, sizeof(line), "  #%d  0x%08X  (frame 0x%08X)", frame, ret_addr, ebp);
+        gfx_draw_string(dx + 14, y, line, fg_dim, bg);
+        y += 16;
+        if (prev_ebp <= ebp) break;  /* prevent infinite loop */
+        ebp = prev_ebp;
+    }
+
+    /* Footer */
+    y = dy + dh - 22;
+    gfx_draw_string(dx + 14, y, "The application will be terminated.", fg_dim, bg);
+
+    /* Flush to screen */
+    gfx_flip_rect(dx - 2, dy - 2, dw + 4, dh + 4);
+
+    serial_printf("[CRASH DIALOG] Displayed for task '%s' (PID %d)\n",
+                  task->name, task->pid);
 }

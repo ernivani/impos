@@ -191,15 +191,15 @@ _Almost every real app links against the C runtime. Your current msvcrt shim cov
 ### Phase 2: Exception Handling Hardening
 _Phase 12 of Tier 1.5 adds basic SEH. This phase makes it bulletproof — real apps crash without it._
 - [x] Full SEH chain walking — nested __try/__except/__finally with correct unwinding order
-- [ ] C++ exception infrastructure — `__CxxFrameHandler3` with proper catchable type matching, `_CxxThrowException`
-- [ ] Exception info structures — `ThrowInfo`, `CatchableTypeArray`, `CatchableType` with type_info matching
-- [ ] Stack unwinding with destructors — unwind calls dtors for stack objects (C++ RAII depends on this)
-- [ ] Vectored Exception Handling — `AddVectoredExceptionHandler` / `RemoveVectoredExceptionHandler`
-- [ ] `__CppXcptFilter` — C++ exception filter used by CRT startup
-- [ ] `_set_se_translator` — SEH-to-C++ exception translation
-- [ ] Guard pages — `STATUS_GUARD_PAGE_VIOLATION` for stack growth detection
+- [x] C++ exception infrastructure — `__CxxFrameHandler3` with proper catchable type matching, `_CxxThrowException`
+- [x] Exception info structures — `ThrowInfo`, `CatchableTypeArray`, `CatchableType` with type_info matching
+- [x] Stack unwinding with destructors — unwind calls dtors for stack objects (C++ RAII depends on this)
+- [x] Vectored Exception Handling — `AddVectoredExceptionHandler` / `RemoveVectoredExceptionHandler`
+- [x] `__CppXcptFilter` — C++ exception filter used by CRT startup
+- [x] `_set_se_translator` — SEH-to-C++ exception translation
+- [x] Guard pages — `STATUS_GUARD_PAGE_VIOLATION` for stack growth detection
 - [x] `RaiseException` with custom exception codes
-- [ ] Unhandled exception dialog — show crash info (address, registers, stack trace) in a WM dialog instead of silent death
+- [x] Unhandled exception dialog — show crash info (address, registers, stack trace) in a WM dialog instead of silent death
 
 ### Phase 3: Full Unicode & Internationalization
 _Phase 10 of Tier 1.5 adds W-suffix APIs. This phase makes Unicode actually work end-to-end._
@@ -384,7 +384,7 @@ _The difference between "technically works" and "actually usable."_
 - [ ] Unimplemented API stub generator — auto-generate stubs that log name + return SUCCESS/zero/NULL instead of crashing
 - [ ] Handle leak detector — track GDI, kernel, user handles; warn on leak
 - [ ] Per-app compatibility database — override behaviors for specific .exe names (version lie, API quirks)
-- [ ] Crash dialog with stack trace — on unhandled exception, show faulting address, loaded DLLs, call stack
+- [x] Crash dialog with stack trace — on unhandled exception, show faulting address, loaded DLLs, call stack
 - [ ] Page fault handler improvements — better error messages for NULL deref, stack overflow, access violations
 - [ ] Memory usage tracking — per-process memory accounting, warn on exhaustion
 - [ ] Process isolation hardening — ensure one app crash doesn't take down the system
@@ -861,7 +861,7 @@ _Users need to control their display experience._
 
 > **Goal:** Make ImposOS run on real hardware, not just QEMU. Build a proper driver model
 > that supports USB, audio, storage, and networking hardware.
-> Estimated total: 12 phases.
+> Estimated total: 13 phases.
 
 ### Phase 1: Driver Model & Framework
 _Before writing drivers, build the infrastructure they plug into._
@@ -1057,6 +1057,24 @@ _Report what hardware is present and let apps query system capabilities._
 - [ ] `/proc/cpuinfo`, `/proc/meminfo`, `/proc/pci` stubs — for Linux apps
 - [ ] WMI stubs — `Win32_Processor`, `Win32_PhysicalMemory`, `Win32_DiskDrive` (COM-based, basic queries)
 - [ ] DMI/SMBIOS — read system manufacturer, BIOS version, serial number from SMBIOS tables
+
+### Phase 13: UEFI Boot Support
+_BIOS is legacy. Modern hardware requires UEFI to boot. This unlocks real machines and secure boot._
+- [ ] UEFI boot stub — PE32+ EFI application that UEFI firmware can load directly
+- [ ] EFI System Partition — read FAT32 ESP, load kernel from `\EFI\imposos\kernel.efi`
+- [ ] GOP (Graphics Output Protocol) — query framebuffer from UEFI, set preferred resolution before ExitBootServices
+- [ ] Memory map from UEFI — `GetMemoryMap()` to discover available RAM, replace E820
+- [ ] ExitBootServices — transition from UEFI runtime to OS control, reclaim boot memory
+- [ ] UEFI runtime services — keep `GetTime`, `SetTime`, `ResetSystem`, `GetVariable`, `SetVariable` accessible after boot
+- [ ] UEFI variable access — read/write NVRAM variables (boot order, secure boot state, OEM data)
+- [ ] UEFI console output — Simple Text Output Protocol for early boot messages before framebuffer is ready (invaluable for debugging GOP failures)
+- [ ] Kernel loading strategy — start with kernel embedded in .efi binary (single file on ESP, simpler), add separate ELF/PE loading later (more flexible, requires UEFI file I/O via Simple File System Protocol)
+- [ ] Initrd / initial ramdisk — load initial filesystem image from ESP alongside kernel
+- [ ] UEFI + BIOS dual boot — detect boot mode, use appropriate initialization path (UEFI GOP vs VBE, UEFI mmap vs E820)
+- [ ] Secure Boot awareness — detect secure boot state, log status (full SB chain-of-trust is stretch goal)
+- [ ] UEFI boot manager integration — register ImposOS as a boot option via `efibootmgr`-style tool
+- [ ] GRUB UEFI chainload — alternatively, ship GRUB as the UEFI bootloader with ImposOS config
+- [ ] Boot log — capture UEFI firmware info (vendor, version, memory map) for diagnostics
 
 ## Tier 2.0 — Self-Hosting & Sovereignty
 
