@@ -89,6 +89,10 @@ int fprintf(FILE* f, const char* format, ...);
 int sscanf(const char* str, const char* format, ...);
 int fscanf(FILE* f, const char* format, ...);
 
+/* File operations */
+int remove(const char* path);
+int rename(const char* oldpath, const char* newpath);
+
 #ifdef __cplusplus
 }
 #endif

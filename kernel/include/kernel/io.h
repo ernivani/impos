@@ -122,6 +122,15 @@ static inline void serial_printf(const char *fmt, ...) {
     __builtin_va_end(ap);
 }
 
+static inline int serial_data_ready(void) {
+    return inb(SERIAL_COM1 + 5) & 0x01;
+}
+
+static inline char serial_getc(void) {
+    while (!serial_data_ready());
+    return (char)inb(SERIAL_COM1);
+}
+
 #define DBG(fmt, ...) serial_printf("[DBG] " fmt "\n", ##__VA_ARGS__)
 
 #endif

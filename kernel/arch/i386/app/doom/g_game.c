@@ -17,11 +17,13 @@
 
 
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include "doom_compat.h"
 
-#include "doomdef.h" 
+#include "doomdef.h"
 #include "doomkeys.h"
 #include "doomstat.h"
 
