@@ -45,6 +45,13 @@ void bga_write(uint16_t index, uint16_t value);
 /* Get video memory size in 64KB blocks */
 uint16_t bga_get_vram_64k(void);
 
+/* Set a linear framebuffer mode — returns 1 on success */
+int bga_set_mode(int width, int height, int bpp);
+
+/* Get the LFB physical address from PCI BAR0 (vendor 0x1234, device 0x1111).
+   Returns 0 if the BGA PCI device is not found. */
+uint32_t bga_get_lfb_addr(void);
+
 /* BGA register indices */
 #define BGA_REG_ID              0x00
 #define BGA_REG_XRES            0x01

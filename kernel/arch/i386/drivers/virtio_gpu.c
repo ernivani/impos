@@ -38,6 +38,36 @@ uint16_t bga_get_vram_64k(void) {
     return bga_read(BGA_REG_VIDEO_MEMORY_64K);
 }
 
+int bga_set_mode(int width, int height, int bpp) {
+    if (!bga_present) return 0;
+    bga_write(BGA_REG_ENABLE, 0);
+    bga_write(BGA_REG_XRES,        (uint16_t)width);
+    bga_write(BGA_REG_YRES,        (uint16_t)height);
+    bga_write(BGA_REG_BPP,         (uint16_t)bpp);
+    bga_write(BGA_REG_VIRT_WIDTH,  (uint16_t)width);
+    bga_write(BGA_REG_VIRT_HEIGHT, (uint16_t)height);
+    bga_write(BGA_REG_X_OFFSET, 0);
+    bga_write(BGA_REG_Y_OFFSET, 0);
+    bga_write(BGA_REG_ENABLE, BGA_ENABLED | BGA_LFB_ENABLED);
+    return 1;
+}
+
+uint32_t bga_get_lfb_addr(void) {
+    /* Bochs/QEMU VGA: vendor 0x1234, device 0x1111, LFB is at BAR0 */
+    pci_device_t dev;
+    if (pci_find_device(0x1234, 0x1111, &dev) != 0) return 0;
+    uint32_t addr = dev.bar[0] & 0xFFFFFFF0;
+    if (addr == 0) {
+        /* PCI BAR not initialized (direct kernel boot without BIOS PCI setup).
+           Assign the LFB to a known address and enable memory space decoding. */
+        addr = 0xE0000000;
+        pci_config_write_dword(dev.bus, dev.device, dev.function, PCI_BAR0, addr);
+        uint16_t cmd = pci_config_read_word(dev.bus, dev.device, dev.function, 0x04);
+        pci_config_write_word(dev.bus, dev.device, dev.function, 0x04, cmd | 0x02);
+    }
+    return addr;
+}
+
 /* ═══ VirtIO legacy PCI interface ══════════════════════════════ */
 
 #define VIRTIO_VENDOR_ID         0x1AF4

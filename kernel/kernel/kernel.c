@@ -27,6 +27,9 @@
 #include <kernel/crypto.h>
 #include <kernel/io.h>
 
+/* Routes putchar/getchar through serial COM1 instead of VGA/PS2 */
+int g_serial_console = 0;
+
 #define PROMPT      "$ "
 
 #define CTRL_A  1
@@ -382,6 +385,15 @@ static int str_ends_with(const char *str, const char *suffix) {
 }
 
 void kernel_main(multiboot_info_t* mbi) {
+    /* Save cmdline BEFORE module malloc overwrites it (heap may overlap cmdline addr) */
+    static char saved_cmdline[256];
+    if ((mbi->flags & (1 << 2)) && mbi->cmdline) {
+        const char *src = (const char *)mbi->cmdline;
+        int i = 0;
+        while (i < 255 && src[i]) { saved_cmdline[i] = src[i]; i++; }
+        saved_cmdline[i] = '\0';
+    }
+
     /* FIRST: Copy multiboot modules before any malloc overwrites them.
        GRUB places modules after the kernel in physical memory, which overlaps
        with our linear heap. Copy to malloc'd buffers immediately. */
@@ -419,12 +431,16 @@ void kernel_main(multiboot_info_t* mbi) {
         }
     }
 
-    gfx_init(mbi);
-    terminal_initialize();
-
-    /* Initialize serial debug output */
+    /* Initialize serial debug output early so gfx_init can log */
     serial_init();
     DBG("ImposOS booting...");
+
+    /* Check for terminal boot mode via kernel cmdline */
+    int terminal_mode = strstr(saved_cmdline, "terminal") ? 1 : 0;
+    DBG("cmdline='%s' terminal_mode=%d", saved_cmdline, terminal_mode);
+
+    if (!terminal_mode) gfx_init(mbi);
+    terminal_initialize();
 
     /* Set up GDT, IDT, PIC, PIT before anything else */
     idt_initialize();
@@ -467,12 +483,13 @@ void kernel_main(multiboot_info_t* mbi) {
     /* Detect GPU acceleration (VirtIO GPU + Bochs VGA BGA) */
     gfx_init_gpu_accel();
 
-    if (gfx_is_active()) {
+    if (gfx_is_active() && !terminal_mode) {
         /* Graphical boot: init subsystems, then run state machine */
         shell_initialize_subsystems();
+        DBG("state_run: starting GUI");
         state_run();  /* Never returns */
     } else {
-        /* Text-mode fallback — original flow */
+        /* Text-mode shell (either no framebuffer, or terminal boot mode) */
         shell_initialize();
 
         jmp_buf restart_point;
