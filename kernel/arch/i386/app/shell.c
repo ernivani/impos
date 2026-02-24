@@ -1277,21 +1277,18 @@ int shell_login(void) {
 }
 
 void shell_initialize_subsystems(void) {
-    fs_initialize();
-
-    /* Mount initrd if available (after fs_initialize, before config) */
-    if (initrd_data && initrd_size > 0) {
-        fs_mount_initrd(initrd_data, initrd_size);
-    }
-
-    config_initialize();
-    rtc_init();
-    net_initialize();
-    env_initialize();
-    hostname_initialize();
-    user_initialize();
-    group_initialize();
-    quota_initialize();
+    DBG("subsys: fs_initialize");    fs_initialize();
+    DBG("subsys: initrd");
+    if (initrd_data && initrd_size > 0) { fs_mount_initrd(initrd_data, initrd_size); }
+    DBG("subsys: config"); config_initialize();
+    DBG("subsys: rtc");    rtc_init();
+    DBG("subsys: net");    net_initialize();
+    DBG("subsys: env");    env_initialize();
+    DBG("subsys: host");   hostname_initialize();
+    DBG("subsys: user");   user_initialize();
+    DBG("subsys: group");  group_initialize();
+    DBG("subsys: quota");  quota_initialize();
+    DBG("subsys: done");
 }
 
 int shell_needs_setup(void) {

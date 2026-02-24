@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include <kernel/vga.h>
 
+/* Set to 1 to route putchar/getchar through serial (terminal boot mode) */
+extern int g_serial_console;
+
 void terminal_initialize(void);
 void terminal_putchar(char c);
 void terminal_write(const char* data, size_t size);

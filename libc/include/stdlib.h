@@ -40,9 +40,11 @@ void free(void* ptr);
 int atoi(const char* str);
 long atol(const char* str);
 long long atoll(const char* str);
+double atof(const char* str);
 long strtol(const char* nptr, char** endptr, int base);
 unsigned long strtoul(const char* nptr, char** endptr, int base);
 unsigned long long strtoull(const char* nptr, char** endptr, int base);
+double strtod(const char* nptr, char** endptr);
 
 int abs(int j);
 long labs(long j);
