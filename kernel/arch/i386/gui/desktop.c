@@ -188,8 +188,7 @@ int  alttab_is_visible(void) { return alttab_visible; }
 /* ── Main loop ──────────────────────────────────────────────────── */
 
 int desktop_run(void) {
-    static uint32_t last_fps_update = 0;
-    static uint8_t  prev_btn = 0;
+    static uint8_t prev_btn = 0;
 
     if (desktop_first_show) {
         desktop_first_show = 0;
@@ -197,12 +196,10 @@ int desktop_run(void) {
     }
 
     while (1) {
-        uint32_t tick = pit_get_ticks();
-
         /* Route mouse events to wm2 */
         if (mouse_poll()) {
-            int mx         = mouse_get_x();
-            int my         = mouse_get_y();
+            int mx          = mouse_get_x();
+            int my          = mouse_get_y();
             uint8_t cur_btn = mouse_get_buttons();
             wm2_mouse_event(mx, my, cur_btn, prev_btn);
             prev_btn = cur_btn;
@@ -219,22 +216,20 @@ int desktop_run(void) {
             int sw = (int)gfx_width(), sh = (int)gfx_height();
             wm2_destroy(demo_id);
             demo_id = wm2_create(sw/2 - 200, sh/2 - 150, 400, 300, "ImposOS");
-            demo_paint();
         }
 
-        /* Refresh FPS counter once per second (~120 ticks at 120 Hz) */
-        if (tick - last_fps_update >= 120) {
-            last_fps_update = tick;
-            demo_paint();
-        }
+        /* Always repaint the demo window — keeps FPS live and ensures
+           the compositor always has a dirty region to composite.
+           compositor_frame() rate-limits the actual flip to 60fps. */
+        demo_paint();
 
-        /* Composite — only dirty regions */
+        /* Composite dirty regions (rate-capped at 60fps internally) */
         compositor_frame();
 
         /* Redraw cursor on framebuffer after composite flip */
         gfx_sync_cursor_after_composite(mouse_get_x(), mouse_get_y());
 
-        /* Brief idle */
+        /* Brief idle: wakes on PIT (120Hz), mouse (IRQ12), keyboard (IRQ1) */
         __asm__ volatile("hlt");
     }
 }
