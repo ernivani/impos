@@ -379,12 +379,19 @@ void compositor_damage_all(void) {
 void compositor_frame(void) {
     if (!gfx_is_active()) return;
 
-    /* 60fps cap */
     uint32_t now = pit_get_ticks();
-    if (now - last_frame_tick < FRAME_TICKS) return;
-    last_frame_tick = now;
 
-    if (!screen_dirty) goto fps_update;
+    /* If nothing is dirty, apply the 60fps idle cap to avoid spinning. */
+    if (!screen_dirty) {
+        if (now - last_frame_tick < FRAME_TICKS) return;
+        last_frame_tick = now;
+        goto fps_update;
+    }
+
+    /* Dirty content: always composite immediately — never block on the
+       rate limiter, because that would cause input→visual lag when
+       pit_ticks advance slowly or FRAME_TICKS hasn't elapsed yet. */
+    last_frame_tick = now;
 
     /* Clamp dirty rect to screen */
     {
