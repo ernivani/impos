@@ -218,18 +218,25 @@ int desktop_run(void) {
             demo_id = wm2_create(sw/2 - 200, sh/2 - 150, 400, 300, "ImposOS");
         }
 
-        /* Always repaint the demo window — keeps FPS live and ensures
-           the compositor always has a dirty region to composite.
-           compositor_frame() rate-limits the actual flip to 60fps. */
-        demo_paint();
+        /* Repaint the demo window once per PIT tick (~120 Hz).
+           A loop-counter fallback fires if pit_ticks ever stalls, so the
+           screen is never permanently frozen even without timer interrupts. */
+        {
+            static uint32_t last_tick  = 0;
+            static uint32_t loop_ctr   = 0;
+            uint32_t t = pit_get_ticks();
+            loop_ctr++;
+            if (t != last_tick || loop_ctr >= 200000) {
+                last_tick  = t;
+                loop_ctr   = 0;
+                demo_paint();
+            }
+        }
 
         /* Composite dirty regions (rate-capped at 60fps internally) */
         compositor_frame();
 
         /* Redraw cursor on framebuffer after composite flip */
         gfx_sync_cursor_after_composite(mouse_get_x(), mouse_get_y());
-
-        /* Brief idle: wakes on PIT (120Hz), mouse (IRQ12), keyboard (IRQ1) */
-        __asm__ volatile("hlt");
     }
 }
