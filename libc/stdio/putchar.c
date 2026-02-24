@@ -2,6 +2,7 @@
 
 #if defined(__is_libk)
 #include <kernel/tty.h>
+#include <kernel/io.h>
 
 /* Shell pipe output hook (defined in shell.c) */
 extern int  shell_is_pipe_mode(void);
@@ -13,6 +14,8 @@ int putchar(int ic) {
 	char c = (char) ic;
 	if (shell_is_pipe_mode())
 		shell_pipe_putchar(c);
+	else if (g_serial_console)
+		serial_putc(c);
 	else
 		terminal_write(&c, sizeof(c));
 #else

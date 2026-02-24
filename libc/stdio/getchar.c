@@ -285,6 +285,13 @@ int keyboard_get_layout(void) {
 #define KEYMAP_SIZE 89
 
 char getchar(void) {
+    /* Serial console mode: read directly from COM1 */
+    if (g_serial_console) {
+        char c = serial_getc();
+        if (c == '\r') c = '\n';  /* serial terminals send CR */
+        return c;
+    }
+
     /* Save caller's task so we can restore it when returning */
     int caller_task = task_get_current();
 

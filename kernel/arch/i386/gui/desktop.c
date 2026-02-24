@@ -2385,43 +2385,50 @@ static void desktop_close_focused_app(void) {
 /* ═══ Self-contained desktop_run() — Central Event Loop ════════ */
 
 int desktop_run(void) {
-    /* Clear app registry */
+    DBG("desktop: clear registry");
     for (int i = 0; i < MAX_RUNNING_APPS; i++)
         running_apps[i].active = 0;
 
-    /* Initialize WM */
+    DBG("desktop: wm_initialize");
     wm_initialize();
+    DBG("desktop: wm_set_bg");
     wm_set_bg_draw(desktop_bg_draw);
     wm_set_post_composite(ctx_post_composite);
 
     int fb_w = (int)gfx_width(), fb_h = (int)gfx_height();
+    DBG("desktop: rebuild_dock_items");
     rebuild_dock_items();
-
-    /* Initialize clock cache */
+    DBG("desktop: get_time_str");
     get_time_str(last_clock_str);
-
-    /* Load desktop file icons */
+    DBG("desktop: load_icons");
     desktop_load_icons();
-
-    /* Initialize event system */
+    DBG("desktop: ui_event_init");
     ui_event_init();
-
-    /* Draw desktop background + menubar + dock */
+    DBG("desktop: draw_gradient");
     draw_gradient(fb_w, fb_h);
+    DBG("desktop: draw_menubar");
     desktop_draw_menubar();
+    DBG("desktop: draw_icons");
     desktop_draw_icons();
+    DBG("desktop: draw_dock");
     desktop_draw_dock();
+    DBG("desktop: post-dock, first_show=%d", desktop_first_show);
 
     if (desktop_first_show) {
         desktop_first_show = 0;
+        DBG("desktop: gfx_crossfade");
         gfx_crossfade(8, 30);
+        DBG("desktop: crossfade done");
 
         /* Welcome toast on login */
         const char *user = user_get_current();
+        DBG("desktop: toast user=%s", user ? user : "(null)");
         char welcome_msg[80];
         snprintf(welcome_msg, sizeof(welcome_msg), "Welcome back, %s",
                  user ? user : "user");
+        DBG("desktop: toast_show");
         toast_show("ImposOS", "Welcome", welcome_msg, TOAST_INFO);
+        DBG("desktop: toast done");
     } else {
         gfx_flip();
     }

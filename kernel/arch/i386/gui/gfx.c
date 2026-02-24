@@ -4,9 +4,11 @@
 #include <kernel/idt.h>
 #include <kernel/mouse.h>
 #include <kernel/virtio_gpu.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <kernel/io.h>
 
 #include "font8x16.h"
 
@@ -98,7 +100,31 @@ int gfx_init(multiboot_info_t* mbi) {
         fb_pitch  = vbe->pitch;
         fb_bpp    = vbe->bpp;
     } else {
-        return 0;
+        /* No multiboot framebuffer info — try BGA direct programming (QEMU -vga std) */
+        serial_puts("[gfx] No multiboot framebuffer, trying BGA...\n");
+        if (bga_detect()) {
+            serial_puts("[gfx] BGA detected\n");
+            int w = 1024, h = 768;
+            if (bga_set_mode(w, h, 32)) {
+                uint32_t lfb = bga_get_lfb_addr();
+                serial_printf("[gfx] BGA LFB addr: 0x%x\n", lfb);
+                if (lfb) {
+                    addr      = lfb;
+                    fb_width  = (uint32_t)w;
+                    fb_height = (uint32_t)h;
+                    fb_pitch  = (uint32_t)(w * 4);
+                    fb_bpp    = 32;
+                } else {
+                    /* Failed to get LFB — disable BGA to restore text mode */
+                    serial_puts("[gfx] BGA LFB addr unknown, disabling BGA\n");
+                    bga_write(BGA_REG_ENABLE, 0);
+                }
+            }
+        } else {
+            serial_puts("[gfx] BGA not detected\n");
+        }
+        if (addr == 0)
+            return 0;
     }
 
     /* Validate */
