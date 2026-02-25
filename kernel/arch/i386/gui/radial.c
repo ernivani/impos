@@ -15,7 +15,7 @@
 #define OUTER_R   150   /* ring outer radius */
 #define INNER_R   110   /* icon orbit radius */
 #define CENTER_R   42   /* center circle radius */
-#define ICON_SIZE  40   /* icon square size */
+#define ICON_SIZE  46   /* icon square size — matches mockup exactly */
 
 /* ── Integer trig (shared Bhaskara I) ──────────────────────────── */
 static int bh_sin(int x) {
@@ -230,30 +230,57 @@ static void radial_draw_content(void) {
         icon_draw(ai->icon_id, px, sw, ix, iy, ICON_SIZE, bg, fg);
     }
 
-    /* Center circle */
-    draw_filled_circle(px, sw, sh, bcx, bcy, CENTER_R, 0xFF0C1626);
+    /* Center circle — matches mockup: dark fill, subtle border */
+    draw_filled_circle(px, sw, sh, bcx, bcy, CENTER_R, 0xFF08101A);
     draw_circle_outline(px, sw, sh, bcx, bcy, CENTER_R, 1, 0x28FFFFFF);
 
-    /* Center label */
+    /* Center content — matches mockup exactly:
+       hovering item: show app name centered
+       idle: 2×2 dot grid + "All apps" label below dots */
     {
-        const char *label = "All apps";
-        int is_app = 0;
-        if (active_slot >= 0 && active_slot < n_pins) {
-            int idx = app_pin_get(active_slot);
-            const app_info_t *ai = app_get(idx);
-            if (ai) { label = ai->name; is_app = 1; }
-        }
-        (void)is_app;
-
-        /* Draw label centered */
-        int len = 0;
-        const char *p = label;
-        while (*p++) len++;
-        int tx = bcx - len * 4;
-        int ty = bcy - 8;
         gfx_surface_t gs;
         gs.buf = px; gs.w = sw; gs.h = sh; gs.pitch = sw;
-        gfx_surf_draw_string(&gs, tx, ty, label, 0xFFCDD6F4, 0);
+
+        if (active_slot >= 0 && active_slot < n_pins) {
+            /* Show app name */
+            int idx = app_pin_get(active_slot);
+            const app_info_t *ai = app_get(idx);
+            if (ai) {
+                int len = 0;
+                const char *p = ai->name;
+                while (*p++ && len < 9) len++;
+                int tx = bcx - len * 4;
+                int ty = bcy - 8;
+                gfx_surf_draw_string(&gs, tx, ty, ai->name, 0xB3FFFFFF, 0);
+            }
+        } else {
+            /* 2×2 dot grid, dot radius 3px, gap 13px — matches mockup */
+            int dot_r = 3;
+            int gap = 13;
+            for (int row = 0; row < 2; row++) {
+                for (int col = 0; col < 2; col++) {
+                    int ddx = col * gap - gap / 2;
+                    int ddy = row * gap - gap / 2 - 8;
+                    int ddcx = bcx + ddx, ddcy = bcy + ddy;
+                    /* Alpha-blend dots at 30% white opacity */
+                    for (int dy2 = -dot_r; dy2 <= dot_r; dy2++) {
+                        for (int dx2 = -dot_r; dx2 <= dot_r; dx2++) {
+                            if (dx2*dx2 + dy2*dy2 > dot_r*dot_r) continue;
+                            int px2 = ddcx + dx2, py2 = ddcy + dy2;
+                            if (px2 >= 0 && px2 < sw && py2 >= 0 && py2 < sh)
+                                alpha_blend_pixel(&px[py2 * sw + px2],
+                                                  0xFFFFFFFF, 77);
+                        }
+                    }
+                }
+            }
+            /* "All apps" label — 20% opacity white */
+            const char *label = "All apps";
+            int len = 8;
+            int tx = bcx - len * 4;
+            int ty = bcy + 10;
+            gfx_surf_draw_string(&gs, tx, ty, label, 0x33FFFFFF, 0);
+        }
     }
 
     comp_surface_damage_all(surf);

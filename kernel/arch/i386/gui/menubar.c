@@ -73,9 +73,9 @@ void menubar_paint(void) {
     /* Background: semi-transparent dark */
     for (int i = 0; i < w * MENUBAR_HEIGHT; i++) px[i] = MENUBAR_BG;
 
-    /* Bottom border */
+    /* Bottom border: rgba(255,255,255,0.08) */
     for (int x = 0; x < w; x++)
-        px[(MENUBAR_HEIGHT - 1) * w + x] = 0x1FFFFFFF;
+        px[(MENUBAR_HEIGHT - 1) * w + x] = 0x14FFFFFF;
 
     int cx = 0; /* current x cursor */
 
@@ -146,7 +146,7 @@ void menubar_paint(void) {
         uint32_t fg = focused   ? 0xD9FFFFFF :
                       minimized ? 0x59CDD6F4  :
                                   0xA6CDD6F4;
-        gfx_surf_draw_string(&gs, pill_x + 6,
+        gfx_surf_draw_string(&gs, pill_x + 10,
                              (MENUBAR_HEIGHT - 16) / 2, label, fg, 0);
 
         /* Blue underline for active pill */

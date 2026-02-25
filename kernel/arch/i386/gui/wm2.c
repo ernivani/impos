@@ -15,7 +15,6 @@
 #include <kernel/wm2.h>
 #include <kernel/compositor.h>
 #include <kernel/gfx.h>
-#include <kernel/ui_theme.h>
 #include <kernel/mouse.h>
 #include <string.h>
 #include <stdlib.h>
@@ -23,20 +22,25 @@
 /* ── Geometry ───────────────────────────────────────────────────── */
 
 #define WM2_MAX_WINDOWS   32
-#define WM2_TITLEBAR_H    28    /* px — title bar height              */
-#define WM2_RESIZE_ZONE    4    /* px — invisible edge resize handle  */
-#define WM2_CORNER_R       8    /* px — corner radius for rounding    */
-#define WM2_BTN_R          6    /* px — traffic-light button radius   */
-#define WM2_BTN_SPACING   18    /* px — button centre-to-centre       */
-#define WM2_BTN_MARGIN    12    /* px — left edge → first button ctr  */
+#define WM2_TITLEBAR_H    38    /* px — title bar height (mockup: 38px) */
+#define WM2_RESIZE_ZONE    4    /* px — invisible edge resize handle    */
+#define WM2_CORNER_R      12    /* px — corner radius (mockup: 12px)    */
+#define WM2_BTN_R          6    /* px — traffic-light button radius     */
+#define WM2_BTN_SPACING   19    /* px — button centre-to-centre (7gap+12btn) */
+#define WM2_BTN_MARGIN    14    /* px — left edge → first button ctr    */
 #define WM2_MIN_W        120
 #define WM2_MIN_H         60
 
-/* Traffic-light palette (macOS colours) */
-#define WM2_BTN_CLOSE_C  GFX_RGB(255, 95,  86)
+/* Traffic-light palette — exact mockup hex: #ff5f57 / #ffbd2e / #28c840 */
+#define WM2_BTN_CLOSE_C  GFX_RGB(255, 95,  87)
 #define WM2_BTN_MIN_C    GFX_RGB(255, 189, 46)
-#define WM2_BTN_MAX_C    GFX_RGB( 39, 201, 63)
-#define WM2_BTN_DIM_C    GFX_RGB( 76,  76, 80)
+#define WM2_BTN_MAX_C    GFX_RGB( 40, 200, 64)
+
+/* Window colours — mockup: rgba(18,24,36) body / rgba(255,255,255,0.04) titlebar */
+#define WM2_BODY_BG      GFX_RGB(18,  24,  36)   /* #121824 */
+#define WM2_TITLE_BG     GFX_RGB(26,  32,  48)   /* #1A2030 — body + 0.04 white */
+#define WM2_BORDER_C     0x1AFFFFFF               /* rgba(255,255,255,0.10) */
+#define WM2_SEP_C        GFX_RGB(30,  38,  56)   /* titlebar separator */
 
 /* ── Per-window record ──────────────────────────────────────────── */
 
@@ -204,8 +208,7 @@ static void draw_win(wm2_win_t *win) {
         WM2_BTN_CLOSE_C, WM2_BTN_MIN_C, WM2_BTN_MAX_C
     };
     gfx_surface_t gs;
-    uint32_t frame_bg, content_bg, title_fg;
-    uint32_t fab, cab;           /* frame/content with alpha byte set */
+    uint32_t fab, cab;
     int sw, sh, b, tx, ty, tlen;
 
     if (!win->surf) return;
@@ -213,78 +216,68 @@ static void draw_win(wm2_win_t *win) {
     sh = win->surf->h;
     gs = comp_surface_lock(win->surf);
 
-    frame_bg   = win->focused ? ui_theme.win_header_focused
-                               : ui_theme.win_header_bg;
-    content_bg = ui_theme.win_body_bg;
-    title_fg   = win->focused ? ui_theme.win_header_text
-                               : ui_theme.text_dim;
-    fab = frame_bg   | 0xFF000000;
-    cab = content_bg | 0xFF000000;
+    fab = WM2_TITLE_BG | 0xFF000000;
+    cab = WM2_BODY_BG  | 0xFF000000;
 
-    /* 1. Fill title bar + a narrow bottom strip with frame colour */
+    /* 1. Fill titlebar with glass-dark colour */
     gfx_surf_fill_rect(&gs, 0, 0, sw, WM2_TITLEBAR_H, fab);
-    /* bottom 1 px border also in frame colour */
-    gfx_surf_fill_rect(&gs, 0, sh-1, sw, 1, fab);
-    /* left/right 1 px borders in frame colour */
-    gfx_surf_fill_rect(&gs, 0, WM2_TITLEBAR_H, 1, sh-WM2_TITLEBAR_H-1, fab);
-    gfx_surf_fill_rect(&gs, sw-1, WM2_TITLEBAR_H, 1, sh-WM2_TITLEBAR_H-1, fab);
 
-    /* 2. Content area */
+    /* 2. Content area body */
     {
-        int csw = sw-2, csh = sh-WM2_TITLEBAR_H-1;
+        int csw = sw, csh = sh - WM2_TITLEBAR_H;
         if (csw > 0 && csh > 0)
-            gfx_surf_fill_rect(&gs, 1, WM2_TITLEBAR_H, csw, csh, cab);
+            gfx_surf_fill_rect(&gs, 0, WM2_TITLEBAR_H, csw, csh, cab);
     }
 
-    /* 3. Focus ring: 1 px accent border at window edge (before masking) */
-    if (win->focused) {
+    /* 3. Subtle 1-px border all around (rgba(255,255,255,0.10)) */
+    {
         int x, y;
-        uint32_t ac = ui_theme.accent | 0xFF000000;
+        uint32_t bc = 0xFF1F2B42;  /* body + ~10% white overlay */
         for (x = 0; x < sw; x++) {
-            win->surf->pixels[0*sw + x]       = ac;
-            win->surf->pixels[(sh-1)*sw + x]  = ac;
+            win->surf->pixels[0      * sw + x] = bc;
+            win->surf->pixels[(sh-1) * sw + x] = bc;
         }
-        for (y = 0; y < sh; y++) {
-            win->surf->pixels[y*sw + 0]       = ac;
-            win->surf->pixels[y*sw + (sw-1)]  = ac;
+        for (y = 1; y < sh - 1; y++) {
+            win->surf->pixels[y * sw + 0]      = bc;
+            win->surf->pixels[y * sw + (sw-1)] = bc;
         }
     }
 
-    /* 4. Round all four corners by zeroing outside the radius */
+    /* 4. Round all four corners */
     apply_corner_mask(win->surf->pixels, sw, sh, WM2_CORNER_R);
 
-    /* 5. Separator line between title bar and content */
+    /* 5. Separator line between titlebar and content */
     {
         int x;
-        uint32_t sep = ui_theme.win_border | 0xFF000000;
+        uint32_t sep = WM2_SEP_C | 0xFF000000;
         for (x = 0; x < sw; x++)
-            win->surf->pixels[(WM2_TITLEBAR_H-1)*sw + x] = sep;
+            win->surf->pixels[(WM2_TITLEBAR_H - 1) * sw + x] = sep;
     }
 
-    /* 6. Traffic-light buttons */
+    /* 6. Traffic-light buttons — always coloured (matches mockup) */
     {
         int by = WM2_TITLEBAR_H / 2;
         for (b = 0; b < 3; b++) {
             int bcx = WM2_BTN_MARGIN + b * WM2_BTN_SPACING;
-            uint32_t col = (win->focused || win->btn_hover == b+1)
-                           ? btn_col[b] : WM2_BTN_DIM_C;
+            uint32_t col = (win->btn_hover == b + 1)
+                           ? btn_col[b]
+                           : ((win->focused) ? btn_col[b]
+                                             : (btn_col[b] & 0xFFBFBFBF)); /* slight dim */
             gfx_surf_fill_circle(&gs, bcx, by, WM2_BTN_R,
                                  col | 0xFF000000);
         }
     }
 
-    /* 7. Title text — centred, left-clamped past buttons */
+    /* 7. Title text — centred, light gray (rgba(255,255,255,0.65)) */
     tlen = 0;
     while (win->title[tlen]) tlen++;
     tx = (sw - tlen * FONT_W) / 2;
     ty = (WM2_TITLEBAR_H - FONT_H) / 2;
     {
-        int min_tx = WM2_BTN_MARGIN + 3*WM2_BTN_SPACING + 8;
+        int min_tx = WM2_BTN_MARGIN + 3 * WM2_BTN_SPACING + 8;
         if (tx < min_tx) tx = min_tx;
     }
-    gfx_surf_draw_string(&gs, tx, ty, win->title,
-                         title_fg | 0xFF000000,
-                         fab);
+    gfx_surf_draw_string(&gs, tx, ty, win->title, 0xFFA6A6A6, fab);
 
     /* 8. Blit app's client pixels into content area */
     blit_client(win);
@@ -295,19 +288,16 @@ static void draw_win(wm2_win_t *win) {
 /* ── Partial button redraw (hover only) ─────────────────────────── */
 
 static void draw_win_buttons(wm2_win_t *win) {
-    static const uint32_t btn_col[3] = {
-        WM2_BTN_CLOSE_C, WM2_BTN_MIN_C, WM2_BTN_MAX_C
+    static const uint32_t btn_col[3] = { WM2_BTN_CLOSE_C, WM2_BTN_MIN_C, WM2_BTN_MAX_C
     };
     gfx_surface_t gs;
     int b, by;
-    uint32_t frame_bg, fab;
+    uint32_t fab;
 
     if (!win->surf) return;
     gs = comp_surface_lock(win->surf);
 
-    frame_bg = win->focused ? ui_theme.win_header_focused
-                             : ui_theme.win_header_bg;
-    fab = frame_bg | 0xFF000000;
+    fab = (WM2_TITLE_BG) | 0xFF000000;
     by  = WM2_TITLEBAR_H / 2;
 
     /* Damage rect covering all 3 buttons */
@@ -321,11 +311,13 @@ static void draw_win_buttons(wm2_win_t *win) {
     /* Clear button area to title bar background */
     gfx_surf_fill_rect(&gs, bx0, by0, bx1 - bx0, by1 - by0, fab);
 
-    /* Redraw all three buttons */
+    /* Redraw all three buttons — always coloured */
     for (b = 0; b < 3; b++) {
         int bcx = WM2_BTN_MARGIN + b * WM2_BTN_SPACING;
-        uint32_t col = (win->focused || win->btn_hover == b + 1)
-                       ? btn_col[b] : WM2_BTN_DIM_C;
+        uint32_t col = (win->btn_hover == b + 1)
+                       ? btn_col[b]
+                       : ((win->focused) ? btn_col[b]
+                                         : (btn_col[b] & 0xFFBFBFBF));
         gfx_surf_fill_circle(&gs, bcx, by, WM2_BTN_R, col | 0xFF000000);
     }
 

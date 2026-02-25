@@ -73,102 +73,104 @@ static uint32_t lcg(uint32_t seed) {
 }
 
 /* ── Theme definitions ───────────────────────────────────────────── */
+/* Colors match the HTML mockup exactly.                               */
 
 typedef struct {
     const char *name;
-    uint32_t    dot_color;    /* representative dot for Settings UI */
-    uint32_t    sky[4];       /* sky gradient stops */
-    uint32_t    accent1;
-    uint32_t    accent2;
-    uint32_t    accent3;
+    uint32_t    dot_color;
+    uint32_t    sky[5];       /* up to 5 sky gradient stops */
+    int         sky_stops;
+    uint32_t    accent1;      /* layer 0 mountain / wave / nebula color */
+    uint32_t    accent2;      /* layer 1 */
+    uint32_t    accent3;      /* layer 2 */
 } theme_t;
 
-/* Mountains: 4 themes */
+/* Mountains: 4 themes — exact mockup colors */
 static const theme_t mtns[4] = {
-    { "Night",
-      0xFF1A0A2E,
-      { 0xFF0A0015, 0xFF1A0A2E, 0xFF2D1B4E, 0xFF3D2060 },
-      0xFF7B2FBE, 0xFF3D2060, 0xFF0D0D1A },
-    { "Dawn",
-      0xFFF5A623,
-      { 0xFF1A0A2E, 0xFF5C2E7A, 0xFFB05090, 0xFFF5A623 },
-      0xFFB05090, 0xFF5C2E7A, 0xFF1A0020 },
-    { "Day",
-      0xFF4FC3F7,
-      { 0xFF1565C0, 0xFF1E88E5, 0xFF42A5F5, 0xFF81D4FA },
-      0xFF0D47A1, 0xFF1565C0, 0xFF1A237E },
-    { "Dusk",
-      0xFFFF5722,
-      { 0xFF1A0A2E, 0xFF6A1545, 0xFFD84315, 0xFFFF8F00 },
-      0xFFBF360C, 0xFF6A1545, 0xFF110020 },
+    /* Night: sky #0a0e1a→#1a1f3a, mtn #0c1020/#0e1225/#10152a */
+    { "Night", 0xFF1A1F3A,
+      { 0xFF0A0E1A, 0xFF0D1328, 0xFF121A35, 0xFF1A1F3A, 0 }, 4,
+      0xFF0C1020, 0xFF0E1225, 0xFF10152A },
+    /* Dawn: sky #1a1025→#e8a870, mtn #1a1020/#251828/#352030 */
+    { "Dawn", 0xFFC87050,
+      { 0xFF1A1025, 0xFF2D1530, 0xFF6B3040, 0xFFC87050, 0xFFE8A870 }, 5,
+      0xFF1A1020, 0xFF251828, 0xFF352030 },
+    /* Day: sky #2a6ac0→#b0d8ff, mtn #3a5570/#4a6580/#5a7590 */
+    { "Day", 0xFF60A0E0,
+      { 0xFF2A6AC0, 0xFF3A80D0, 0xFF60A0E0, 0xFF90C0F0, 0xFFB0D8FF }, 5,
+      0xFF3A5570, 0xFF4A6580, 0xFF5A7590 },
+    /* Dusk: sky #1a1028→#d09040, mtn #1a1020/#251520/#352025 */
+    { "Dusk", 0xFFC06530,
+      { 0xFF1A1028, 0xFF3A1830, 0xFF7A3535, 0xFFC06530, 0xFFD09040 }, 5,
+      0xFF1A1020, 0xFF251520, 0xFF352025 },
 };
 
-/* Gradient: 4 themes */
+/* Gradient: 4 themes — exact mockup colors */
 static const theme_t grads[4] = {
-    { "Sunset",
-      0xFFE91E63,
-      { 0xFF4A148C, 0xFFB71C1C, 0xFFE65100, 0xFFF9A825 },
-      0xFFE91E63, 0xFFFF5722, 0xFF4A148C },
-    { "Ocean",
-      0xFF1976D2,
-      { 0xFF0D47A1, 0xFF1565C0, 0xFF0277BD, 0xFF00838F },
-      0xFF1976D2, 0xFF00838F, 0xFF006064 },
-    { "Aurora",
-      0xFF00BCD4,
-      { 0xFF0A0A1E, 0xFF003040, 0xFF006040, 0xFF00BCD4 },
-      0xFF00BCD4, 0xFF00E5FF, 0xFF1DE9B6 },
-    { "Midnight",
-      0xFF673AB7,
-      { 0xFF0A0014, 0xFF1A0033, 0xFF2D006A, 0xFF673AB7 },
-      0xFF7B1FA2, 0xFF9C27B0, 0xFF4A148C },
+    /* Sunset */
+    { "Sunset", 0xFFD04020,
+      { 0xFF1A0530, 0xFF6B1040, 0xFFD04020, 0xFFF08030, 0xFFFFD060 }, 5,
+      0xFF6B1040, 0xFFD04020, 0xFFF08030 },
+    /* Ocean */
+    { "Ocean", 0xFF1060A0,
+      { 0xFF020818, 0xFF0A2848, 0xFF1060A0, 0xFF20A0D0, 0xFF60D0E0 }, 5,
+      0xFF0A2848, 0xFF1060A0, 0xFF20A0D0 },
+    /* Aurora */
+    { "Aurora", 0xFF40C080,
+      { 0xFF0A1020, 0xFF103040, 0xFF10806A, 0xFF40C080, 0xFF80F0A0 }, 5,
+      0xFF103040, 0xFF10806A, 0xFF40C080 },
+    /* Midnight */
+    { "Midnight", 0xFF401868,
+      { 0xFF08060E, 0xFF150828, 0xFF281048, 0xFF401868, 0xFF602888 }, 5,
+      0xFF150828, 0xFF281048, 0xFF401868 },
 };
 
-/* Geometric: 3 themes */
+/* Geometric: 3 themes — exact mockup colors */
 static const theme_t geos[3] = {
-    { "Dark",
-      0xFF37474F,
-      { 0xFF0D1117, 0xFF161B22, 0xFF21262D, 0xFF30363D },
-      0xFF1F6FEB, 0xFF388BFD, 0xFF0D419D },
-    { "Colorful",
-      0xFFAB47BC,
-      { 0xFF1A0533, 0xFF0D2B45, 0xFF0F3460, 0xFF1A1A2E },
-      0xFFAB47BC, 0xFFE91E63, 0xFF1565C0 },
-    { "Neon",
-      0xFFFF00FF,
-      { 0xFF030303, 0xFF050505, 0xFF080808, 0xFF0A0A0A },
-      0xFFFF00FF, 0xFF00FFFF, 0xFF39FF14 },
+    /* Dark: bg #0a0c12, palette[0] used as sky base */
+    { "Dark", 0xFF283050,
+      { 0xFF0A0C12, 0xFF1A2030, 0xFF202840, 0xFF283050, 0 }, 4,
+      0xFF303860, 0xFF384070, 0xFF283050 },
+    /* Colorful: bg #10101a */
+    { "Colorful", 0xFFA03060,
+      { 0xFF10101A, 0xFF4030A0, 0xFFA03060, 0xFFD06020, 0xFF30A070 }, 5,
+      0xFF4030A0, 0xFFA03060, 0xFFD06020 },
+    /* Neon: bg #05050a */
+    { "Neon", 0xFFFF0080,
+      { 0xFF05050A, 0xFF0D0015, 0xFF001A0A, 0xFF000D1A, 0xFF100010 }, 5,
+      0xFFFF0080, 0xFF00FF80, 0xFF0080FF },
 };
 
-/* Stars: 3 themes */
-static const theme_t stars[3] = {
-    { "Deep Space",
-      0xFF0D1B2A,
-      { 0xFF010207, 0xFF020410, 0xFF040818, 0xFF060C22 },
-      0xFF4A235A, 0xFF1B2A4A, 0xFF0D0820 },
-    { "Nebula",
-      0xFF7B1FA2,
-      { 0xFF050010, 0xFF0D001E, 0xFF140030, 0xFF1A0040 },
-      0xFF7B1FA2, 0xFF1565C0, 0xFFB71C1C },
-    { "Starfield",
-      0xFF90A4AE,
-      { 0xFF000000, 0xFF010101, 0xFF020204, 0xFF040408 },
-      0xFF37474F, 0xFF455A64, 0xFF263238 },
+/* Stars: 3 themes — exact mockup colors */
+static const theme_t stars_t[3] = {
+    /* Deep Space: bg #020208 */
+    { "Deep Space", 0xFF1A1040,
+      { 0xFF020208, 0xFF050510, 0xFF080818, 0xFF0A0A20, 0 }, 4,
+      0xFF140A3C, 0xFF3C0A28, 0xFF0A0A28 },
+    /* Nebula: bg #050210 */
+    { "Nebula", 0xFF6020A0,
+      { 0xFF050210, 0xFF0D0520, 0xFF140838, 0xFF1A1050, 0 }, 4,
+      0xFF501478, 0xFF143C78, 0xFF78183C },
+    /* Starfield: bg #000005 */
+    { "Starfield", 0xFF101830,
+      { 0xFF000005, 0xFF030308, 0xFF05050C, 0xFF080810, 0 }, 4,
+      0xFF0A1428, 0xFF0A1428, 0xFF0A1428 },
 };
 
-/* Waves: 3 themes */
-static const theme_t waves[3] = {
-    { "Ocean",
-      0xFF0277BD,
-      { 0xFF80DEEA, 0xFF4FC3F7, 0xFF039BE5, 0xFF0277BD },
-      0xFF01579B, 0xFF006064, 0xFF004D40 },
-    { "Sunset Sea",
-      0xFFE57373,
-      { 0xFFFFF176, 0xFFFFB74D, 0xFFEF5350, 0xFFB71C1C },
-      0xFF880E4F, 0xFF4A148C, 0xFF1A0030 },
-    { "Arctic",
-      0xFFB0BEC5,
-      { 0xFFCFD8DC, 0xFFB0BEC5, 0xFF90A4AE, 0xFF78909C },
-      0xFF546E7A, 0xFF37474F, 0xFF263238 },
+/* Waves: 3 themes — exact mockup colors */
+static const theme_t wavest[3] = {
+    /* Ocean: sky #081828→#2090d0, waves #0a3060→#2080d0 */
+    { "Ocean", 0xFF1860A0,
+      { 0xFF081828, 0xFF103050, 0xFF1860A0, 0xFF2090D0, 0 }, 4,
+      0xFF0A3060, 0xFF0C4080, 0xFF1050A0 },
+    /* Sunset Sea: sky #1a0820→#e8a050, waves #301020→#a84040 */
+    { "Sunset Sea", 0xFFD06030,
+      { 0xFF1A0820, 0xFF501030, 0xFFA03030, 0xFFD06030, 0 }, 4,
+      0xFF301020, 0xFF501828, 0xFF702030 },
+    /* Arctic: sky #101820→#608090, waves #182830→#406878 */
+    { "Arctic", 0xFF406070,
+      { 0xFF101820, 0xFF182838, 0xFF284050, 0xFF406070, 0 }, 4,
+      0xFF182830, 0xFF203840, 0xFF284850 },
 };
 
 /* ── State ──────────────────────────────────────────────────────── */
@@ -177,114 +179,98 @@ static int  cur_style = WALLPAPER_MOUNTAINS;
 static int  cur_theme = 0;
 
 /* ── Style: Mountains ───────────────────────────────────────────── */
+/* Uses smooth sine-wave silhouettes matching the HTML mockup exactly. */
 
 static void draw_mountains(uint32_t *buf, int w, int h, uint32_t t,
                             int style, int theme_idx) {
     const theme_t *th = &mtns[theme_idx];
 
-    /* Sky gradient */
+    /* Sky gradient: up to 5 stops */
     for (int y = 0; y < h; y++) {
-        uint32_t col = vgrad(y, h, th->sky, 4);
+        uint32_t col = vgrad(y, h, th->sky, th->sky_stops);
         for (int x = 0; x < w; x++)
             buf[y * w + x] = col;
     }
 
-    /* Stars (night/dawn themes) */
-    if (theme_idx == 0 || theme_idx == 1) {
-        uint32_t seed = 42;
-        int star_count = 200;
-        int brightness = (theme_idx == 0) ? 200 : 80;
-        for (int i = 0; i < star_count; i++) {
-            seed = lcg(seed);
-            int sx = (int)(seed % (uint32_t)w);
-            seed = lcg(seed);
-            int sy = (int)(seed % (uint32_t)(h * 2 / 3));
-            seed = lcg(seed);
-            int bright = brightness - (int)(seed % 60);
-            /* Flicker with trig */
-            int flick = isin((int)(t * 2 + i * 13)) * 30 / 127;
-            bright += flick;
-            bright = clamp(bright, 0, 255);
-            buf[sy * w + sx] = mkrgb(bright, bright, bright + 20);
+    /* Stars: Night(idx=0) bright, Dawn(idx=1) faint */
+    {
+        int star_alpha = (theme_idx == 0) ? 160 : (theme_idx == 1) ? 50 : 0;
+        if (star_alpha > 0) {
+            uint32_t seed = 42;
+            for (int i = 0; i < 120; i++) {
+                seed = lcg(seed); int sx = (int)(seed % (uint32_t)w);
+                seed = lcg(seed); int sy = (int)(seed % (uint32_t)(h * 6 / 10));
+                seed = lcg(seed); int sb = (int)(seed % 256);
+                int flick = isin((int)(t * 2 + sb)) * 40 / 127;
+                int br = clamp(star_alpha + flick, 0, 255);
+                buf[sy * w + sx] = mkrgb(br, br, br + 10);
+            }
         }
     }
 
-    /* Aurora (night theme) */
+    /* Aurora: only night theme (idx=0) */
     if (theme_idx == 0) {
-        int aurora_y = h / 4;
-        int aurora_h = h / 8;
-        for (int y = aurora_y; y < aurora_y + aurora_h; y++) {
-            int alpha = 80 - (y - aurora_y) * 80 / aurora_h;
+        for (int i = 0; i < 3; i++) {
+            int ay_base = h * 15 / 100 + i * h * 35 / 1000;
+            int aurora_amp = h * 3 / 100;
             for (int x = 0; x < w; x++) {
-                int wave = isin((int)(x * 256 / w * 3 + t * 4)) * aurora_h / 256;
-                int ay = y + wave;
+                int ph = (x * 5 * 128 / w + (int)(t / 2 + i * 40)) & 255;
+                int ay = ay_base + isin(ph) * aurora_amp / 127;
                 if (ay < 0 || ay >= h) continue;
                 uint32_t *p = &buf[ay * w + x];
                 int dr = (*p >> 16) & 0xFF;
                 int dg = (*p >>  8) & 0xFF;
                 int db =  *p        & 0xFF;
-                int ar = (th->accent1 >> 16) & 0xFF;
-                int ag = (th->accent1 >>  8) & 0xFF;
-                int ab =  th->accent1        & 0xFF;
-                buf[ay * w + x] = mkrgb(
-                    dr + (ar - dr) * alpha / 255,
-                    dg + (ag - dg) * alpha / 255,
-                    db + (ab - db) * alpha / 255);
+                /* green-cyan aurora at 15% opacity */
+                buf[ay * w + x] = mkrgb(dr + (0   - dr) * 15 / 100,
+                                        dg + (200 - dg) * 15 / 100,
+                                        db + (150 - db) * 15 / 100);
             }
         }
     }
 
-    /* Three mountain layers (far to near) */
-    static const int peak_seeds[3] = { 17, 37, 53 };
-    static const int base_frac[3]  = { 55, 68, 80 };  /* % of height */
-    static const int peak_frac[3]  = { 30, 45, 62 };  /* % of height */
-    static const int dark_pct[3]   = { 60, 40, 25 };  /* % brightness */
-
+    /* Three sine-wave mountain layers (far to near).
+       Algorithm matches the HTML mockup drawMountains() function:
+         baseY = h*0.55 + layer*(h*0.033)
+         hv = sin(nx*freq1*PI + layer*2)*40 + sin(nx*freq2*PI+layer)*20 + sin(nx*15*PI)*10
+         top_y = baseY - hv*(1-layer*0.2)*(h/800)
+       Phase mapping: nx*freq*PI in isin units = x*freq*128/w
+       Phase offset: layer*2 rad ≈ layer*81 isin units; layer rad ≈ layer*40 units */
     for (int layer = 0; layer < 3; layer++) {
-        int base_y = h * base_frac[layer] / 100;
-        int peak_y = h * peak_frac[layer] / 100;
-        uint32_t mcolor = lerp_c(th->accent2, th->accent3,
-                                 layer, 3);
-        /* Darken for depth */
-        int dr = (int)((mcolor >> 16) & 0xFF) * dark_pct[layer] / 100;
-        int dg = (int)((mcolor >>  8) & 0xFF) * dark_pct[layer] / 100;
-        int db = (int)( mcolor        & 0xFF) * dark_pct[layer] / 100;
-        mcolor = mkrgb(dr, dg, db);
+        uint32_t mcolor;
+        if (layer == 0) mcolor = th->accent1;
+        else if (layer == 1) mcolor = th->accent2;
+        else mcolor = th->accent3;
 
-        /* Generate mountain silhouette via LCG-based heightmap */
-        uint32_t mseed = (uint32_t)peak_seeds[layer];
-        int prev_h = base_y;
-        int segs = 16;
-        for (int seg = 0; seg <= segs; seg++) {
-            mseed = lcg(mseed);
-            int sx = seg * w / segs;
-            int target_h;
-            if (seg == 0 || seg == segs)
-                target_h = base_y;
-            else
-                target_h = peak_y + (int)(mseed % (uint32_t)(base_y - peak_y));
+        int base_y = h * 55 / 100 + layer * h * 33 / 1000;
+        int freq1 = 3 + layer;
+        int freq2 = 7 + layer * 2;
 
-            int next_sx = (seg + 1) * w / segs;
-            int next_mseed = lcg(mseed);
-            int next_h;
-            if (seg + 1 == 0 || seg + 1 >= segs)
-                next_h = base_y;
-            else
-                next_h = peak_y + (int)(next_mseed % (uint32_t)(base_y - peak_y));
+        for (int x = 0; x < w; x++) {
+            /* Phase for each frequency component */
+            int ph1 = (x * freq1 * 128 / w + layer * 81) & 255;
+            int ph2 = (x * freq2 * 128 / w + layer * 40) & 255;
+            int ph3 = (x * 15   * 128 / w)               & 255;
 
-            /* Fill trapezoid from sx to next_sx */
-            for (int x = sx; x < next_sx && x < w; x++) {
-                int frac = (next_sx > sx) ? (x - sx) * 256 / (next_sx - sx) : 128;
-                int top_y = target_h + (next_h - target_h) * frac / 256;
-                if (seg > 0) top_y = prev_h + (top_y - prev_h) * frac / 256;
-                for (int y = top_y; y < base_y && y >= 0 && y < h; y++)
-                    buf[y * w + x] = mcolor;
-            }
-            prev_h = target_h;
+            /* Weighted sine sum — matches JS: *40 + *20 + *10 */
+            int v = isin(ph1) * 40 + isin(ph2) * 20 + isin(ph3) * 10;
+
+            /* Scale factor per layer: 1.0, 0.8, 0.6 → ×10, ×8, ×6 */
+            int scale = 10 - layer * 2;
+
+            /* Pixel offset = v * scale * h / (127 * 10 * 800) */
+            int offset = v * scale * h / (127 * 10 * 800);
+            int top_y  = base_y - offset;
+            if (top_y < 0) top_y = 0;
+            if (top_y >= h) continue;
+
+            /* Fill column from silhouette to bottom */
+            for (int y = top_y; y < h; y++)
+                buf[y * w + x] = mcolor;
         }
     }
 
-    (void)style;
+    (void)t; (void)style;
 }
 
 /* ── Style: Gradient ────────────────────────────────────────────── */
@@ -293,35 +279,36 @@ static void draw_gradient(uint32_t *buf, int w, int h, uint32_t t,
                            int style, int theme_idx) {
     const theme_t *th = &grads[theme_idx];
 
-    /* Slowly drifting diagonal gradient */
-    int angle = (int)(t * 1) & 511; /* 0..511 = 0..2*PI*2 */
-    int ax = icos(angle / 2) * 100 / 127; /* -100 to 100 */
-    int ay = isin(angle / 2) * 100 / 127;
+    /* Slowly drifting diagonal gradient — matches mockup drawGradient() */
+    int angle = (int)(t / 2) & 255;
+    int ax = icos(angle) * 80 / 127;   /* -80..+80 */
+    int ay = isin(angle) * 80 / 127;
 
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
-            /* Project (x,y) onto gradient direction */
-            int proj = (x * (ax + 100) / w + y * (ay + 100) / h);
-            proj = clamp(proj, 0, 199);
-            uint32_t col = vgrad(proj, 200, th->sky, 4);
+            int proj = (x * (ax + w / 2) / w + y * (ay + h / 2) / h);
+            proj = clamp(proj, 0, th->sky_stops - 1);
+            /* Smooth interpolation across gradient stops */
+            int total = w / 2 + h / 2;
+            int raw = (x * (ax + w/2) / w + y * (ay + h/2) / h);
+            raw = clamp(raw, 0, total);
+            uint32_t col = vgrad(raw, total, th->sky, th->sky_stops);
             buf[y * w + x] = col;
         }
     }
 
-    /* 3 soft orbs */
-    static const int orb_x[3] = { 25, 65, 80 }; /* % of width */
+    /* 3 soft orbs drifting slowly */
+    static const int orb_x[3] = { 30, 65, 80 };
     static const int orb_y[3] = { 30, 70, 20 };
-    static const int orb_r[3] = { 30, 25, 20 };  /* % of min(w,h) */
-    uint32_t orb_cols[3];
-    orb_cols[0] = th->accent1;
-    orb_cols[1] = th->accent2;
-    orb_cols[2] = th->accent3;
+    static const int orb_r[3] = { 28, 22, 18 };
+
+    uint32_t orb_cols[3] = { th->accent1, th->accent2, th->accent3 };
 
     for (int o = 0; o < 3; o++) {
-        /* Orbs drift in small circles */
-        int drift = 5;
-        int cx = w * orb_x[o] / 100 + icos((int)(t * 2 + o * 85)) * drift / 127;
-        int cy = h * orb_y[o] / 100 + isin((int)(t * 2 + o * 85)) * drift / 127;
+        int drift = 8;
+        int ph = (int)(t / 3 + o * 85) & 255;
+        int cx = w * orb_x[o] / 100 + icos(ph) * drift / 127;
+        int cy = h * orb_y[o] / 100 + isin(ph) * drift / 127;
         int radius = (w < h ? w : h) * orb_r[o] / 100;
 
         int xmin = cx - radius; if (xmin < 0) xmin = 0;
@@ -336,19 +323,16 @@ static void draw_gradient(uint32_t *buf, int w, int h, uint32_t t,
         for (int py = ymin; py < ymax; py++) {
             for (int px = xmin; px < xmax; px++) {
                 int dx = px - cx, dy = py - cy;
-                int d2 = dx*dx + dy*dy;
-                int r2 = radius * radius;
+                int d2 = dx*dx + dy*dy, r2 = radius * radius;
                 if (d2 >= r2) continue;
-                /* Gaussian-ish falloff */
-                int alpha = 60 - 60 * d2 / r2;
+                int alpha = 40 - 40 * d2 / r2;
                 uint32_t *p = &buf[py * w + px];
                 int dr = (*p >> 16) & 0xFF;
                 int dg = (*p >>  8) & 0xFF;
                 int db =  *p        & 0xFF;
-                buf[py * w + px] = mkrgb(
-                    dr + (or_ - dr) * alpha / 255,
-                    dg + (og  - dg) * alpha / 255,
-                    db + (ob  - db) * alpha / 255);
+                buf[py * w + px] = mkrgb(dr + (or_ - dr) * alpha / 255,
+                                         dg + (og  - dg) * alpha / 255,
+                                         db + (ob  - db) * alpha / 255);
             }
         }
     }
@@ -356,6 +340,7 @@ static void draw_gradient(uint32_t *buf, int w, int h, uint32_t t,
 }
 
 /* ── Style: Geometric ───────────────────────────────────────────── */
+/* Tessellated triangles with pulsing opacity, matching mockup drawGeometric(). */
 
 static void draw_geometric(uint32_t *buf, int w, int h, uint32_t t,
                             int style, int theme_idx) {
@@ -364,57 +349,74 @@ static void draw_geometric(uint32_t *buf, int w, int h, uint32_t t,
     /* Base fill */
     for (int i = 0; i < w * h; i++) buf[i] = th->sky[0];
 
-    /* Tessellated triangles: grid of cells, each split diagonally */
-    int cell = (w < h ? w : h) / 10;
-    if (cell < 20) cell = 20;
-    int cols = w / cell + 2;
-    int rows = h / cell + 2;
+    /* Hex-offset triangle grid like mockup (sz≈60, 0.866 row pitch) */
+    int sz = 60;
+    int cols = w / sz + 2;
+    int rows = h * 100 / 87 / sz + 2;  /* 0.866 ≈ 87/100 */
 
-    uint32_t tri_cols[6];
-    tri_cols[0] = th->sky[1];
-    tri_cols[1] = th->sky[2];
-    tri_cols[2] = th->sky[3];
-    tri_cols[3] = th->accent1;
-    tri_cols[4] = th->accent2;
-    tri_cols[5] = th->accent3;
+    /* Palette from mockup sky stops + accents */
+    uint32_t palette[5] = {
+        th->sky[1], th->sky[2], th->sky[3],
+        th->accent1, th->accent2
+    };
+    int pal_count = 5;
 
-    uint32_t seed = 1337;
     for (int row = 0; row < rows; row++) {
         for (int col = 0; col < cols; col++) {
-            seed = lcg(seed);
-            int ci = (int)(seed % 6);
-            seed = lcg(seed);
-            int dark = (int)(seed % 40);
+            int ci = ((col * 7 + row * 13) % pal_count + pal_count) % pal_count;
+            /* Pulsing: 0.15..0.30 opacity in mockup, here ≈ 38..77 alpha */
+            int pulse = isin((int)(t + col * 8 + row * 13)) * 10 / 127;
+            int alpha = 38 + pulse + 38; /* 38..76 */
+            if (alpha < 0) alpha = 0;
+            if (alpha > 100) alpha = 100;
 
-            /* Pulsing opacity */
-            int pulse = isin((int)(t + row * 13 + col * 17)) * 20 / 127;
+            int cx = col * sz + (row & 1 ? sz / 2 : 0);
+            int cy = row * sz * 87 / 100;
 
-            int x0 = col * cell, y0 = row * cell;
-            int x1 = x0 + cell, y1 = y0 + cell;
+            /* Upper triangle: tip (cx,cy-sz*2/5), base at cy+sz*1/5 */
+            int tx0 = cx, ty0 = cy - sz * 2 / 5;
+            int ty1 = cy + sz / 5;
+            int tx2 = cx - sz / 2;
+            /* Lower triangle: inverted */
+            int bx1 = cx + sz / 2, by1 = cy;
+            int bx2 = cx - sz / 2;
+            int bty = cy + sz * 2 / 5;
 
-            uint32_t col0 = tri_cols[ci];
-            int rr = clamp((int)((col0 >> 16) & 0xFF) - dark + pulse, 0, 255);
-            int gg = clamp((int)((col0 >>  8) & 0xFF) - dark + pulse, 0, 255);
-            int bb = clamp((int)( col0        & 0xFF) - dark + pulse, 0, 255);
-            uint32_t fc = mkrgb(rr, gg, bb);
+            uint32_t pc = palette[ci];
+            int pr = (pc >> 16) & 0xFF;
+            int pg = (pc >>  8) & 0xFF;
+            int pb =  pc        & 0xFF;
 
-            seed = lcg(seed);
-            int ci2 = (int)(seed % 6);
-            uint32_t col1 = tri_cols[ci2];
-            rr = clamp((int)((col1 >> 16) & 0xFF) - dark - pulse, 0, 255);
-            gg = clamp((int)((col1 >>  8) & 0xFF) - dark - pulse, 0, 255);
-            bb = clamp((int)( col1        & 0xFF) - dark - pulse, 0, 255);
-            uint32_t sc = mkrgb(rr, gg, bb);
-
-            /* Upper-left triangle (above diagonal) */
-            for (int py = y0; py < y1 && py < h; py++) {
-                for (int px = x0; px < x1 && px < w; px++) {
-                    if (px < 0 || py < 0) continue;
-                    /* Is point above diagonal? */
-                    int above = (px - x0) + (py - y0) < cell;
-                    buf[py * w + px] = above ? fc : sc;
+            /* Fill both triangles with scanline rasterisation */
+            for (int py = ty0; py <= ty1 && py < h; py++) {
+                if (py < 0) continue;
+                int span = (py - ty0) * (sz / 2) / (ty1 - ty0 + 1);
+                for (int px = tx0 - span; px <= tx0 + span && px < w; px++) {
+                    if (px < 0) continue;
+                    uint32_t *p = &buf[py * w + px];
+                    int dr = (*p >> 16) & 0xFF;
+                    int dg = (*p >>  8) & 0xFF;
+                    int db =  *p        & 0xFF;
+                    buf[py * w + px] = mkrgb(dr + (pr - dr) * alpha / 100,
+                                             dg + (pg - dg) * alpha / 100,
+                                             db + (pb - db) * alpha / 100);
                 }
             }
+            for (int py = by1; py <= bty && py < h; py++) {
+                if (py < 0) continue;
+                int span = (bty - py) * (sz / 2) / (bty - by1 + 1);
+                for (int px = bx2 + (sz/2 - span); px <= bx1 - (sz/2 - span) && px < w; px++) {
+                    if (px < 0) continue;
+                    uint32_t *p = &buf[py * w + px];
+                    int dr = (*p >> 16) & 0xFF;
+                    int dg = (*p >>  8) & 0xFF;
+                    int db =  *p        & 0xFF;
+                    buf[py * w + px] = mkrgb(dr + (pr - dr) * alpha / 100,
+                                             dg + (pg - dg) * alpha / 100,
+                                             db + (pb - db) * alpha / 100);
+                }
+            }
+            (void)tx2; (void)bx2; (void)bx1; (void)bty;
         }
     }
     (void)style;
@@ -424,11 +426,11 @@ static void draw_geometric(uint32_t *buf, int w, int h, uint32_t t,
 
 static void draw_stars_wp(uint32_t *buf, int w, int h, uint32_t t,
                            int style, int theme_idx) {
-    const theme_t *th = &stars[theme_idx];
+    const theme_t *th = &stars_t[theme_idx];
 
     /* Deep background */
     for (int y = 0; y < h; y++) {
-        uint32_t col = vgrad(y, h, th->sky, 4);
+        uint32_t col = vgrad(y, h, th->sky, th->sky_stops);
         for (int x = 0; x < w; x++)
             buf[y * w + x] = col;
     }
@@ -511,61 +513,63 @@ static void draw_stars_wp(uint32_t *buf, int w, int h, uint32_t t,
 }
 
 /* ── Style: Waves ───────────────────────────────────────────────── */
+/* Matches mockup drawWaves(): sky gradient + 3 wave layers using
+   exact color tables from the HTML theme registry.                    */
 
 static void draw_waves(uint32_t *buf, int w, int h, uint32_t t,
                         int style, int theme_idx) {
-    const theme_t *th = &waves[theme_idx];
+    const theme_t *th = &wavest[theme_idx];
 
-    /* Sky gradient (top 55%) */
-    int sky_h = h * 55 / 100;
-    for (int y = 0; y < sky_h; y++) {
-        uint32_t col = vgrad(y, sky_h, th->sky, 4);
+    /* Full-height sky gradient */
+    for (int y = 0; y < h; y++) {
+        uint32_t col = vgrad(y, h, th->sky, th->sky_stops);
         for (int x = 0; x < w; x++)
             buf[y * w + x] = col;
     }
 
-    /* Wave layers (bottom 60%, overlapping) */
-    static const int wave_speed[5] = { 3, 5, 2, 7, 4 };
-    static const int wave_amp[5]   = { 6, 4, 8, 3, 5 };
-    static const int wave_freq[5]  = { 3, 5, 2, 7, 4 };
-    static const int wave_y_pct[5] = { 52, 58, 62, 67, 73 };
+    /* 3 wave layers matching mockup wave colors:
+       theme accent1/accent2/accent3 = wave layer 0/1/2 */
+    uint32_t wcolors[3] = { th->accent1, th->accent2, th->accent3 };
 
-    for (int lyr = 0; lyr < 5; lyr++) {
-        int base_y = h * wave_y_pct[lyr] / 100;
-        int amp = h * wave_amp[lyr] / 100;
+    for (int lyr = 0; lyr < 3; lyr++) {
+        uint32_t wc = wcolors[lyr];
+        int wr = (wc >> 16) & 0xFF;
+        int wg = (wc >>  8) & 0xFF;
+        int wb =  wc        & 0xFF;
 
-        /* Wave color darkens toward bottom */
-        uint32_t wc = lerp_c(th->accent1, th->accent3, lyr, 5);
+        /* baseY = h*0.4 + lyr*(h*0.12) */
+        int base_y = h * 40 / 100 + lyr * h * 12 / 100;
+        /* amp = h * 0.04 * (1 + lyr*0.3) */
+        int amp = h * (10 + lyr * 3) / 250;
+
+        /* Animation phases advance with time, speed proportional to layer */
+        int spd = (lyr + 1);
+        int t_fwd = (int)((t >> 3) * spd);   /* forward drift */
+        int t_bwd = (int)((t >> 4) * spd);   /* backward drift */
+        int t_slow = (int)((t >> 5) * spd);  /* slow component */
 
         for (int x = 0; x < w; x++) {
-            int phase1 = x * wave_freq[lyr] * 256 / w + (int)(t * wave_speed[lyr]);
-            int phase2 = x * (wave_freq[lyr] + 1) * 256 / w - (int)(t * wave_speed[lyr] / 2);
-            int wave_off = isin(phase1) * amp / 127 +
-                           isin(phase2) * amp / 2 / 127;
+            /* sin(nx*freq*PI) → isin_phase = x*freq*128/w */
+            int p1 = (x * 4 * 128 / w + t_fwd) & 255;
+            int p2 = (x * 7 * 128 / w - t_bwd) & 255;
+            int p3 = (x * 2 * 128 / w + t_slow + lyr * 40) & 255;
+
+            int wave_off = isin(p1) * amp / 127
+                         + isin(p2) * amp * 4 / (127 * 10)
+                         + isin(p3) * amp * 3 / (127 * 10);
             int top_y = base_y + wave_off;
+            if (top_y < 0) top_y = 0;
+            if (top_y >= h) continue;
 
             for (int y = top_y; y < h; y++) {
-                if (y < 0 || y >= h) continue;
-                /* Darken toward bottom */
-                int depth_dark = (y - top_y) * 30 / (h - top_y + 1);
-                int wr = clamp((int)((wc >> 16) & 0xFF) - depth_dark, 0, 255);
-                int wg = clamp((int)((wc >>  8) & 0xFF) - depth_dark, 0, 255);
-                int wb = clamp((int)( wc        & 0xFF) - depth_dark, 0, 255);
-                buf[y * w + x] = mkrgb(wr, wg, wb);
-            }
-
-            /* White foam line at wave top */
-            int foam_y = clamp(top_y, 0, h - 1);
-            int foam_a = 150 - lyr * 25;
-            if (foam_a > 0) {
-                uint32_t *p = &buf[foam_y * w + x];
+                uint32_t *p = &buf[y * w + x];
                 int dr = (*p >> 16) & 0xFF;
                 int dg = (*p >>  8) & 0xFF;
                 int db =  *p        & 0xFF;
-                buf[foam_y * w + x] = mkrgb(
-                    dr + (255 - dr) * foam_a / 255,
-                    dg + (255 - dg) * foam_a / 255,
-                    db + (255 - db) * foam_a / 255);
+                /* Blend wave color at 85% opacity */
+                buf[y * w + x] = mkrgb(dr + (wr - dr) * 85 / 100,
+                                        dg + (wg - dg) * 85 / 100,
+                                        db + (wb - db) * 85 / 100);
             }
         }
     }
@@ -590,7 +594,7 @@ static const char *style_names[WALLPAPER_STYLE_COUNT] = {
 static const int theme_counts[WALLPAPER_STYLE_COUNT] = { 4, 4, 3, 3, 3 };
 
 static const theme_t *all_themes[WALLPAPER_STYLE_COUNT] = {
-    mtns, grads, geos, stars, waves
+    mtns, grads, geos, stars_t, wavest
 };
 
 /* ── Public API ─────────────────────────────────────────────────── */
