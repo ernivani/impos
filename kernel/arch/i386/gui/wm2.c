@@ -1,17 +1,3 @@
-/* wm2.c — Phase 3: Window manager
- *
- * Each window gets one comp_surface_t on COMP_LAYER_WINDOWS.
- * WM draws: dark body fill, title bar, macOS traffic-light buttons,
- * rounded corners (via corner-mask), optional focus ring.
- * App pixels live in a malloc'd client buffer; WM blits them into
- * the surface content area each time the canvas is damaged.
- *
- * Mouse state machine:
- *   IDLE → DRAG_MOVE (title bar held)
- *        → DRAG_RESIZE (8 edge / corner handles)
- *        → DRAG_BTN (traffic-light press, release-on-button triggers)
- */
-
 #include <kernel/wm2.h>
 #include <kernel/compositor.h>
 #include <kernel/gfx.h>
@@ -20,43 +6,39 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* ── Geometry ───────────────────────────────────────────────────── */
-
 #define WM2_MAX_WINDOWS   32
-#define WM2_TITLEBAR_H    28    /* px — title bar height              */
-#define WM2_RESIZE_ZONE    4    /* px — invisible edge resize handle  */
-#define WM2_CORNER_R       8    /* px — corner radius for rounding    */
-#define WM2_BTN_R          6    /* px — traffic-light button radius   */
-#define WM2_BTN_SPACING   18    /* px — button centre-to-centre       */
-#define WM2_BTN_MARGIN    12    /* px — left edge → first button ctr  */
+#define WM2_TITLEBAR_H    28
+#define WM2_RESIZE_ZONE    4
+#define WM2_CORNER_R       8
+#define WM2_BTN_R          6
+#define WM2_BTN_SPACING   18
+#define WM2_BTN_MARGIN    12
 #define WM2_MIN_W        120
 #define WM2_MIN_H         60
 
-/* Traffic-light palette (macOS colours) */
+/* macOS traffic-light colours */
 #define WM2_BTN_CLOSE_C  GFX_RGB(255, 95,  86)
 #define WM2_BTN_MIN_C    GFX_RGB(255, 189, 46)
 #define WM2_BTN_MAX_C    GFX_RGB( 39, 201, 63)
 #define WM2_BTN_DIM_C    GFX_RGB( 76,  76, 80)
 
-/* ── Per-window record ──────────────────────────────────────────── */
-
 typedef struct {
     int  id;
-    int  x, y, w, h;         /* outer screen bounds                  */
+    int  x, y, w, h;
     char title[64];
-    int  state;               /* WM2_STATE_*                          */
+    int  state;               /* WM2_STATE_* */
     int  focused;
-    int  z;                   /* logical z order (higher = front)     */
+    int  z;
 
-    int  save_x, save_y, save_w, save_h;  /* for maximize/restore    */
+    int  save_x, save_y, save_w, save_h;
 
-    comp_surface_t *surf;     /* compositor surface (full window)     */
+    comp_surface_t *surf;
 
-    uint32_t *client_px;      /* app pixel buffer                     */
+    uint32_t *client_px;
     int       client_w;
     int       client_h;
 
-    int btn_hover;            /* 0=none 1=close 2=min 3=max           */
+    int btn_hover;            /* 0=none 1=close 2=min 3=max */
     int close_requested;
     int in_use;
 } wm2_win_t;
@@ -66,8 +48,6 @@ static int win_count  = 0;
 static int focused_id = -1;
 static int z_counter  = 0;
 static int next_id    = 1;
-
-/* ── Mouse drag state ───────────────────────────────────────────── */
 
 #define DRAG_NONE    0
 #define DRAG_MOVE    1
@@ -80,8 +60,6 @@ static struct {
     int start_wx, start_wy, start_ww, start_wh;
 } drag;
 
-/* ── Helpers ────────────────────────────────────────────────────── */
-
 static wm2_win_t *find_win(int id) {
     int i;
     for (i = 0; i < WM2_MAX_WINDOWS; i++)
@@ -89,7 +67,6 @@ static wm2_win_t *find_win(int id) {
     return 0;
 }
 
-/* Content area in screen coords */
 static void content_rect(wm2_win_t *win,
                           int *cx, int *cy, int *cw, int *ch) {
     *cx = win->x + 1;
@@ -98,7 +75,6 @@ static void content_rect(wm2_win_t *win,
     *ch = win->h - WM2_TITLEBAR_H - 1;  if (*ch < 0) *ch = 0;
 }
 
-/* Hit-test one window; returns WM2_HIT_* */
 static int hit_test_win(wm2_win_t *win, int mx, int my) {
     int x = win->x, y = win->y, w = win->w, h = win->h;
     int rx, ry, b, RZ;
@@ -131,7 +107,6 @@ static int hit_test_win(wm2_win_t *win, int mx, int my) {
     return WM2_HIT_CONTENT;
 }
 
-/* Topmost window under (mx, my) */
 static wm2_win_t *topmost_at(int mx, int my) {
     int i, top_z = -1;
     wm2_win_t *result = 0;
@@ -143,32 +118,27 @@ static wm2_win_t *topmost_at(int mx, int my) {
     return result;
 }
 
-/* ── Corner masking ─────────────────────────────────────────────── */
-
-/* Zero out the four corner regions to create rounded corners.
-   Pixels at distance > r from each corner centre become transparent. */
+/* Zero corner pixels outside radius r to create rounded corners */
 static void apply_corner_mask(uint32_t *px, int w, int h, int r) {
     int x, y;
     for (y = 0; y < r; y++) {
         for (x = 0; x < r; x++) {
             int ex = r - x, ey = r - y;
             if (ex*ex + ey*ey > r*r) {
-                px[y*w + x]               = 0;   /* top-left     */
-                px[y*w + (w-1-x)]         = 0;   /* top-right    */
-                px[(h-1-y)*w + x]         = 0;   /* bottom-left  */
-                px[(h-1-y)*w + (w-1-x)]   = 0;   /* bottom-right */
+                px[y*w + x]               = 0;
+                px[y*w + (w-1-x)]         = 0;
+                px[(h-1-y)*w + x]         = 0;
+                px[(h-1-y)*w + (w-1-x)]   = 0;
             }
         }
     }
 }
 
-/* ── Decoration drawing ─────────────────────────────────────────── */
-
 static void blit_client(wm2_win_t *win) {
     int cx, cy, cw, ch, sx, sy, bw, bh, row;
     if (!win->client_px || !win->surf) return;
     content_rect(win, &cx, &cy, &cw, &ch);
-    sx = cx - win->x;            /* surface-local content origin */
+    sx = cx - win->x;
     sy = cy - win->y;
     bw = (win->client_w < cw) ? win->client_w : cw;
     bh = (win->client_h < ch) ? win->client_h : ch;
@@ -178,14 +148,12 @@ static void blit_client(wm2_win_t *win) {
                (size_t)bw * 4);
 }
 
-/* Blit only a sub-rect of the client buffer into the surface */
 static void blit_client_region(wm2_win_t *win, int rx, int ry, int rw, int rh) {
     int cx, cy, cw, ch, sx, sy, bw, bh, row;
     if (!win->client_px || !win->surf) return;
     content_rect(win, &cx, &cy, &cw, &ch);
     sx = cx - win->x;
     sy = cy - win->y;
-    /* Clamp region to client bounds */
     if (rx < 0) { rw += rx; rx = 0; }
     if (ry < 0) { rh += ry; ry = 0; }
     if (rx + rw > win->client_w) rw = win->client_w - rx;
@@ -205,7 +173,7 @@ static void draw_win(wm2_win_t *win) {
     };
     gfx_surface_t gs;
     uint32_t frame_bg, content_bg, title_fg;
-    uint32_t fab, cab;           /* frame/content with alpha byte set */
+    uint32_t fab, cab;
     int sw, sh, b, tx, ty, tlen;
 
     if (!win->surf) return;
@@ -221,22 +189,17 @@ static void draw_win(wm2_win_t *win) {
     fab = frame_bg   | 0xFF000000;
     cab = content_bg | 0xFF000000;
 
-    /* 1. Fill title bar + a narrow bottom strip with frame colour */
     gfx_surf_fill_rect(&gs, 0, 0, sw, WM2_TITLEBAR_H, fab);
-    /* bottom 1 px border also in frame colour */
     gfx_surf_fill_rect(&gs, 0, sh-1, sw, 1, fab);
-    /* left/right 1 px borders in frame colour */
     gfx_surf_fill_rect(&gs, 0, WM2_TITLEBAR_H, 1, sh-WM2_TITLEBAR_H-1, fab);
     gfx_surf_fill_rect(&gs, sw-1, WM2_TITLEBAR_H, 1, sh-WM2_TITLEBAR_H-1, fab);
 
-    /* 2. Content area */
     {
         int csw = sw-2, csh = sh-WM2_TITLEBAR_H-1;
         if (csw > 0 && csh > 0)
             gfx_surf_fill_rect(&gs, 1, WM2_TITLEBAR_H, csw, csh, cab);
     }
 
-    /* 3. Focus ring: 1 px accent border at window edge (before masking) */
     if (win->focused) {
         int x, y;
         uint32_t ac = ui_theme.accent | 0xFF000000;
@@ -250,10 +213,8 @@ static void draw_win(wm2_win_t *win) {
         }
     }
 
-    /* 4. Round all four corners by zeroing outside the radius */
     apply_corner_mask(win->surf->pixels, sw, sh, WM2_CORNER_R);
 
-    /* 5. Separator line between title bar and content */
     {
         int x;
         uint32_t sep = ui_theme.win_border | 0xFF000000;
@@ -261,7 +222,6 @@ static void draw_win(wm2_win_t *win) {
             win->surf->pixels[(WM2_TITLEBAR_H-1)*sw + x] = sep;
     }
 
-    /* 6. Traffic-light buttons */
     {
         int by = WM2_TITLEBAR_H / 2;
         for (b = 0; b < 3; b++) {
@@ -273,7 +233,6 @@ static void draw_win(wm2_win_t *win) {
         }
     }
 
-    /* 7. Title text — centred, left-clamped past buttons */
     tlen = 0;
     while (win->title[tlen]) tlen++;
     tx = (sw - tlen * FONT_W) / 2;
@@ -286,13 +245,10 @@ static void draw_win(wm2_win_t *win) {
                          title_fg | 0xFF000000,
                          fab);
 
-    /* 8. Blit app's client pixels into content area */
     blit_client(win);
 
     comp_surface_damage_all(win->surf);
 }
-
-/* ── Partial button redraw (hover only) ─────────────────────────── */
 
 static void draw_win_buttons(wm2_win_t *win) {
     static const uint32_t btn_col[3] = {
@@ -310,7 +266,6 @@ static void draw_win_buttons(wm2_win_t *win) {
     fab = frame_bg | 0xFF000000;
     by  = WM2_TITLEBAR_H / 2;
 
-    /* Damage rect covering all 3 buttons */
     int bx0 = WM2_BTN_MARGIN - WM2_BTN_R - 1;
     int bx1 = WM2_BTN_MARGIN + 2 * WM2_BTN_SPACING + WM2_BTN_R + 1;
     int by0 = by - WM2_BTN_R - 1;
@@ -318,10 +273,8 @@ static void draw_win_buttons(wm2_win_t *win) {
     if (bx0 < 0) bx0 = 0;
     if (by0 < 0) by0 = 0;
 
-    /* Clear button area to title bar background */
     gfx_surf_fill_rect(&gs, bx0, by0, bx1 - bx0, by1 - by0, fab);
 
-    /* Redraw all three buttons */
     for (b = 0; b < 3; b++) {
         int bcx = WM2_BTN_MARGIN + b * WM2_BTN_SPACING;
         uint32_t col = (win->focused || win->btn_hover == b + 1)
@@ -329,11 +282,9 @@ static void draw_win_buttons(wm2_win_t *win) {
         gfx_surf_fill_circle(&gs, bcx, by, WM2_BTN_R, col | 0xFF000000);
     }
 
-    /* Damage only the button area — NOT the whole surface */
+    /* Damage only the button area, not the whole surface */
     comp_surface_damage(win->surf, bx0, by0, bx1 - bx0, by1 - by0);
 }
-
-/* ── Client buffer ──────────────────────────────────────────────── */
 
 static void alloc_client(wm2_win_t *win) {
     int cx, cy, cw, ch;
@@ -348,8 +299,6 @@ static void alloc_client(wm2_win_t *win) {
         memset(win->client_px, 0,
                (size_t)win->client_w * win->client_h * 4);
 }
-
-/* ── Public API ─────────────────────────────────────────────────── */
 
 void wm2_init(void) {
     memset(wins,  0, sizeof(wins));
@@ -385,7 +334,7 @@ int wm2_create(int x, int y, int w, int h, const char *title) {
 
     alloc_client(win);
     win_count++;
-    wm2_focus(win->id);    /* also calls draw_win via focus path */
+    wm2_focus(win->id);
     return win->id;
 }
 
@@ -452,7 +401,7 @@ void wm2_move(int id, int x, int y) {
     if (!win || !win->surf) return;
     win->x = x; win->y = y;
     comp_surface_move(win->surf, x, y);
-    /* Surface content is in surface-local coords — no redraw needed. */
+    /* surface content is surface-local — no redraw needed */
 }
 
 void wm2_resize(int id, int nw, int nh) {
@@ -463,7 +412,6 @@ void wm2_resize(int id, int nw, int nh) {
     if (win->w == nw && win->h == nh) return;
     win->w = nw;  win->h = nh;
 
-    /* Resize surface in-place — keeps layer position, no z-order issues */
     if (win->surf) comp_surface_resize(win->surf, nw, nh);
 
     alloc_client(win);
@@ -491,8 +439,6 @@ wm2_info_t wm2_get_info(int id) {
     return info;
 }
 
-/* ── Canvas API ─────────────────────────────────────────────────── */
-
 uint32_t *wm2_get_canvas(int id, int *out_w, int *out_h) {
     wm2_win_t *win = find_win(id);
     if (!win) {
@@ -519,8 +465,6 @@ void wm2_damage_canvas_all(int id) {
     comp_surface_damage_all(win->surf);
 }
 
-/* ── Close requests ─────────────────────────────────────────────── */
-
 int  wm2_close_requested(int id) {
     wm2_win_t *win = find_win(id);
     return win ? win->close_requested : 0;
@@ -530,8 +474,6 @@ void wm2_clear_close_request(int id) {
     wm2_win_t *win = find_win(id);
     if (win) win->close_requested = 0;
 }
-
-/* ── Redraw ─────────────────────────────────────────────────────── */
 
 void wm2_redraw(int id) {
     wm2_win_t *win = find_win(id);
@@ -544,15 +486,11 @@ void wm2_redraw_all(void) {
         if (wins[i].in_use) draw_win(&wins[i]);
 }
 
-/* ── Mouse event ────────────────────────────────────────────────── */
-
 void wm2_mouse_event(int mx, int my, uint8_t buttons, uint8_t prev_btn) {
     int btn_down = (int)((buttons & (uint8_t)~prev_btn) & MOUSE_BTN_LEFT);
     int btn_up   = (int)(((uint8_t)~buttons & prev_btn) & MOUSE_BTN_LEFT);
     int btn_held = (buttons & MOUSE_BTN_LEFT) ? 1 : 0;
     wm2_win_t *win;
-
-    /* ── Active drag / resize ────────────────────────────────────── */
 
     if (drag.mode == DRAG_MOVE) {
         if (btn_held) {
@@ -607,7 +545,6 @@ void wm2_mouse_event(int mx, int my, uint8_t buttons, uint8_t prev_btn) {
         if (btn_up || !btn_held) {
             win = find_win(drag.win_id);
             if (win && btn_up) {
-                /* Only trigger if mouse is still over the same button */
                 if (hit_test_win(win, mx, my) == drag.hit) {
                     if      (drag.hit == WM2_HIT_BTN_CLOSE) win->close_requested = 1;
                     else if (drag.hit == WM2_HIT_BTN_MIN)   wm2_minimize(drag.win_id);
@@ -625,8 +562,6 @@ void wm2_mouse_event(int mx, int my, uint8_t buttons, uint8_t prev_btn) {
         }
         return;
     }
-
-    /* ── Hover: update traffic-light highlight ───────────────────── */
 
     if (!btn_held) {
         static int prev_hover_id  = -1;
@@ -651,8 +586,6 @@ void wm2_mouse_event(int mx, int my, uint8_t buttons, uint8_t prev_btn) {
             prev_btn_hover = new_hover;
         }
     }
-
-    /* ── Mouse down: begin interaction ──────────────────────────── */
 
     if (btn_down) {
         int hit;

@@ -1,20 +1,3 @@
-/* compositor.c — Phase 2: Retained-mode scene graph compositor
- *
- * Architecture:
- *   Pool of comp_surface_t (up to COMP_MAX_SURFACES).
- *   Each surface owns a pixel buffer and tracks a damage rect.
- *   Surfaces are grouped into 4 layers (wallpaper → windows → overlay → cursor).
- *
- * compositor_frame():
- *   1. Collect a merged screen dirty rect from all damaged surfaces.
- *   2. If nothing is dirty, return early (0 bandwidth used).
- *   3. For the dirty region: clear to bg, then composite each layer bottom-up.
- *   4. gfx_flip_rect() — only copy the dirty region to the framebuffer.
- *   5. Clear all surface damages.
- *
- * Frame cap: 60fps (2 ticks at 120Hz PIT).
- */
-
 #include <kernel/compositor.h>
 #include <kernel/gfx.h>
 #include <kernel/ui_theme.h>
@@ -22,32 +5,24 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* ═══ Pool ══════════════════════════════════════════════════════ */
-
 #define COMP_MAX_SURFACES   64
 #define COMP_MAX_PER_LAYER  16
 #define FRAME_TICKS          2   /* 120Hz / 2 = 60fps */
 
 static comp_surface_t pool[COMP_MAX_SURFACES];
 
-/* Per-layer ordered surface lists (index into pool).
-   layers[L][0] is drawn first (back), layers[L][count-1] is drawn last (front). */
+/* layers[L][0] is back, layers[L][count-1] is front */
 static int  layer_idx[COMP_LAYER_COUNT][COMP_MAX_PER_LAYER];
 static int  layer_count[COMP_LAYER_COUNT];
 
-/* Frame pacing */
 static uint32_t last_frame_tick = 0;
 
-/* FPS counter */
 static uint32_t fps_frame_count = 0;
 static uint32_t fps_last_tick   = 0;
 static uint32_t fps_value       = 0;
 
-/* Screen-level dirty rect (union of all damaged surface screen rects). */
 static int  screen_dirty = 0;
 static int  sdx, sdy, sdw, sdh;
-
-/* ═══ Rect helpers ══════════════════════════════════════════════ */
 
 static void rect_union(int *dx, int *dy, int *dw, int *dh,
                        int ax, int ay, int aw, int ah) {
@@ -73,38 +48,30 @@ static void rect_clamp(int *x, int *y, int *w, int *h, int sw, int sh) {
     if (*h < 0) *h = 0;
 }
 
-/* Clip src rect (sx,sy,sw,sh in surface coords) to dirty screen rect.
-   Returns the intersection (in screen coords) and corresponding surface offset. */
 static int intersect_with_dirty(comp_surface_t *s,
-                                 int *blit_sx, int *blit_sy,  /* surface offset */
-                                 int *blit_dx, int *blit_dy,  /* screen dest     */
-                                 int *blit_w,  int *blit_h)   /* width / height  */
+                                 int *blit_sx, int *blit_sy,
+                                 int *blit_dx, int *blit_dy,
+                                 int *blit_w,  int *blit_h)
 {
-    /* Surface screen rect */
     int sx = s->screen_x, sy = s->screen_y, sw = s->w, sh = s->h;
 
-    /* Intersect with dirty rect */
     int ix = (sx > sdx) ? sx : sdx;
     int iy = (sy > sdy) ? sy : sdy;
     int ix2 = (sx + sw < sdx + sdw) ? sx + sw : sdx + sdw;
     int iy2 = (sy + sh < sdy + sdh) ? sy + sh : sdy + sdh;
 
-    if (ix >= ix2 || iy >= iy2) return 0; /* no intersection */
+    if (ix >= ix2 || iy >= iy2) return 0;
 
     *blit_dx = ix;
     *blit_dy = iy;
     *blit_w  = ix2 - ix;
     *blit_h  = iy2 - iy;
-    *blit_sx = ix - sx;  /* offset into surface pixel buffer */
+    *blit_sx = ix - sx;
     *blit_sy = iy - sy;
     return 1;
 }
 
-/* ═══ Per-pixel alpha blend ════════════════════════════════════ */
-
-/* Blend src onto dst using src's embedded alpha * surface alpha.
-   src format: 0xAARRGGBB where AA is per-pixel alpha (0 = transparent).
-   surf_alpha: global surface opacity (255 = fully opaque).             */
+/* src: 0xAARRGGBB, surf_alpha: global opacity (255=opaque) */
 static inline uint32_t blend_pixel(uint32_t dst, uint32_t src, uint8_t surf_alpha) {
     uint32_t sa = (src >> 24) & 0xFF;
     uint32_t a  = (sa * surf_alpha) >> 8;
@@ -119,8 +86,6 @@ static inline uint32_t blend_pixel(uint32_t dst, uint32_t src, uint8_t surf_alph
     uint32_t b = (sb * a + db * ia) >> 8;
     return (r << 16) | (g << 8) | b;
 }
-
-/* ═══ Blit surface region onto backbuffer ══════════════════════ */
 
 static void blit_surface_region(comp_surface_t *s,
                                  int src_x, int src_y,
@@ -137,7 +102,6 @@ static void blit_surface_region(comp_surface_t *s,
         uint32_t *dst_row = bb + (dst_y + row) * pitch4 + dst_x;
 
         if (alpha == 255) {
-            /* Fast path: check per-pixel alpha */
             int all_opaque = 1;
             for (int col = 0; col < bw; col++) {
                 if ((src_row[col] >> 24) != 0xFF) { all_opaque = 0; break; }
@@ -153,8 +117,6 @@ static void blit_surface_region(comp_surface_t *s,
     }
 }
 
-/* ═══ Fill rect in backbuffer ══════════════════════════════════ */
-
 static void bb_fill_rect(int x, int y, int w, int h, uint32_t color) {
     uint32_t *bb     = gfx_backbuffer();
     uint32_t  pitch4 = gfx_pitch() / 4;
@@ -167,13 +129,10 @@ static void bb_fill_rect(int x, int y, int w, int h, uint32_t color) {
     }
 }
 
-/* ═══ Pool management ═══════════════════════════════════════════ */
-
 comp_surface_t *comp_surface_create(int w, int h, int layer) {
     if (layer < 0 || layer >= COMP_LAYER_COUNT) return 0;
     if (layer_count[layer] >= COMP_MAX_PER_LAYER) return 0;
 
-    /* Find free slot */
     comp_surface_t *s = 0;
     for (int i = 0; i < COMP_MAX_SURFACES; i++) {
         if (!pool[i].in_use) { s = &pool[i]; break; }
@@ -195,7 +154,6 @@ comp_surface_t *comp_surface_create(int w, int h, int layer) {
     s->damage_all = 1;
     s->dmg_x = s->dmg_y = s->dmg_w = s->dmg_h = 0;
 
-    /* Add to end of layer (drawn on top within the layer) */
     layer_idx[layer][layer_count[layer]++] = (int)(s - pool);
     return s;
 }
@@ -203,7 +161,6 @@ comp_surface_t *comp_surface_create(int w, int h, int layer) {
 void comp_surface_destroy(comp_surface_t *s) {
     if (!s || !s->in_use) return;
 
-    /* Damage the screen region it occupied before removing */
     rect_union(&sdx, &sdy, &sdw, &sdh,
                s->screen_x, s->screen_y, s->w, s->h);
     screen_dirty = 1;
@@ -212,7 +169,6 @@ void comp_surface_destroy(comp_surface_t *s) {
     s->pixels = 0;
     int pool_idx = (int)(s - pool);
 
-    /* Remove from layer list */
     int L = s->layer;
     for (int i = 0; i < layer_count[L]; i++) {
         if (layer_idx[L][i] == pool_idx) {
@@ -227,13 +183,11 @@ void comp_surface_destroy(comp_surface_t *s) {
 
 void comp_surface_move(comp_surface_t *s, int x, int y) {
     if (!s || !s->in_use) return;
-    if (s->screen_x == x && s->screen_y == y) return; /* no-op */
-    /* Damage old position */
+    if (s->screen_x == x && s->screen_y == y) return;
     rect_union(&sdx, &sdy, &sdw, &sdh,
                s->screen_x, s->screen_y, s->w, s->h);
     s->screen_x = x;
     s->screen_y = y;
-    /* Damage new position */
     rect_union(&sdx, &sdy, &sdw, &sdh, x, y, s->w, s->h);
     screen_dirty = 1;
 }
@@ -241,7 +195,6 @@ void comp_surface_move(comp_surface_t *s, int x, int y) {
 int comp_surface_resize(comp_surface_t *s, int new_w, int new_h) {
     if (!s || !s->in_use) return 0;
     if (s->w == new_w && s->h == new_h) return 1;
-    /* Damage old bounds */
     rect_union(&sdx, &sdy, &sdw, &sdh,
                s->screen_x, s->screen_y, s->w, s->h);
     uint32_t *np = (uint32_t *)malloc((size_t)new_w * new_h * 4);
@@ -252,7 +205,6 @@ int comp_surface_resize(comp_surface_t *s, int new_w, int new_h) {
     s->w = new_w;
     s->h = new_h;
     s->damage_all = 1;
-    /* Damage new bounds */
     rect_union(&sdx, &sdy, &sdw, &sdh,
                s->screen_x, s->screen_y, new_w, new_h);
     screen_dirty = 1;
@@ -301,13 +253,10 @@ void comp_surface_lower(comp_surface_t *s) {
     comp_surface_damage_all(s);
 }
 
-/* ═══ Damage API ════════════════════════════════════════════════ */
-
 void comp_surface_damage(comp_surface_t *s, int x, int y, int w, int h) {
     if (!s || !s->in_use || !s->visible) return;
     if (s->damage_all) return;
 
-    /* Clamp to surface bounds */
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (x + w > s->w) w = s->w - x;
@@ -320,7 +269,6 @@ void comp_surface_damage(comp_surface_t *s, int x, int y, int w, int h) {
         rect_union(&s->dmg_x, &s->dmg_y, &s->dmg_w, &s->dmg_h, x, y, w, h);
     }
 
-    /* Propagate to screen dirty rect */
     rect_union(&sdx, &sdy, &sdw, &sdh,
                s->screen_x + x, s->screen_y + y, w, h);
     screen_dirty = 1;
@@ -334,8 +282,6 @@ void comp_surface_damage_all(comp_surface_t *s) {
     screen_dirty = 1;
 }
 
-/* ═══ Drawing helpers ═══════════════════════════════════════════ */
-
 gfx_surface_t comp_surface_lock(comp_surface_t *s) {
     gfx_surface_t gs;
     gs.buf   = s ? s->pixels : 0;
@@ -348,7 +294,6 @@ gfx_surface_t comp_surface_lock(comp_surface_t *s) {
 void comp_surf_fill_rect(comp_surface_t *s, int x, int y, int w, int h, uint32_t color) {
     if (!s || !s->in_use) return;
     gfx_surface_t gs = comp_surface_lock(s);
-    /* Ensure pixel has full alpha for opaque fill */
     uint32_t c = (color & 0xFFFFFF) | 0xFF000000;
     gfx_surf_fill_rect(&gs, x, y, w, h, c);
     comp_surface_damage(s, x, y, w, h);
@@ -370,8 +315,6 @@ void comp_surf_clear(comp_surface_t *s, uint32_t color) {
     comp_surface_damage_all(s);
 }
 
-/* ═══ Compositor init ════════════════════════════════════════════ */
-
 void compositor_init(void) {
     memset(pool,        0, sizeof(pool));
     memset(layer_idx,   0, sizeof(layer_idx));
@@ -380,7 +323,7 @@ void compositor_init(void) {
     fps_frame_count  = 0;
     fps_last_tick    = 0;
     fps_value        = 0;
-    screen_dirty     = 1;  /* force first full draw */
+    screen_dirty     = 1;
     sdx = sdy = 0;
     sdw = (int)gfx_width();
     sdh = (int)gfx_height();
@@ -396,8 +339,6 @@ void compositor_damage_all(void) {
     sdh = (int)gfx_height();
 }
 
-/* ═══ Core composite ════════════════════════════════════════════ */
-
 void compositor_frame(void) {
     if (!gfx_is_active()) return;
 
@@ -405,17 +346,14 @@ void compositor_frame(void) {
 
     if (!screen_dirty) goto fps_update;
 
-    /* Clamp dirty rect to screen */
     {
         int sw = (int)gfx_width(), sh = (int)gfx_height();
         rect_clamp(&sdx, &sdy, &sdw, &sdh, sw, sh);
         if (sdw <= 0 || sdh <= 0) { screen_dirty = 0; goto fps_update; }
     }
 
-    /* 1. Clear dirty region to desktop background */
     bb_fill_rect(sdx, sdy, sdw, sdh, ui_theme.desktop_bg);
 
-    /* 2. Composite each layer bottom-to-top */
     for (int L = 0; L < COMP_LAYER_COUNT; L++) {
         for (int i = 0; i < layer_count[L]; i++) {
             comp_surface_t *s = &pool[layer_idx[L][i]];
@@ -433,10 +371,8 @@ void compositor_frame(void) {
         }
     }
 
-    /* 3. Flip only the dirty region to the framebuffer */
     gfx_flip_rect(sdx, sdy, sdw, sdh);
 
-    /* 4. Clear all surface damages */
     for (int i = 0; i < COMP_MAX_SURFACES; i++) {
         if (!pool[i].in_use) continue;
         pool[i].damage_all = 0;
@@ -447,7 +383,7 @@ void compositor_frame(void) {
 
 fps_update:
     fps_frame_count++;
-    if (now - fps_last_tick >= 120) { /* ~1 second at 120Hz */
+    if (now - fps_last_tick >= 120) {
         fps_value       = fps_frame_count;
         fps_frame_count = 0;
         fps_last_tick   = now;
@@ -456,8 +392,6 @@ fps_update:
 
 uint32_t compositor_get_fps(void) { return fps_value; }
 
-/* ═══ Cursor surface ════════════════════════════════════════════ */
-
 #define COMP_CURSOR_W  12
 #define COMP_CURSOR_H  16
 
@@ -465,7 +399,7 @@ static comp_surface_t *cursor_surf = 0;
 static int cursor_type_drawn = -1;
 
 void comp_cursor_init(void) {
-    if (gfx_using_virtio_gpu()) return; /* HW cursor — no surface needed */
+    if (gfx_using_virtio_gpu()) return;
     cursor_surf = comp_surface_create(COMP_CURSOR_W, COMP_CURSOR_H,
                                        COMP_LAYER_CURSOR);
     if (!cursor_surf) return;
@@ -476,14 +410,12 @@ void comp_cursor_init(void) {
 }
 
 void comp_cursor_move(int x, int y) {
-    /* VirtIO GPU: delegate to hardware cursor */
     if (gfx_using_virtio_gpu()) {
         gfx_draw_mouse_cursor(x, y);
         return;
     }
     if (!cursor_surf) return;
 
-    /* Refresh bitmap if cursor type changed (e.g. arrow → hand) */
     int cur_type = gfx_get_cursor_type();
     if (cur_type != cursor_type_drawn) {
         gfx_render_cursor_to_buffer(cursor_surf->pixels,

@@ -1,10 +1,3 @@
-/* desktop.c — Phase 4: compositor + WM + menubar + dock
- *
- * Wallpaper surface on COMP_LAYER_WALLPAPER (drawn once).
- * Demo window on COMP_LAYER_WINDOWS via wm2 (shows FPS + usage hints).
- * Menubar + dock on COMP_LAYER_OVERLAY.
- * Mouse events: menubar/dock first, then wm2.
- */
 #include <kernel/desktop.h>
 #include <kernel/compositor.h>
 #include <kernel/gfx.h>
@@ -22,8 +15,6 @@
 static int desktop_first_show = 1;
 
 void desktop_notify_login(void) { desktop_first_show = 1; }
-
-/* ── Wallpaper ──────────────────────────────────────────────────── */
 
 static comp_surface_t *wallpaper = 0;
 
@@ -57,11 +48,8 @@ static void wallpaper_draw(void) {
     comp_surface_damage_all(wallpaper);
 }
 
-/* ── Demo window ────────────────────────────────────────────────── */
-
 static int demo_id = -1;
 
-/* Tiny uint→string helper */
 static void u32_to_str(uint32_t n, char *buf, int *len) {
     char tmp[12];
     int i = 0, j;
@@ -89,19 +77,15 @@ static void demo_paint(void) {
 
     gs.buf = canvas;  gs.w = cw;  gs.h = ch;  gs.pitch = cw;
 
-    /* Background */
     gfx_surf_fill_rect(&gs, 0, 0, cw, ch, bg);
 
-    /* Header */
     gfx_surf_draw_string(&gs,  8,  8, "ImposOS Desktop",
                          0xFFCDD6F4, bg);
     gfx_surf_draw_string(&gs,  8, 24, "Phase 3: Window Manager",
                          0xFFA6ADC8, bg);
 
-    /* Divider */
     gfx_surf_fill_rect(&gs, 8, 42, cw-16, 1, 0xFF45475A);
 
-    /* Usage hints */
     gfx_surf_draw_string(&gs,  8, 52, "Drag title bar  - move window",
                          0xFF6C7086, bg);
     gfx_surf_draw_string(&gs,  8, 68, "Drag edges/corners - resize",
@@ -109,7 +93,6 @@ static void demo_paint(void) {
     gfx_surf_draw_string(&gs,  8, 84, "Traffic lights  - close/min/max",
                          0xFF6C7086, bg);
 
-    /* FPS */
     {
         char nb[12]; int nl = 0;
         u32_to_str(compositor_get_fps(), nb, &nl);
@@ -124,8 +107,6 @@ static void demo_paint(void) {
     wm2_damage_canvas_all(demo_id);
 }
 
-/* ── Init ───────────────────────────────────────────────────────── */
-
 void desktop_init(void) {
     int sw, sh;
 
@@ -139,27 +120,21 @@ void desktop_init(void) {
     sw = (int)gfx_width();
     sh = (int)gfx_height();
 
-    /* Disable software cursor save/restore in gfx_flip — compositor owns it */
+    /* Disable software cursor save/restore — compositor owns it */
     gfx_set_compositor_mode(1);
 
-    /* Wallpaper — full screen, drawn once */
     wallpaper = comp_surface_create(sw, sh, COMP_LAYER_WALLPAPER);
     if (wallpaper) wallpaper_draw();
 
-    /* Cursor surface on COMP_LAYER_CURSOR */
     comp_cursor_init();
     comp_cursor_move(mouse_get_x(), mouse_get_y());
 
-    /* Menubar + dock on COMP_LAYER_OVERLAY */
     menubar_init();
     dock_init();
 
-    /* Demo window — centred */
     demo_id = wm2_create(sw/2 - 200, sh/2 - 150, 400, 300, "ImposOS");
     demo_paint();
 }
-
-/* ── Public stubs ───────────────────────────────────────────────── */
 
 void desktop_draw_dock(void)       { }
 void desktop_draw_menubar(void)    { }
@@ -198,8 +173,6 @@ void alttab_confirm(void)    { alttab_visible = 0; }
 void alttab_cancel(void)     { alttab_visible = 0; }
 int  alttab_is_visible(void) { return alttab_visible; }
 
-/* ── Main loop ──────────────────────────────────────────────────── */
-
 int desktop_run(void) {
     static uint8_t  prev_btn  = 0;
 
@@ -209,8 +182,6 @@ int desktop_run(void) {
     }
 
     while (1) {
-        /* ── Input ──────────────────────────────────────────────── */
-
         if (mouse_poll()) {
             int mx          = mouse_get_x();
             int my          = mouse_get_y();
@@ -229,10 +200,8 @@ int desktop_run(void) {
 
         {
             int c = keyboard_getchar_nb();
-            if (c == 27) return DESKTOP_ACTION_POWER; /* ESC */
+            if (c == 27) return DESKTOP_ACTION_POWER;
         }
-
-        /* ── Window lifecycle ───────────────────────────────────── */
 
         if (demo_id >= 0 && wm2_close_requested(demo_id)) {
             int sw = (int)gfx_width(), sh = (int)gfx_height();
@@ -241,20 +210,17 @@ int desktop_run(void) {
             demo_paint();
         }
 
-        /* ── Repaint once per second: demo FPS + menubar clock ── */
         {
             static uint32_t last_paint_tick = 0;
             uint32_t now = pit_get_ticks();
-            if (now - last_paint_tick >= 120) { /* PIT @ 120Hz = 1 second */
+            if (now - last_paint_tick >= 120) {
                 last_paint_tick = now;
                 demo_paint();
                 menubar_paint();
             }
         }
 
-        /* ── Composite dirty regions (60fps cap) ────────────────── */
         compositor_frame();
-
-        /* Cursor is now a compositor surface — no sync hack needed */
+        /* cursor is a compositor surface — no sync hack needed */
     }
 }
