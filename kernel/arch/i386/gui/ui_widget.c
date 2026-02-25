@@ -7,11 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-ui_window_t *ui_window_create(int x, int y, int w, int h, const char *title) {
+ui_window_t *uw_create(int x, int y, int w, int h, const char *title) {
     (void)x;(void)y;(void)w;(void)h;(void)title; return 0;
 }
-void ui_window_destroy(ui_window_t *win)  { (void)win; }
-void ui_window_redraw(ui_window_t *win)   { (void)win; }
+void uw_destroy(ui_window_t *win)  { (void)win; }
+void uw_redraw(ui_window_t *win)   { (void)win; }
 void ui_window_check_resize(ui_window_t *win) { (void)win; }
 
 int ui_add_label(ui_window_t *win, int x, int y, int w, int h,

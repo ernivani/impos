@@ -352,7 +352,21 @@ void compositor_frame(void) {
         if (sdw <= 0 || sdh <= 0) { screen_dirty = 0; goto fps_update; }
     }
 
-    bb_fill_rect(sdx, sdy, sdw, sdh, ui_theme.desktop_bg);
+    /* 1. Clear dirty region to desktop background.
+       Skip if wallpaper covers the entire dirty rect (it's opaque, full-screen). */
+    {
+        int need_clear = 1;
+        if (layer_count[COMP_LAYER_WALLPAPER] > 0) {
+            comp_surface_t *wp = &pool[layer_idx[COMP_LAYER_WALLPAPER][0]];
+            if (wp->in_use && wp->visible && wp->alpha == 255 &&
+                wp->screen_x <= sdx && wp->screen_y <= sdy &&
+                wp->screen_x + wp->w >= sdx + sdw &&
+                wp->screen_y + wp->h >= sdy + sdh)
+                need_clear = 0;
+        }
+        if (need_clear)
+            bb_fill_rect(sdx, sdy, sdw, sdh, ui_theme.desktop_bg);
+    }
 
     for (int L = 0; L < COMP_LAYER_COUNT; L++) {
         for (int i = 0; i < layer_count[L]; i++) {

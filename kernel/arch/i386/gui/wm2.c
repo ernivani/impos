@@ -1,26 +1,32 @@
 #include <kernel/wm2.h>
 #include <kernel/compositor.h>
+#include <kernel/anim.h>
 #include <kernel/gfx.h>
-#include <kernel/ui_theme.h>
+#include <kernel/menubar.h>
 #include <kernel/mouse.h>
 #include <string.h>
 #include <stdlib.h>
 
 #define WM2_MAX_WINDOWS   32
-#define WM2_TITLEBAR_H    28
-#define WM2_RESIZE_ZONE    4
-#define WM2_CORNER_R       8
-#define WM2_BTN_R          6
-#define WM2_BTN_SPACING   18
-#define WM2_BTN_MARGIN    12
+#define WM2_TITLEBAR_H    38    /* px — title bar height (mockup: 38px) */
+#define WM2_RESIZE_ZONE    4    /* px — invisible edge resize handle    */
+#define WM2_CORNER_R      12    /* px — corner radius (mockup: 12px)    */
+#define WM2_BTN_R          6    /* px — traffic-light button radius     */
+#define WM2_BTN_SPACING   19    /* px — button centre-to-centre (7gap+12btn) */
+#define WM2_BTN_MARGIN    14    /* px — left edge → first button ctr    */
 #define WM2_MIN_W        120
 #define WM2_MIN_H         60
 
-/* macOS traffic-light colours */
-#define WM2_BTN_CLOSE_C  GFX_RGB(255, 95,  86)
+/* Traffic-light palette — exact mockup hex: #ff5f57 / #ffbd2e / #28c840 */
+#define WM2_BTN_CLOSE_C  GFX_RGB(255, 95,  87)
 #define WM2_BTN_MIN_C    GFX_RGB(255, 189, 46)
-#define WM2_BTN_MAX_C    GFX_RGB( 39, 201, 63)
-#define WM2_BTN_DIM_C    GFX_RGB( 76,  76, 80)
+#define WM2_BTN_MAX_C    GFX_RGB( 40, 200, 64)
+
+/* Window colours — mockup: rgba(18,24,36) body / rgba(255,255,255,0.04) titlebar */
+#define WM2_BODY_BG      GFX_RGB(18,  24,  36)   /* #121824 */
+#define WM2_TITLE_BG     GFX_RGB(26,  32,  48)   /* #1A2030 — body + 0.04 white */
+#define WM2_BORDER_C     0x1AFFFFFF               /* rgba(255,255,255,0.10) */
+#define WM2_SEP_C        GFX_RGB(30,  38,  56)   /* titlebar separator */
 
 typedef struct {
     int  id;
@@ -38,9 +44,19 @@ typedef struct {
     int       client_w;
     int       client_h;
 
-    int btn_hover;            /* 0=none 1=close 2=min 3=max */
+    int btn_hover;            /* 0=none 1=close 2=min 3=max           */
+    int btns_hovered;         /* 1 if mouse is over button group area */
     int close_requested;
     int in_use;
+
+    /* Animations */
+    int open_alpha, open_anim_id;       /* fade-in on create */
+    int close_alpha, close_anim_id;     /* fade-out before destroy */
+    int closing;                         /* 1 = close animation in progress */
+    int min_alpha, min_anim_id;         /* minimize fade */
+    int minimizing;                      /* 1 = minimize animation in progress */
+    int rest_alpha, rest_anim_id;       /* restore fade */
+    int restoring;                       /* 1 = restore animation in progress */
 } wm2_win_t;
 
 static wm2_win_t wins[WM2_MAX_WINDOWS];
@@ -134,6 +150,13 @@ static void apply_corner_mask(uint32_t *px, int w, int h, int r) {
     }
 }
 
+/* Forward declaration */
+static void draw_btn_symbol(uint32_t *px, int sw, int sh,
+                             int bcx, int by, int btn_idx);
+
+/* ── Decoration drawing ─────────────────────────────────────────── */
+
+
 static void blit_client(wm2_win_t *win) {
     int cx, cy, cw, ch, sx, sy, bw, bh, row;
     if (!win->client_px || !win->surf) return;
@@ -172,7 +195,6 @@ static void draw_win(wm2_win_t *win) {
         WM2_BTN_CLOSE_C, WM2_BTN_MIN_C, WM2_BTN_MAX_C
     };
     gfx_surface_t gs;
-    uint32_t frame_bg, content_bg, title_fg;
     uint32_t fab, cab;
     int sw, sh, b, tx, ty, tlen;
 
@@ -181,91 +203,158 @@ static void draw_win(wm2_win_t *win) {
     sh = win->surf->h;
     gs = comp_surface_lock(win->surf);
 
-    frame_bg   = win->focused ? ui_theme.win_header_focused
-                               : ui_theme.win_header_bg;
-    content_bg = ui_theme.win_body_bg;
-    title_fg   = win->focused ? ui_theme.win_header_text
-                               : ui_theme.text_dim;
-    fab = frame_bg   | 0xFF000000;
-    cab = content_bg | 0xFF000000;
+    fab = WM2_TITLE_BG | 0xFF000000;
+    cab = WM2_BODY_BG  | 0xFF000000;
 
+    /* 1. Fill titlebar with glass-dark colour */
     gfx_surf_fill_rect(&gs, 0, 0, sw, WM2_TITLEBAR_H, fab);
-    gfx_surf_fill_rect(&gs, 0, sh-1, sw, 1, fab);
-    gfx_surf_fill_rect(&gs, 0, WM2_TITLEBAR_H, 1, sh-WM2_TITLEBAR_H-1, fab);
-    gfx_surf_fill_rect(&gs, sw-1, WM2_TITLEBAR_H, 1, sh-WM2_TITLEBAR_H-1, fab);
 
+    /* 2. Content area body */
     {
-        int csw = sw-2, csh = sh-WM2_TITLEBAR_H-1;
+        int csw = sw, csh = sh - WM2_TITLEBAR_H;
         if (csw > 0 && csh > 0)
-            gfx_surf_fill_rect(&gs, 1, WM2_TITLEBAR_H, csw, csh, cab);
+            gfx_surf_fill_rect(&gs, 0, WM2_TITLEBAR_H, csw, csh, cab);
     }
 
-    if (win->focused) {
+    /* 3. Subtle 1-px border all around (rgba(255,255,255,0.10)) */
+    {
         int x, y;
-        uint32_t ac = ui_theme.accent | 0xFF000000;
+        uint32_t bc = 0xFF1F2B42;  /* body + ~10% white overlay */
         for (x = 0; x < sw; x++) {
-            win->surf->pixels[0*sw + x]       = ac;
-            win->surf->pixels[(sh-1)*sw + x]  = ac;
+            win->surf->pixels[0      * sw + x] = bc;
+            win->surf->pixels[(sh-1) * sw + x] = bc;
         }
-        for (y = 0; y < sh; y++) {
-            win->surf->pixels[y*sw + 0]       = ac;
-            win->surf->pixels[y*sw + (sw-1)]  = ac;
+        for (y = 1; y < sh - 1; y++) {
+            win->surf->pixels[y * sw + 0]      = bc;
+            win->surf->pixels[y * sw + (sw-1)] = bc;
         }
     }
 
+    /* 4. Round all four corners */
     apply_corner_mask(win->surf->pixels, sw, sh, WM2_CORNER_R);
 
+    /* 5. Separator line between titlebar and content */
     {
         int x;
-        uint32_t sep = ui_theme.win_border | 0xFF000000;
+        uint32_t sep = WM2_SEP_C | 0xFF000000;
         for (x = 0; x < sw; x++)
-            win->surf->pixels[(WM2_TITLEBAR_H-1)*sw + x] = sep;
+            win->surf->pixels[(WM2_TITLEBAR_H - 1) * sw + x] = sep;
     }
 
+    /* 6. Traffic-light buttons — always coloured (matches mockup) */
     {
         int by = WM2_TITLEBAR_H / 2;
         for (b = 0; b < 3; b++) {
             int bcx = WM2_BTN_MARGIN + b * WM2_BTN_SPACING;
-            uint32_t col = (win->focused || win->btn_hover == b+1)
-                           ? btn_col[b] : WM2_BTN_DIM_C;
+            uint32_t col = (win->btn_hover == b + 1)
+                           ? btn_col[b]
+                           : ((win->focused) ? btn_col[b]
+                                             : (btn_col[b] & 0xFFBFBFBF)); /* slight dim */
             gfx_surf_fill_circle(&gs, bcx, by, WM2_BTN_R,
                                  col | 0xFF000000);
+            /* Draw symbol when hovering the button group */
+            if (win->btns_hovered)
+                draw_btn_symbol(win->surf->pixels, sw, sh, bcx, by, b);
         }
     }
 
+    /* 7. Title text — centred, light gray (rgba(255,255,255,0.65)) */
     tlen = 0;
     while (win->title[tlen]) tlen++;
     tx = (sw - tlen * FONT_W) / 2;
     ty = (WM2_TITLEBAR_H - FONT_H) / 2;
     {
-        int min_tx = WM2_BTN_MARGIN + 3*WM2_BTN_SPACING + 8;
+        int min_tx = WM2_BTN_MARGIN + 3 * WM2_BTN_SPACING + 8;
         if (tx < min_tx) tx = min_tx;
     }
-    gfx_surf_draw_string(&gs, tx, ty, win->title,
-                         title_fg | 0xFF000000,
-                         fab);
+    gfx_surf_draw_string_smooth(&gs, tx, ty, win->title, 0xFFA6A6A6, 1);
 
     blit_client(win);
 
     comp_surface_damage_all(win->surf);
 }
 
+/* ── Partial button redraw (hover only) ─────────────────────────── */
+
+static void draw_btn_symbol(uint32_t *px, int sw, int sh,
+                             int bcx, int by, int btn_idx) {
+    /* Draw symbols: 0=close(×), 1=minimize(−), 2=maximize(⤢) */
+    uint32_t sym = 0x99000000;  /* dark semi-transparent */
+    int d;
+    if (btn_idx == 0) {
+        /* × for close: two diagonals */
+        for (d = -3; d <= 3; d++) {
+            int y1 = by + d, x1 = bcx + d, x2 = bcx - d;
+            if (y1 >= 0 && y1 < sh) {
+                if (x1 >= 0 && x1 < sw) px[y1 * sw + x1] = sym;
+                if (x2 >= 0 && x2 < sw) px[y1 * sw + x2] = sym;
+            }
+        }
+    } else if (btn_idx == 1) {
+        /* − for minimize: horizontal line */
+        for (d = -3; d <= 3; d++) {
+            int x1 = bcx + d;
+            if (x1 >= 0 && x1 < sw && by >= 0 && by < sh)
+                px[by * sw + x1] = sym;
+        }
+    } else {
+        /* ⤢ for maximize: two small diagonal arrows (top-left, bottom-right) */
+        /* Top-left arrow */
+        for (d = 0; d <= 3; d++) {
+            int y1 = by - d, x1 = bcx - d;
+            if (y1 >= 0 && y1 < sh && x1 >= 0 && x1 < sw)
+                px[y1 * sw + x1] = sym;
+        }
+        /* Top-left horizontal arm */
+        for (d = -3; d <= -1; d++) {
+            int x1 = bcx + d;
+            if (by - 3 >= 0 && x1 >= 0 && x1 < sw)
+                px[(by - 3) * sw + x1] = sym;
+        }
+        /* Top-left vertical arm */
+        for (d = -3; d <= -1; d++) {
+            int y1 = by + d;
+            if (y1 >= 0 && y1 < sh && bcx - 3 >= 0 && bcx - 3 < sw)
+                px[y1 * sw + (bcx - 3)] = sym;
+        }
+        /* Bottom-right arrow */
+        for (d = 0; d <= 3; d++) {
+            int y1 = by + d, x1 = bcx + d;
+            if (y1 >= 0 && y1 < sh && x1 >= 0 && x1 < sw)
+                px[y1 * sw + x1] = sym;
+        }
+        /* Bottom-right horizontal arm */
+        for (d = 1; d <= 3; d++) {
+            int x1 = bcx + d;
+            if (by + 3 >= 0 && by + 3 < sh && x1 >= 0 && x1 < sw)
+                px[(by + 3) * sw + x1] = sym;
+        }
+        /* Bottom-right vertical arm */
+        for (d = 1; d <= 3; d++) {
+            int y1 = by + d;
+            if (y1 >= 0 && y1 < sh && bcx + 3 >= 0 && bcx + 3 < sw)
+                px[y1 * sw + (bcx + 3)] = sym;
+        }
+    }
+}
+
+
 static void draw_win_buttons(wm2_win_t *win) {
-    static const uint32_t btn_col[3] = {
-        WM2_BTN_CLOSE_C, WM2_BTN_MIN_C, WM2_BTN_MAX_C
+    static const uint32_t btn_col[3] = { WM2_BTN_CLOSE_C, WM2_BTN_MIN_C, WM2_BTN_MAX_C
     };
     gfx_surface_t gs;
     int b, by;
-    uint32_t frame_bg, fab;
+    uint32_t fab;
 
     if (!win->surf) return;
     gs = comp_surface_lock(win->surf);
 
-    frame_bg = win->focused ? ui_theme.win_header_focused
-                             : ui_theme.win_header_bg;
-    fab = frame_bg | 0xFF000000;
+    fab = (WM2_TITLE_BG) | 0xFF000000;
     by  = WM2_TITLEBAR_H / 2;
 
+    int sw = win->surf->w, sh = win->surf->h;
+
+    /* Damage rect covering all 3 buttons */
     int bx0 = WM2_BTN_MARGIN - WM2_BTN_R - 1;
     int bx1 = WM2_BTN_MARGIN + 2 * WM2_BTN_SPACING + WM2_BTN_R + 1;
     int by0 = by - WM2_BTN_R - 1;
@@ -275,11 +364,18 @@ static void draw_win_buttons(wm2_win_t *win) {
 
     gfx_surf_fill_rect(&gs, bx0, by0, bx1 - bx0, by1 - by0, fab);
 
+    /* Redraw all three buttons — always coloured */
     for (b = 0; b < 3; b++) {
         int bcx = WM2_BTN_MARGIN + b * WM2_BTN_SPACING;
-        uint32_t col = (win->focused || win->btn_hover == b + 1)
-                       ? btn_col[b] : WM2_BTN_DIM_C;
+        uint32_t col = (win->btn_hover == b + 1)
+                       ? btn_col[b]
+                       : ((win->focused) ? btn_col[b]
+                                         : (btn_col[b] & 0xFFBFBFBF));
         gfx_surf_fill_circle(&gs, bcx, by, WM2_BTN_R, col | 0xFF000000);
+
+        /* Draw symbol when hovering the button group */
+        if (win->btns_hovered)
+            draw_btn_symbol(win->surf->pixels, sw, sh, bcx, by, b);
     }
 
     /* Damage only the button area, not the whole surface */
@@ -332,6 +428,14 @@ int wm2_create(int x, int y, int w, int h, const char *title) {
     if (!win->surf) { win->in_use = 0; return -1; }
     comp_surface_move(win->surf, win->x, win->y);
 
+    /* Open fade-in animation */
+    win->open_alpha = 0;
+    win->open_anim_id = anim_start(&win->open_alpha, 0, 255, 180, ANIM_EASE_OUT);
+    win->close_anim_id = -1;
+    win->min_anim_id = -1;
+    win->rest_anim_id = -1;
+    comp_surface_set_alpha(win->surf, 0);
+
     alloc_client(win);
     win_count++;
     wm2_focus(win->id);
@@ -377,23 +481,41 @@ void wm2_maximize(int id) {
     win->save_x = win->x; win->save_y = win->y;
     win->save_w = win->w; win->save_h = win->h;
     win->state = WM2_STATE_MAXIMIZED;
-    wm2_move(id, 0, 0);
-    wm2_resize(id, (int)gfx_width(), (int)gfx_height());
+    wm2_move(id, 0, MENUBAR_HEIGHT);
+    wm2_resize(id, (int)gfx_width(), (int)gfx_height() - MENUBAR_HEIGHT);
 }
 
 void wm2_restore(int id) {
     wm2_win_t *win = find_win(id);
-    if (!win || win->state != WM2_STATE_MAXIMIZED) return;
-    win->state = WM2_STATE_NORMAL;
-    wm2_resize(id, win->save_w, win->save_h);
-    wm2_move(id, win->save_x, win->save_y);
+    if (!win) return;
+
+    if (win->state == WM2_STATE_MAXIMIZED) {
+        win->state = WM2_STATE_NORMAL;
+        wm2_resize(id, win->save_w, win->save_h);
+        wm2_move(id, win->save_x, win->save_y);
+    } else if (win->state == WM2_STATE_MINIMIZED) {
+        win->state = WM2_STATE_NORMAL;
+        win->restoring = 1;
+        win->rest_alpha = 0;
+        if (win->rest_anim_id >= 0) anim_cancel(win->rest_anim_id);
+        win->rest_anim_id = anim_start(&win->rest_alpha, 0, 255, 250, ANIM_EASE_OUT);
+        if (win->surf) {
+            comp_surface_set_alpha(win->surf, 0);
+            comp_surface_set_visible(win->surf, 1);
+        }
+        wm2_focus(id);
+    }
 }
 
 void wm2_minimize(int id) {
     wm2_win_t *win = find_win(id);
     if (!win) return;
     win->state = WM2_STATE_MINIMIZED;
-    if (win->surf) comp_surface_set_visible(win->surf, 0);
+    win->minimizing = 1;
+    win->min_alpha = 255;
+    if (win->min_anim_id >= 0) anim_cancel(win->min_anim_id);
+    win->min_anim_id = anim_start(&win->min_alpha, 255, 0, 200, ANIM_EASE_IN);
+    /* Actual hide happens in wm2_tick() when animation completes */
 }
 
 void wm2_move(int id, int x, int y) {
@@ -480,6 +602,14 @@ void wm2_redraw(int id) {
     if (win) draw_win(win);
 }
 
+void wm2_set_all_visible(int visible) {
+    for (int i = 0; i < WM2_MAX_WINDOWS; i++) {
+        if (!wins[i].in_use || !wins[i].surf) continue;
+        if (wins[i].state == WM2_STATE_MINIMIZED) continue;
+        comp_surface_set_visible(wins[i].surf, visible);
+    }
+}
+
 void wm2_redraw_all(void) {
     int i;
     for (i = 0; i < WM2_MAX_WINDOWS; i++)
@@ -564,26 +694,37 @@ void wm2_mouse_event(int mx, int my, uint8_t buttons, uint8_t prev_btn) {
     }
 
     if (!btn_held) {
-        static int prev_hover_id  = -1;
-        static int prev_btn_hover =  0;
+        static int prev_hover_id   = -1;
+        static int prev_btn_hover  =  0;
+        static int prev_btns_hov   =  0;
         wm2_win_t *hw    = topmost_at(mx, my);
         int        new_id    = hw ? hw->id : -1;
         int        new_hover = 0;
+        int        new_grp   = 0;
 
         if (hw) {
             int h = hit_test_win(hw, mx, my);
             if (h >= WM2_HIT_BTN_CLOSE && h <= WM2_HIT_BTN_MAX)
                 new_hover = h - WM2_HIT_BTN_CLOSE + 1;
+            /* Check if mouse is in the button group bounding box */
+            int rx = mx - hw->x, ry = my - hw->y;
+            int grp_x0 = WM2_BTN_MARGIN - WM2_BTN_R - 4;
+            int grp_x1 = WM2_BTN_MARGIN + 2 * WM2_BTN_SPACING + WM2_BTN_R + 4;
+            int grp_y0 = WM2_TITLEBAR_H / 2 - WM2_BTN_R - 4;
+            int grp_y1 = WM2_TITLEBAR_H / 2 + WM2_BTN_R + 4;
+            if (rx >= grp_x0 && rx <= grp_x1 && ry >= grp_y0 && ry <= grp_y1)
+                new_grp = 1;
         }
 
-        if (new_id != prev_hover_id || new_hover != prev_btn_hover) {
+        if (new_id != prev_hover_id || new_hover != prev_btn_hover || new_grp != prev_btns_hov) {
             if (prev_hover_id != -1) {
                 wm2_win_t *old = find_win(prev_hover_id);
-                if (old) { old->btn_hover = 0; draw_win_buttons(old); }
+                if (old) { old->btn_hover = 0; old->btns_hovered = 0; draw_win_buttons(old); }
             }
-            if (hw) { hw->btn_hover = new_hover; draw_win_buttons(hw); }
+            if (hw) { hw->btn_hover = new_hover; hw->btns_hovered = new_grp; draw_win_buttons(hw); }
             prev_hover_id  = new_id;
             prev_btn_hover = new_hover;
+            prev_btns_hov  = new_grp;
         }
     }
 
@@ -627,3 +768,78 @@ void wm2_mouse_event(int mx, int my, uint8_t buttons, uint8_t prev_btn) {
 }
 
 void wm2_key_event(int id, char c) { (void)id; (void)c; }
+
+/* ── Animated close ─────────────────────────────────────────────── */
+
+void wm2_close_animated(int id) {
+    wm2_win_t *win = find_win(id);
+    if (!win || win->closing) return;
+    win->closing = 1;
+    win->close_alpha = 255;
+    if (win->close_anim_id >= 0) anim_cancel(win->close_anim_id);
+    win->close_anim_id = anim_start(&win->close_alpha, 255, 0, 140, ANIM_EASE_IN);
+}
+
+/* ── Animation tick ─────────────────────────────────────────────── */
+
+void wm2_tick(void) {
+    for (int i = 0; i < WM2_MAX_WINDOWS; i++) {
+        wm2_win_t *win = &wins[i];
+        if (!win->in_use || !win->surf) continue;
+
+        /* Open fade-in */
+        if (win->open_anim_id >= 0) {
+            int a = win->open_alpha;
+            if (a < 0) a = 0; if (a > 255) a = 255;
+            comp_surface_set_alpha(win->surf, (uint8_t)a);
+            if (!anim_active(win->open_anim_id)) {
+                win->open_anim_id = -1;
+                comp_surface_set_alpha(win->surf, 255);
+            }
+        }
+
+        /* Close fade-out */
+        if (win->closing && win->close_anim_id >= 0) {
+            int a = win->close_alpha;
+            if (a < 0) a = 0; if (a > 255) a = 255;
+            comp_surface_set_alpha(win->surf, (uint8_t)a);
+            if (!anim_active(win->close_anim_id)) {
+                win->close_anim_id = -1;
+                win->closing = 0;
+                /* Actually destroy now */
+                wm2_destroy(win->id);
+                extern void menubar_update_windows(void);
+                menubar_update_windows();
+                continue; /* win is freed, skip rest */
+            }
+        }
+
+        /* Minimize fade-out */
+        if (win->minimizing && win->min_anim_id >= 0) {
+            int a = win->min_alpha;
+            if (a < 0) a = 0; if (a > 255) a = 255;
+            comp_surface_set_alpha(win->surf, (uint8_t)a);
+            if (!anim_active(win->min_anim_id)) {
+                win->min_anim_id = -1;
+                win->minimizing = 0;
+                comp_surface_set_visible(win->surf, 0);
+                extern void menubar_update_windows(void);
+                menubar_update_windows();
+            }
+        }
+
+        /* Restore fade-in */
+        if (win->restoring && win->rest_anim_id >= 0) {
+            int a = win->rest_alpha;
+            if (a < 0) a = 0; if (a > 255) a = 255;
+            comp_surface_set_alpha(win->surf, (uint8_t)a);
+            if (!anim_active(win->rest_anim_id)) {
+                win->rest_anim_id = -1;
+                win->restoring = 0;
+                comp_surface_set_alpha(win->surf, 255);
+                extern void menubar_update_windows(void);
+                menubar_update_windows();
+            }
+        }
+    }
+}

@@ -95,9 +95,24 @@ void wm2_key_event(int id, char c);
 int  wm2_close_requested(int id);
 void wm2_clear_close_request(int id);
 
+/* ─── Animated close ────────────────────────────────────────────── */
+
+/* Start a close fade-out animation. Actual destroy happens on completion. */
+void wm2_close_animated(int id);
+
+/* ─── Animation tick ────────────────────────────────────────────── */
+
+/* Drive all window animations. Call once per frame. */
+void wm2_tick(void);
+
 /* ─── Force redraw ──────────────────────────────────────────────── */
 
 void wm2_redraw(int id);
 void wm2_redraw_all(void);
+
+/* ─── Overlay support ───────────────────────────────────────────── */
+
+/* Hide/show all non-minimized windows (used by overlays like radial). */
+void wm2_set_all_visible(int visible);
 
 #endif

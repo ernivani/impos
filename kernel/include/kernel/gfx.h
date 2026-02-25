@@ -166,7 +166,7 @@ void gfx_draw_wstring(int x, int y, const uint16_t *s, uint32_t fg, uint32_t bg)
 
 /* ═══ Color macros ═════════════════════════════════════════════ */
 
-#define GFX_RGB(r,g,b) (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))
+#define GFX_RGB(r,g,b) (0xFF000000u|((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))
 #define GFX_RGBA(r,g,b,a) (((uint32_t)(a)<<24)|((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))
 #define GFX_ALPHA(c) (((c)>>24)&0xFF)
 #define GFX_BLACK   0x000000

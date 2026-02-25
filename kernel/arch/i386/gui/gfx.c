@@ -513,9 +513,10 @@ void gfx_surf_draw_char_smooth(gfx_surface_t *s, int px, int py, char c, uint32_
     int out_h = FONT_H * sc;
 
     /* Sharpness: controls edge width in output pixels.
-       Higher = sharper. Tuned for ~1.5 pixel AA transition. */
-    int sharpness = 255 * sc / 12;
-    if (sharpness < 20) sharpness = 20;
+       Higher = sharper.  At sc=1, 1px distance ≈ 4 SDF units.
+       sharpness=50 → AA transition in ~0.6px (crisp but smooth). */
+    int sharpness = 255 * sc / 5;
+    if (sharpness < 48) sharpness = 48;
 
     for (int oy = 0; oy < out_h; oy++) {
         int fy256 = (oy * 256 + 128) / sc - 128;
