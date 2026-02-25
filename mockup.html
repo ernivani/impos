@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ImposOS Desktop Mockup</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;cursor:default;user-select:none;background:#000}
+#wp{position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:0}
+#menubar{position:fixed;top:0;left:0;right:0;height:28px;z-index:100;
+  background:rgba(12,16,22,0.72);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-bottom:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;padding:0 16px;
+  font-size:13px;color:rgba(255,255,255,0.85)}
+#menubar .logo{font-weight:700;margin-right:20px;font-size:14px}
+#menubar .item{margin-right:16px;color:rgba(255,255,255,0.6);font-size:12.5px}
+#menubar .right{margin-left:auto;color:rgba(255,255,255,0.6);font-size:12px}
+#radial{position:fixed;width:360px;height:360px;z-index:200;display:none;pointer-events:none}
+#radial canvas{width:360px;height:360px;pointer-events:auto}
+.theme-btn{position:fixed;bottom:16px;z-index:300;padding:6px 14px;border:none;border-radius:6px;
+  background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.7);font-size:11px;cursor:pointer;
+  backdrop-filter:blur(8px);transition:background 0.2s}
+.theme-btn:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="wp"></canvas>
+<div id="menubar">
+  <span class="logo">ImposOS</span>
+  <span class="item">File</span><span class="item">Edit</span><span class="item">View</span>
+  <span class="right" id="clock"></span>
+</div>
+<div id="radial"><canvas id="rc" width="720" height="720"></canvas></div>
+<button class="theme-btn" style="left:16px" onclick="setTheme(0)">Night</button>
+<button class="theme-btn" style="left:86px" onclick="setTheme(1)">Dawn</button>
+<button class="theme-btn" style="left:146px" onclick="setTheme(2)">Day</button>
+<button class="theme-btn" style="left:196px" onclick="setTheme(3)">Dusk</button>
+
+<script>
+// ===== WALLPAPER ENGINE =====
+const wp = document.getElementById('wp');
+const wctx = wp.getContext('2d');
+let W = window.innerWidth, H = window.innerHeight;
+wp.width = W * 2; wp.height = H * 2;
+wctx.scale(2, 2);
+
+const themes = [
+  { // Night
+    sky: ['#0a0e1a','#0d1328','#121a35','#1a1f3a'],
+    mtn: ['#0c1020','#0e1225','#10152a'],
+    glow: {x:0.5,y:0.7,r:400,c:'rgba(40,50,120,0.15)'},
+    stars: 0.9, aurora: 0.4
+  },
+  { // Dawn
+    sky: ['#1a1025','#2d1530','#6b3040','#c87050','#e8a870'],
+    mtn: ['#1a1020','#251828','#352030'],
+    glow: {x:0.5,y:0.85,r:500,c:'rgba(200,120,60,0.3)'},
+    stars: 0.15, aurora: 0
+  },
+  { // Day
+    sky: ['#2a6ac0','#3a80d0','#60a0e0','#90c0f0','#b0d8ff'],
+    mtn: ['#3a5570','#4a6580','#5a7590'],
+    glow: {x:0.6,y:0.3,r:350,c:'rgba(255,255,200,0.2)'},
+    stars: 0, aurora: 0
+  },
+  { // Dusk
+    sky: ['#1a1028','#3a1830','#7a3535','#c06530','#d09040'],
+    mtn: ['#1a1020','#251520','#352025'],
+    glow: {x:0.3,y:0.75,r:450,c:'rgba(200,100,40,0.25)'},
+    stars: 0.05, aurora: 0
+  }
+];
+
+let curTheme = 0, tgtTheme = 0, transT = 1;
+const starField = Array.from({length:120},()=>({x:Math.random()*W,y:Math.random()*H*0.6,s:Math.random()*1.5+0.5,b:Math.random()}));
+
+function lerp(a,b,t){return a+(b-a)*t}
+function lerpColor(c1,c2,t){
+  const p=s=>{const n=parseInt(s.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255]};
+  const [r1,g1,b1]=p(c1),[r2,g2,b2]=p(c2);
+  return `rgb(${lerp(r1,r2,t)|0},${lerp(g1,g2,t)|0},${lerp(b1,b2,t)|0})`;
+}
+function ease(t){return t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2}
+
+function drawWallpaper(t){
+  const A=themes[curTheme], B=themes[tgtTheme];
+  const et=ease(Math.min(t,1));
+  // Sky gradient
+  const maxStops=Math.max(A.sky.length,B.sky.length);
+  const grad=wctx.createLinearGradient(0,0,0,H);
+  for(let i=0;i<maxStops;i++){
+    const cA=A.sky[Math.min(i,A.sky.length-1)];
+    const cB=B.sky[Math.min(i,B.sky.length-1)];
+    grad.addColorStop(i/(maxStops-1),lerpColor(cA,cB,et));
+  }
+  wctx.fillStyle=grad;wctx.fillRect(0,0,W,H);
+  // Glow
+  const gx=lerp(A.glow.x,B.glow.x,et)*W;
+  const gy=lerp(A.glow.y,B.glow.y,et)*H;
+  const gr=lerp(A.glow.r,B.glow.r,et);
+  const rg=wctx.createRadialGradient(gx,gy,0,gx,gy,gr);
+  rg.addColorStop(0,`rgba(${tgtTheme===2?'255,255,200':'200,120,80'},${lerp(0.15,0.3,et)})`);
+  rg.addColorStop(1,'rgba(0,0,0,0)');
+  wctx.fillStyle=rg;wctx.fillRect(0,0,W,H);
+  // Stars
+  const sa=lerp(A.stars,B.stars,et);
+  if(sa>0.01){
+    starField.forEach(s=>{
+      const flicker=0.6+0.4*Math.sin(Date.now()*0.002+s.b*10);
+      wctx.globalAlpha=sa*flicker*0.7;
+      wctx.fillStyle='#fff';
+      wctx.beginPath();wctx.arc(s.x,s.y,s.s,0,Math.PI*2);wctx.fill();
+    });
+    wctx.globalAlpha=1;
+  }
+  // Mountains (3 layers)
+  for(let layer=0;layer<3;layer++){
+    const baseY=H*0.55+layer*45;
+    const cA=A.mtn[Math.min(layer,A.mtn.length-1)];
+    const cB=B.mtn[Math.min(layer,B.mtn.length-1)];
+    wctx.fillStyle=lerpColor(cA,cB,et);
+    wctx.beginPath();wctx.moveTo(0,H);
+    for(let x=0;x<=W;x+=3){
+      const freq1=0.003+layer*0.001, freq2=0.007+layer*0.002;
+      const h=Math.sin(x*freq1+layer*2)*40+Math.sin(x*freq2+layer)*20+Math.sin(x*0.015)*10;
+      wctx.lineTo(x,baseY-h*(1-layer*0.2));
+    }
+    wctx.lineTo(W,H);wctx.closePath();wctx.fill();
+  }
+  // Aurora (night)
+  const aa=lerp(A.aurora,B.aurora,et);
+  if(aa>0.01){
+    wctx.globalAlpha=aa*0.15;
+    for(let i=0;i<3;i++){
+      const ag=wctx.createLinearGradient(0,0,W,0);
+      ag.addColorStop(0,'rgba(0,255,100,0)');
+      ag.addColorStop(0.3,'rgba(0,255,150,0.4)');
+      ag.addColorStop(0.5,'rgba(0,200,255,0.3)');
+      ag.addColorStop(0.7,'rgba(100,0,255,0.2)');
+      ag.addColorStop(1,'rgba(0,255,100,0)');
+      wctx.fillStyle=ag;
+      const ay=H*0.15+i*30+Math.sin(Date.now()*0.0005+i)*20;
+      wctx.beginPath();wctx.moveTo(0,ay+40);
+      for(let x=0;x<=W;x+=5){
+        const wave=Math.sin(x*0.005+Date.now()*0.001+i)*25+Math.sin(x*0.01-Date.now()*0.0005)*15;
+        wctx.lineTo(x,ay+wave);
+      }
+      wctx.lineTo(W,ay+40);wctx.closePath();wctx.fill();
+    }
+    wctx.globalAlpha=1;
+  }
+}
+
+window.setTheme = function(idx){
+  if(idx===tgtTheme&&transT>=1)return;
+  curTheme=tgtTheme;tgtTheme=idx;transT=0;
+};
+
+function animLoop(){
+  if(transT<1)transT=Math.min(transT+0.008,1);
+  drawWallpaper(transT);
+  requestAnimationFrame(animLoop);
+}
+animLoop();
+
+// Clock
+setInterval(()=>{
+  const d=new Date();
+  document.getElementById('clock').textContent=
+    d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})+
+    '  '+d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+},1000);
+
+// ===== RADIAL LAUNCHER =====
+const radEl = document.getElementById('radial');
+const rc = document.getElementById('rc');
+const rctx = rc.getContext('2d');
+const R = 150;       // outer ring radius
+const IR = 110;      // icon center radius
+const CR = 42;       // center circle radius
+const ICON = 40;     // icon tile size
+const ROUND = 10;    // icon corner radius
+const PI2 = Math.PI * 2;
+
+const items = [
+  {label:'Terminal', color:'#3478F6'},
+  {label:'Files',    color:'#34C759'},
+  {label:'Browser',  color:'#5856D6'},
+  {label:'Music',    color:'#FF3B30'},
+  {label:'Settings', color:'#FF9500'},
+  {label:'Monitor',  color:'#00C7BE'},
+];
+
+// SVG icon glyphs (white, 26x26 viewBox)
+const iconSVGs = [
+  // Terminal: >_
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="26" height="26">
+    <path d="M5 7l6 6-6 6" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="13" y1="19" x2="21" y2="19" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+  </svg>`,
+  // Files: folder
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="26" height="26">
+    <path d="M3 7a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" fill="none" stroke="white" stroke-width="1.8"/>
+  </svg>`,
+  // Browser: globe
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="26" height="26">
+    <circle cx="13" cy="13" r="9" fill="none" stroke="white" stroke-width="1.8"/>
+    <ellipse cx="13" cy="13" rx="4.5" ry="9" fill="none" stroke="white" stroke-width="1.5"/>
+    <line x1="4" y1="13" x2="22" y2="13" stroke="white" stroke-width="1.5"/>
+  </svg>`,
+  // Music: eighth note
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="26" height="26">
+    <ellipse cx="10" cy="18" rx="3.5" ry="2.8" fill="white"/>
+    <line x1="13.5" y1="18" x2="13.5" y2="5" stroke="white" stroke-width="2"/>
+    <path d="M13.5 5c3 0 5.5 2 5.5 4.5" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  </svg>`,
+  // Settings: gear cog
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="26" height="26">
+    <path d="M13 3l1.5 0.3 0.8 2.2 2-0.6 1.2 1.2-0.6 2 2.2 0.8L20.4 10.4l-1.8 1.2 0.5 2.2-2 1-1.5-1.5-1.6 1.5-2-1 0.5-2.2-1.8-1.2 0.3-1.5 2.2-0.8-0.6-2 1.2-1.2 2 0.6z"
+      fill="none" stroke="white" stroke-width="1.6" stroke-linejoin="round"/>
+    <circle cx="13" cy="13" r="3" fill="none" stroke="white" stroke-width="1.6"/>
+  </svg>`,
+  // Monitor: screen
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="26" height="26">
+    <rect x="3" y="5" width="20" height="13" rx="2" fill="none" stroke="white" stroke-width="1.8"/>
+    <line x1="13" y1="18" x2="13" y2="22" stroke="white" stroke-width="1.8"/>
+    <line x1="8" y1="22" x2="18" y2="22" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+  </svg>`
+];
+
+// Pre-render icon images
+const iconImages = [];
+let iconsLoaded = 0;
+iconSVGs.forEach((svg, i) => {
+  const img = new Image();
+  img.onload = () => { iconsLoaded++; };
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  iconImages[i] = img;
+});
+
+let menuOpen = false;
+let menuCX = 0, menuCY = 0; // center in canvas coords (2x)
+let hoverIdx = -1;
+let searchBuf = '';
+
+function sliceAngle(i) {
+  return (i / 6) * PI2 - Math.PI / 2; // start from top
+}
+
+function drawRadial() {
+  rctx.clearRect(0, 0, 720, 720);
+  if (!menuOpen) return;
+  const cx = 360, cy = 360;
+
+  // Backdrop dim circle
+  rctx.save();
+  rctx.beginPath();
+  rctx.arc(cx, cy, R * 2 + 40, 0, PI2);
+  rctx.fillStyle = 'rgba(0,0,0,0.35)';
+  rctx.fill();
+  rctx.restore();
+
+  // Outer ring fill
+  rctx.beginPath();
+  rctx.arc(cx, cy, R * 2, 0, PI2);
+  rctx.fillStyle = 'rgba(12,22,38,0.78)';
+  rctx.fill();
+
+  // Ring border
+  rctx.beginPath();
+  rctx.arc(cx, cy, R * 2, 0, PI2);
+  rctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  rctx.lineWidth = 1.5;
+  rctx.stroke();
+
+  // Slice dividers
+  for (let i = 0; i < 6; i++) {
+    const a = sliceAngle(i) - PI2 / 12;
+    rctx.beginPath();
+    rctx.moveTo(cx + Math.cos(a) * CR * 2, cy + Math.sin(a) * CR * 2);
+    rctx.lineTo(cx + Math.cos(a) * R * 2, cy + Math.sin(a) * R * 2);
+    rctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    rctx.lineWidth = 1;
+    rctx.stroke();
+  }
+
+  // Hover wedge
+  if (hoverIdx >= 0 && isItemVisible(hoverIdx)) {
+    const a1 = sliceAngle(hoverIdx) - PI2 / 12;
+    const a2 = sliceAngle(hoverIdx) + PI2 / 12;
+    rctx.beginPath();
+    rctx.moveTo(cx, cy);
+    rctx.arc(cx, cy, R * 2, a1, a2);
+    rctx.closePath();
+    rctx.fillStyle = 'rgba(90,160,232,0.12)';
+    rctx.fill();
+  }
+
+  // Center circle
+  rctx.beginPath();
+  rctx.arc(cx, cy, CR * 2, 0, PI2);
+  rctx.fillStyle = 'rgba(8,16,24,0.92)';
+  rctx.fill();
+  rctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  rctx.lineWidth = 1;
+  rctx.stroke();
+
+  // Center text
+  rctx.textAlign = 'center';
+  rctx.textBaseline = 'middle';
+  if (searchBuf.length > 0) {
+    rctx.font = '600 22px -apple-system, BlinkMacSystemFont, sans-serif';
+    rctx.fillStyle = 'rgba(255,255,255,0.7)';
+    rctx.fillText(searchBuf, cx, cy);
+  } else if (hoverIdx >= 0 && isItemVisible(hoverIdx)) {
+    rctx.font = '600 20px -apple-system, BlinkMacSystemFont, sans-serif';
+    rctx.fillStyle = 'rgba(255,255,255,0.7)';
+    rctx.fillText(items[hoverIdx].label, cx, cy);
+  } else {
+    rctx.font = '400 18px -apple-system, BlinkMacSystemFont, sans-serif';
+    rctx.fillStyle = 'rgba(255,255,255,0.25)';
+    rctx.fillText('Search...', cx, cy);
+  }
+
+  // Icons
+  for (let i = 0; i < 6; i++) {
+    const a = sliceAngle(i);
+    const ix = cx + Math.cos(a) * IR * 2;
+    const iy = cy + Math.sin(a) * IR * 2;
+    const visible = isItemVisible(i);
+    const alpha = visible ? 1.0 : 0.2;
+
+    rctx.globalAlpha = alpha;
+
+    // Rounded rect background
+    const s = ICON * 2;
+    const r = ROUND * 2;
+    const rx = ix - s / 2, ry = iy - s / 2;
+    rctx.beginPath();
+    rctx.moveTo(rx + r, ry);
+    rctx.lineTo(rx + s - r, ry);
+    rctx.quadraticCurveTo(rx + s, ry, rx + s, ry + r);
+    rctx.lineTo(rx + s, ry + s - r);
+    rctx.quadraticCurveTo(rx + s, ry + s, rx + s - r, ry + s);
+    rctx.lineTo(rx + r, ry + s);
+    rctx.quadraticCurveTo(rx, ry + s, rx, ry + s - r);
+    rctx.lineTo(rx, ry + r);
+    rctx.quadraticCurveTo(rx, ry, rx + r, ry);
+    rctx.closePath();
+    rctx.fillStyle = items[i].color;
+    rctx.fill();
+
+    // Icon glyph
+    if (iconImages[i] && iconImages[i].complete) {
+      const gs = 28 * 2;
+      rctx.drawImage(iconImages[i], ix - gs / 2, iy - gs / 2, gs, gs);
+    }
+
+    // Label below icon
+    rctx.font = '500 16px -apple-system, BlinkMacSystemFont, sans-serif';
+    rctx.fillStyle = 'rgba(255,255,255,0.75)';
+    rctx.textAlign = 'center';
+    rctx.textBaseline = 'top';
+    rctx.fillText(items[i].label, ix, iy + s / 2 + 8);
+
+    rctx.globalAlpha = 1;
+  }
+}
+
+function isItemVisible(i) {
+  if (searchBuf.length === 0) return true;
+  return items[i].label.toLowerCase().includes(searchBuf.toLowerCase());
+}
+
+function getSliceAt(mx, my) {
+  // mx, my relative to radial container (0-360)
+  const dx = mx - 180, dy = my - 180;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < CR || dist > R) return -1;
+  let angle = Math.atan2(dy, dx) + Math.PI / 2;
+  if (angle < 0) angle += PI2;
+  const slice = Math.floor((angle / PI2) * 6) % 6;
+  return slice;
+}
+
+// Right-click to open
+document.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (menuOpen) {
+    closeMenu();
+    return;
+  }
+  // Position menu at click, clamped to screen
+  let mx = e.clientX - 180;
+  let my = e.clientY - 180;
+  mx = Math.max(0, Math.min(window.innerWidth - 360, mx));
+  my = Math.max(0, Math.min(window.innerHeight - 360, my));
+  radEl.style.left = mx + 'px';
+  radEl.style.top = my + 'px';
+  radEl.style.display = 'block';
+  menuOpen = true;
+  hoverIdx = -1;
+  searchBuf = '';
+  drawRadial();
+});
+
+// Mouse move on radial canvas
+rc.addEventListener('mousemove', (e) => {
+  if (!menuOpen) return;
+  const rect = rc.getBoundingClientRect();
+  const mx = (e.clientX - rect.left);
+  const my = (e.clientY - rect.top);
+  const newHover = getSliceAt(mx, my);
+  if (newHover !== hoverIdx) {
+    hoverIdx = newHover;
+    drawRadial();
+  }
+});
+
+// Left-click on radial
+rc.addEventListener('click', (e) => {
+  if (!menuOpen) return;
+  const rect = rc.getBoundingClientRect();
+  const mx = (e.clientX - rect.left);
+  const my = (e.clientY - rect.top);
+  const dx = mx - 180, dy = my - 180;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  if (dist > R) {
+    closeMenu();
+    return;
+  }
+  const slice = getSliceAt(mx, my);
+  if (slice >= 0 && isItemVisible(slice)) {
+    console.log('Launch:', items[slice].label);
+    closeMenu();
+  }
+});
+
+// Click outside closes
+document.addEventListener('click', (e) => {
+  if (!menuOpen) return;
+  if (!radEl.contains(e.target)) {
+    closeMenu();
+  }
+});
+
+// Keyboard
+document.addEventListener('keydown', (e) => {
+  if (!menuOpen) return;
+  if (e.key === 'Escape') {
+    closeMenu();
+    return;
+  }
+  if (e.key === 'Backspace') {
+    searchBuf = searchBuf.slice(0, -1);
+    hoverIdx = -1;
+    drawRadial();
+    return;
+  }
+  if (e.key === 'Enter') {
+    // Fire single visible match
+    const matches = items.map((it, i) => i).filter(i => isItemVisible(i));
+    if (matches.length === 1) {
+      console.log('Launch:', items[matches[0]].label);
+      closeMenu();
+    }
+    return;
+  }
+  if (e.key.length === 1 && e.key.match(/[a-zA-Z0-9 ]/)) {
+    searchBuf += e.key;
+    hoverIdx = -1;
+    drawRadial();
+  }
+});
+
+function closeMenu() {
+  menuOpen = false;
+  radEl.style.display = 'none';
+  searchBuf = '';
+  hoverIdx = -1;
+}
+</script>
+</body>
+</html>
