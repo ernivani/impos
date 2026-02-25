@@ -260,13 +260,21 @@ int ui_shell_run(void)
             menubar_update_windows();
         }
 
-        /* ── Repaint menubar & demo each second (clock tick) ─────── */
+        /* ── Repaint menubar once per second (clock/FPS text) ───────── */
         {
             static uint32_t last_mb = 0;
             if (now - last_mb >= 120) {
                 last_mb = now;
                 menubar_paint();
-                if (demo_id >= 0) demo_paint();
+            }
+        }
+
+        /* ── Repaint demo window at ~8 Hz so content stays fresh ──── */
+        {
+            static uint32_t last_demo = 0;
+            if (demo_id >= 0 && now - last_demo >= 15) {
+                last_demo = now;
+                demo_paint();
             }
         }
 

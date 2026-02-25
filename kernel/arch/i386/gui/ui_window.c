@@ -60,6 +60,7 @@ typedef struct {
 
     uint8_t close_hover, min_hover, max_hover;
     int     close_req;
+    int     chrome_dirty; /* titlebar needs repaint next tick */
 } ui_win_t;
 
 /* ── State ──────────────────────────────────────────────────────── */
@@ -186,30 +187,22 @@ static void draw_button(gfx_surface_t *s, int cx, int cy,
     }
 }
 
-static void win_redraw(ui_win_t *w)
+/* Draw titlebar chrome into surface s.  Helper shared by both redraw funcs. */
+static void draw_titlebar(gfx_surface_t *s, ui_win_t *w)
 {
-    if (!w->surf) return;
-    gfx_surface_t s = comp_surface_lock(w->surf);
     int sw = w->w, sh = w->h;
     int R  = WIN_RADIUS;
     int TH = WIN_TITLEBAR_H;
 
-    /* 1. Clear to transparent */
-    gfx_surf_fill_rect(&s, 0, 0, sw, sh, 0);
+    /* Titlebar shape: rounded at top, then restore body strip so the
+       separator sits cleanly at y=TH without a colour bleed below it. */
+    gfx_surf_rounded_rect(s, 0, 0, sw, TH + R, R, TOK_WIN_TITLEBAR);
+    gfx_surf_fill_rect   (s, 0, TH, sw, R, TOK_WIN_BODY);
 
-    /* 2. Full window shape in body colour (handles rounded corners) */
-    gfx_surf_rounded_rect(&s, 0, 0, sw, sh, R, TOK_WIN_BODY);
+    /* Separator */
+    gfx_surf_fill_rect(s, 0, TH, sw, 1, COL_SEP);
 
-    /* 3. Title bar: colour the top section using two-pass trick.
-          Draw titlebar-colour rounded rect extending R below the bar,
-          then restore body colour over that R-pixel overlap strip.    */
-    gfx_surf_rounded_rect(&s, 0, 0, sw, TH + R, R, TOK_WIN_TITLEBAR);
-    gfx_surf_fill_rect   (&s, 0, TH, sw, R, TOK_WIN_BODY);
-
-    /* 4. Separator (1 px) at titlebar / content boundary */
-    gfx_surf_fill_rect(&s, 0, TH, sw, 1, COL_SEP);
-
-    /* 5. Title text — centred, protected from button area (left 80 px) */
+    /* Title text — centred, protected from button area (left 80 px) */
     {
         int tpx = 13;
         int tw  = ui_font_width(w->title, tpx);
@@ -217,10 +210,10 @@ static void win_redraw(ui_win_t *w)
         if (tx < 80) tx = 80;
         int ty  = (TH - ui_font_height(tpx)) / 2;
         uint32_t tcol = w->focused ? TOK_TEXT_PRIMARY : TOK_TEXT_DIM;
-        ui_font_draw(&s, tx, ty, w->title, tcol, tpx);
+        ui_font_draw(s, tx, ty, w->title, tcol, tpx);
     }
 
-    /* 6. Traffic lights */
+    /* Traffic lights */
     {
         int by   = TH / 2;
         int bx0  = WIN_BTN_PAD_L;
@@ -235,15 +228,56 @@ static void win_redraw(ui_win_t *w)
         uint32_t max_c   = w->max_hover
             ? GFX_RGB( 60, 220,  80) : TOK_BTN_MAX;
 
-        draw_button(&s, bx0, by, close_c, w->close_hover, sym, 0);
-        draw_button(&s, bx1, by, min_c,   w->min_hover,   sym, 1);
-        draw_button(&s, bx2, by, max_c,   w->max_hover,   sym, 2);
+        draw_button(s, bx0, by, close_c, w->close_hover, sym, 0);
+        draw_button(s, bx1, by, min_c,   w->min_hover,   sym, 1);
+        draw_button(s, bx2, by, max_c,   w->max_hover,   sym, 2);
     }
 
-    /* 7. 1-px rounded border */
-    gfx_surf_rounded_rect_outline(&s, 0, 0, sw, sh, R, COL_BORDER);
+    /* 1-px rounded border (full window outline) */
+    gfx_surf_rounded_rect_outline(s, 0, 0, sw, sh, R, COL_BORDER);
+}
+
+/* Full repaint: clears the entire surface and redraws all chrome + body.
+   Use on window creation and resize (client content is also reset). */
+static void win_redraw_full(ui_win_t *w)
+{
+    if (!w->surf) return;
+    gfx_surface_t s = comp_surface_lock(w->surf);
+    int sw = w->w, sh = w->h;
+    int R  = WIN_RADIUS;
+
+    /* 1. Clear entire surface to transparent */
+    gfx_surf_fill_rect(&s, 0, 0, sw, sh, 0);
+
+    /* 2. Full window body with rounded corners */
+    gfx_surf_rounded_rect(&s, 0, 0, sw, sh, R, TOK_WIN_BODY);
+
+    /* 3. Titlebar chrome */
+    draw_titlebar(&s, w);
 
     comp_surface_damage_all(w->surf);
+    w->chrome_dirty = 0;
+}
+
+/* Chrome-only repaint: redraws only the titlebar strip and damages only
+   that region.  The client area pixels are untouched — no black flash. */
+static void win_redraw_chrome(ui_win_t *w)
+{
+    if (!w->surf) return;
+    gfx_surface_t s = comp_surface_lock(w->surf);
+    int sw = w->w;
+    int TH = WIN_TITLEBAR_H;
+
+    /* Clear only the titlebar rows */
+    gfx_surf_fill_rect(&s, 0, 0, sw, TH, 0);
+
+    /* Redraw titlebar chrome (the body strip below TH is touched but
+       not included in the damage rect, so the compositor skips it). */
+    draw_titlebar(&s, w);
+
+    /* Damage only the titlebar + separator row */
+    comp_surface_damage(w->surf, 0, 0, sw, TH + 1);
+    w->chrome_dirty = 0;
 }
 
 /* ── Public API ─────────────────────────────────────────────────── */
@@ -285,7 +319,7 @@ int ui_window_create(int x, int y, int w, int h, const char *title)
 
         z_add(i);
         ui_window_focus(i);
-        win_redraw(win);
+        win_redraw_full(win);
         return i;
     }
     return -1;
@@ -312,11 +346,11 @@ void ui_window_focus(int id)
     if (id < 0 || id >= WIN_MAX || !wins[id].in_use) return;
     if (focus_id >= 0 && focus_id != id && wins[focus_id].in_use) {
         wins[focus_id].focused = 0;
-        win_redraw(&wins[focus_id]);
+        win_redraw_chrome(&wins[focus_id]);
     }
     focus_id        = id;
     wins[id].focused = 1;
-    win_redraw(&wins[id]);
+    win_redraw_chrome(&wins[id]);
 }
 
 void ui_window_raise(int id)
@@ -343,7 +377,7 @@ void ui_window_resize(int id, int w, int h)
     if (h < min_h) h = min_h;
     win->w = w; win->h = h;
     comp_surface_resize(win->surf, w, h);
-    win_redraw(win);
+    win_redraw_full(win);
 }
 
 void ui_window_maximize(int id)
@@ -465,13 +499,13 @@ void ui_window_key_event(int id, char c)
 void ui_window_redraw(int id)
 {
     if (id >= 0 && id < WIN_MAX && wins[id].in_use)
-        win_redraw(&wins[id]);
+        win_redraw_full(&wins[id]);
 }
 
 void ui_window_redraw_all(void)
 {
     for (int i = 0; i < WIN_MAX; i++)
-        if (wins[i].in_use) win_redraw(&wins[i]);
+        if (wins[i].in_use) win_redraw_full(&wins[i]);
 }
 
 void ui_window_set_all_visible(int visible)
@@ -526,7 +560,7 @@ void ui_window_mouse_event(int mx, int my, uint8_t btns, uint8_t prev_btns)
 
         if (w->close_hover != prev_c || w->min_hover != prev_n ||
             w->max_hover   != prev_x)
-            win_redraw(w);
+            win_redraw_chrome(w);
     }
 
     /* ── Active drag: move / resize ─────────────────────────────── */
