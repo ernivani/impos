@@ -84,9 +84,12 @@ static int slot_angle(int slot, int n) {
     return (192 + slot * 256 / n) & 255;
 }
 
-/* Icon center in surface-local coords */
+/* Icon center in surface-local coords — use midpoint of wedge */
 static void slot_pos(int slot, int n, int *ox, int *oy) {
-    int ang = slot_angle(slot, n);
+    int a0   = slot_angle(slot,     n);
+    int a1   = slot_angle(slot + 1, n);
+    int diff = ((a1 - a0) + 256) & 255;   /* always positive span */
+    int ang  = (a0 + diff / 2) & 255;     /* midpoint of wedge    */
     *ox = surf->w / 2 + icos2(ang) * INNER_R / 127;
     *oy = surf->h / 2 + isin2(ang) * INNER_R / 127;
 }
