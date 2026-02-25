@@ -227,6 +227,7 @@ void comp_surface_destroy(comp_surface_t *s) {
 
 void comp_surface_move(comp_surface_t *s, int x, int y) {
     if (!s || !s->in_use) return;
+    if (s->screen_x == x && s->screen_y == y) return; /* no-op */
     /* Damage old position */
     rect_union(&sdx, &sdy, &sdw, &sdh,
                s->screen_x, s->screen_y, s->w, s->h);
@@ -235,6 +236,27 @@ void comp_surface_move(comp_surface_t *s, int x, int y) {
     /* Damage new position */
     rect_union(&sdx, &sdy, &sdw, &sdh, x, y, s->w, s->h);
     screen_dirty = 1;
+}
+
+int comp_surface_resize(comp_surface_t *s, int new_w, int new_h) {
+    if (!s || !s->in_use) return 0;
+    if (s->w == new_w && s->h == new_h) return 1;
+    /* Damage old bounds */
+    rect_union(&sdx, &sdy, &sdw, &sdh,
+               s->screen_x, s->screen_y, s->w, s->h);
+    uint32_t *np = (uint32_t *)malloc((size_t)new_w * new_h * 4);
+    if (!np) return 0;
+    memset(np, 0, (size_t)new_w * new_h * 4);
+    free(s->pixels);
+    s->pixels = np;
+    s->w = new_w;
+    s->h = new_h;
+    s->damage_all = 1;
+    /* Damage new bounds */
+    rect_union(&sdx, &sdy, &sdw, &sdh,
+               s->screen_x, s->screen_y, new_w, new_h);
+    screen_dirty = 1;
+    return 1;
 }
 
 void comp_surface_set_alpha(comp_surface_t *s, uint8_t alpha) {
@@ -379,12 +401,7 @@ void compositor_damage_all(void) {
 void compositor_frame(void) {
     if (!gfx_is_active()) return;
 
-    /* 60fps cap — always applies whether or not there is dirty content.
-       This is safe in a spin loop because the loop calls us on every
-       iteration; we return early until 2 PIT ticks (≈16 ms) have passed. */
     uint32_t now = pit_get_ticks();
-    if (now - last_frame_tick < FRAME_TICKS) return;
-    last_frame_tick = now;
 
     if (!screen_dirty) goto fps_update;
 
@@ -438,3 +455,44 @@ fps_update:
 }
 
 uint32_t compositor_get_fps(void) { return fps_value; }
+
+/* ═══ Cursor surface ════════════════════════════════════════════ */
+
+#define COMP_CURSOR_W  12
+#define COMP_CURSOR_H  16
+
+static comp_surface_t *cursor_surf = 0;
+static int cursor_type_drawn = -1;
+
+void comp_cursor_init(void) {
+    if (gfx_using_virtio_gpu()) return; /* HW cursor — no surface needed */
+    cursor_surf = comp_surface_create(COMP_CURSOR_W, COMP_CURSOR_H,
+                                       COMP_LAYER_CURSOR);
+    if (!cursor_surf) return;
+    gfx_render_cursor_to_buffer(cursor_surf->pixels,
+                                 COMP_CURSOR_W, COMP_CURSOR_H);
+    cursor_type_drawn = gfx_get_cursor_type();
+    comp_surface_damage_all(cursor_surf);
+}
+
+void comp_cursor_move(int x, int y) {
+    /* VirtIO GPU: delegate to hardware cursor */
+    if (gfx_using_virtio_gpu()) {
+        gfx_draw_mouse_cursor(x, y);
+        return;
+    }
+    if (!cursor_surf) return;
+
+    /* Refresh bitmap if cursor type changed (e.g. arrow → hand) */
+    int cur_type = gfx_get_cursor_type();
+    if (cur_type != cursor_type_drawn) {
+        gfx_render_cursor_to_buffer(cursor_surf->pixels,
+                                     COMP_CURSOR_W, COMP_CURSOR_H);
+        cursor_type_drawn = cur_type;
+        comp_surface_damage_all(cursor_surf);
+    }
+
+    int hx, hy;
+    gfx_get_cursor_hotspot(&hx, &hy);
+    comp_surface_move(cursor_surf, x - hx, y - hy);
+}

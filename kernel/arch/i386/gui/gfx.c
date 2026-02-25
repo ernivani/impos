@@ -958,6 +958,7 @@ static const cursor_shape_t cursor_shapes[] = {
 
 static int current_cursor_type = 0;
 static int hw_cursor_type_sent = -1;  /* last cursor type sent to VirtIO GPU */
+static int compositor_mode = 0; /* when active, gfx_flip* skips cursor mgmt */
 static uint32_t cursor_save[CURSOR_W * CURSOR_H];
 static int cursor_saved_x = -1, cursor_saved_y = -1;
 static int cursor_visible = 0;
@@ -1157,6 +1158,31 @@ void gfx_sync_cursor_after_composite(int x, int y) {
     cursor_visible = 1;
 }
 
+/* ═══ Compositor cursor integration ═══════════════════════════ */
+
+void gfx_set_compositor_mode(int active) { compositor_mode = active; }
+
+void gfx_render_cursor_to_buffer(uint32_t *buf, int buf_w, int buf_h) {
+    memset(buf, 0, (size_t)buf_w * buf_h * 4);
+    const cursor_shape_t *cs = &cursor_shapes[current_cursor_type];
+    for (int row = 0; row < CURSOR_H && row < buf_h; row++) {
+        uint8_t mask_bits = cs->mask[row];
+        uint8_t bmp_bits  = cs->bitmap[row];
+        for (int col = 0; col < 8 && col < buf_w; col++) {
+            if (mask_bits & (0x80 >> col)) {
+                uint32_t c = (bmp_bits & (0x80 >> col)) ? 0xFFFFFFFF : 0xFF000000;
+                buf[row * buf_w + col] = c;
+            }
+        }
+    }
+}
+
+void gfx_get_cursor_hotspot(int *hx, int *hy) {
+    const cursor_shape_t *cs = &cursor_shapes[current_cursor_type];
+    if (hx) *hx = cs->hotspot_x;
+    if (hy) *hy = cs->hotspot_y;
+}
+
 /* ═══ Text rendering (backbuffer) ═════════════════════════════ */
 
 void gfx_draw_char(int px, int py, char c, uint32_t fg, uint32_t bg) {
@@ -1286,7 +1312,7 @@ void gfx_flip(void) {
     }
 
     /* Software path: scanline-diff with non-temporal MMIO writes */
-    gfx_restore_mouse_cursor();
+    if (!compositor_mode) gfx_restore_mouse_cursor();
     uint32_t pitch4 = fb_pitch / 4;
     size_t row_bytes = fb_width * 4;
     for (uint32_t y = 0; y < fb_height; y++) {
@@ -1294,7 +1320,7 @@ void gfx_flip(void) {
         if (memcmp(backbuf + off, framebuffer + off, row_bytes) != 0)
             memcpy_nt(framebuffer + off, backbuf + off, row_bytes);
     }
-    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+    if (!compositor_mode) gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
 }
 
 void gfx_flip_rect(int x, int y, int w, int h) {
@@ -1313,14 +1339,14 @@ void gfx_flip_rect(int x, int y, int w, int h) {
         return;
     }
 
-    gfx_restore_mouse_cursor();
+    if (!compositor_mode) gfx_restore_mouse_cursor();
     uint32_t pitch4 = fb_pitch / 4;
     for (int row = y; row < y + h; row++) {
         memcpy(&framebuffer[row * pitch4 + x],
                &backbuf[row * pitch4 + x],
                (size_t)w * 4);
     }
-    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+    if (!compositor_mode) gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
 }
 
 void gfx_flip_rects(gfx_rect_t *rects, int count) {
@@ -1336,7 +1362,7 @@ void gfx_flip_rects(gfx_rect_t *rects, int count) {
         return;
     }
 
-    gfx_restore_mouse_cursor();
+    if (!compositor_mode) gfx_restore_mouse_cursor();
     uint32_t pitch4 = fb_pitch / 4;
     for (int i = 0; i < count; i++) {
         int x = rects[i].x, y = rects[i].y;
@@ -1358,7 +1384,7 @@ void gfx_flip_rects(gfx_rect_t *rects, int count) {
                        row_bytes);
         }
     }
-    gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
+    if (!compositor_mode) gfx_draw_mouse_cursor(mouse_get_x(), mouse_get_y());
 }
 
 void gfx_overlay_darken(int x, int y, int w, int h, uint8_t alpha) {

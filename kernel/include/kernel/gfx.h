@@ -122,6 +122,11 @@ void gfx_stamp_cursor_to_backbuf(int x, int y);
 void gfx_unstamp_cursor_from_backbuf(void);
 void gfx_sync_cursor_after_composite(int x, int y);
 
+/* Compositor integration — render cursor bitmap into caller's buffer */
+void gfx_render_cursor_to_buffer(uint32_t *buf, int buf_w, int buf_h);
+void gfx_get_cursor_hotspot(int *hx, int *hy);
+void gfx_set_compositor_mode(int active);
+
 /* ═══ RAM detection ════════════════════════════════════════════ */
 
 uint32_t gfx_get_system_ram_mb(void);

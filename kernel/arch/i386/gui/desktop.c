@@ -1,9 +1,9 @@
-/* desktop.c — Phase 3: compositor + window manager
+/* desktop.c — Phase 4: compositor + WM + menubar + dock
  *
  * Wallpaper surface on COMP_LAYER_WALLPAPER (drawn once).
  * Demo window on COMP_LAYER_WINDOWS via wm2 (shows FPS + usage hints).
- * Mouse events routed to wm2 every frame; cursor drawn after composite.
- * Phase 4 will add the dock + menubar surfaces on top.
+ * Menubar + dock on COMP_LAYER_OVERLAY.
+ * Mouse events: menubar/dock first, then wm2.
  */
 #include <kernel/desktop.h>
 #include <kernel/compositor.h>
@@ -11,6 +11,8 @@
 #include <kernel/ui_theme.h>
 #include <kernel/wm2.h>
 #include <kernel/wm.h>
+#include <kernel/menubar.h>
+#include <kernel/dock.h>
 #include <kernel/idt.h>
 #include <kernel/io.h>
 #include <kernel/mouse.h>
@@ -100,11 +102,11 @@ static void demo_paint(void) {
     gfx_surf_fill_rect(&gs, 8, 42, cw-16, 1, 0xFF45475A);
 
     /* Usage hints */
-    gfx_surf_draw_string(&gs,  8, 52, "Drag title bar  — move window",
+    gfx_surf_draw_string(&gs,  8, 52, "Drag title bar  - move window",
                          0xFF6C7086, bg);
-    gfx_surf_draw_string(&gs,  8, 68, "Drag edges/corners — resize",
+    gfx_surf_draw_string(&gs,  8, 68, "Drag edges/corners - resize",
                          0xFF6C7086, bg);
-    gfx_surf_draw_string(&gs,  8, 84, "Traffic lights  — close/min/max",
+    gfx_surf_draw_string(&gs,  8, 84, "Traffic lights  - close/min/max",
                          0xFF6C7086, bg);
 
     /* FPS */
@@ -137,9 +139,20 @@ void desktop_init(void) {
     sw = (int)gfx_width();
     sh = (int)gfx_height();
 
+    /* Disable software cursor save/restore in gfx_flip — compositor owns it */
+    gfx_set_compositor_mode(1);
+
     /* Wallpaper — full screen, drawn once */
     wallpaper = comp_surface_create(sw, sh, COMP_LAYER_WALLPAPER);
     if (wallpaper) wallpaper_draw();
+
+    /* Cursor surface on COMP_LAYER_CURSOR */
+    comp_cursor_init();
+    comp_cursor_move(mouse_get_x(), mouse_get_y());
+
+    /* Menubar + dock on COMP_LAYER_OVERLAY */
+    menubar_init();
+    dock_init();
 
     /* Demo window — centred */
     demo_id = wm2_create(sw/2 - 200, sh/2 - 150, 400, 300, "ImposOS");
@@ -188,7 +201,7 @@ int  alttab_is_visible(void) { return alttab_visible; }
 /* ── Main loop ──────────────────────────────────────────────────── */
 
 int desktop_run(void) {
-    static uint8_t prev_btn = 0;
+    static uint8_t  prev_btn  = 0;
 
     if (desktop_first_show) {
         desktop_first_show = 0;
@@ -196,47 +209,52 @@ int desktop_run(void) {
     }
 
     while (1) {
-        /* Route mouse events to wm2 */
+        /* ── Input ──────────────────────────────────────────────── */
+
         if (mouse_poll()) {
             int mx          = mouse_get_x();
             int my          = mouse_get_y();
             uint8_t cur_btn = mouse_get_buttons();
-            wm2_mouse_event(mx, my, cur_btn, prev_btn);
+            int btn_down    = (cur_btn & 1) && !(prev_btn & 1);
+            int btn_up      = !(cur_btn & 1) && (prev_btn & 1);
+
+            /* Route: menubar first, then dock, then WM */
+            if (!menubar_mouse(mx, my, btn_down) &&
+                !dock_mouse(mx, my, btn_down, btn_up)) {
+                wm2_mouse_event(mx, my, cur_btn, prev_btn);
+            }
             prev_btn = cur_btn;
+            comp_cursor_move(mx, my);
         }
 
-        /* Non-blocking keyboard */
-        if (keyboard_data_available()) {
-            char c = getchar();
+        {
+            int c = keyboard_getchar_nb();
             if (c == 27) return DESKTOP_ACTION_POWER; /* ESC */
         }
 
-        /* Handle close button on demo window: reopen it */
+        /* ── Window lifecycle ───────────────────────────────────── */
+
         if (demo_id >= 0 && wm2_close_requested(demo_id)) {
             int sw = (int)gfx_width(), sh = (int)gfx_height();
             wm2_destroy(demo_id);
             demo_id = wm2_create(sw/2 - 200, sh/2 - 150, 400, 300, "ImposOS");
+            demo_paint();
         }
 
-        /* Repaint the demo window once per PIT tick (~120 Hz).
-           A loop-counter fallback fires if pit_ticks ever stalls, so the
-           screen is never permanently frozen even without timer interrupts. */
+        /* ── Repaint once per second: demo FPS + menubar clock ── */
         {
-            static uint32_t last_tick  = 0;
-            static uint32_t loop_ctr   = 0;
-            uint32_t t = pit_get_ticks();
-            loop_ctr++;
-            if (t != last_tick || loop_ctr >= 200000) {
-                last_tick  = t;
-                loop_ctr   = 0;
+            static uint32_t last_paint_tick = 0;
+            uint32_t now = pit_get_ticks();
+            if (now - last_paint_tick >= 120) { /* PIT @ 120Hz = 1 second */
+                last_paint_tick = now;
                 demo_paint();
+                menubar_paint();
             }
         }
 
-        /* Composite dirty regions (rate-capped at 60fps internally) */
+        /* ── Composite dirty regions (60fps cap) ────────────────── */
         compositor_frame();
 
-        /* Redraw cursor on framebuffer after composite flip */
-        gfx_sync_cursor_after_composite(mouse_get_x(), mouse_get_y());
+        /* Cursor is now a compositor surface — no sync hack needed */
     }
 }

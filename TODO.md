@@ -1,275 +1,234 @@
-# ImposOS Desktop Rewrite — Modern GUI Architecture
+# ImposOS Desktop Rewrite -- Modern GUI Architecture
 
 ## Vision
 
-Tear out the current ad-hoc desktop/WM/widget stack and replace it with a
-clean, layered rendering architecture capable of sustained high FPS on bare
-metal i386. Inspiration: macOS (compositing model, dock, menubar), KDE Plasma
-(panel flexibility, effects), GNOME (activity overview, app model). The goal
-is to leapfrog all three by keeping the design radically simple at the kernel
-level while delivering a snappy, beautiful result.
+A clean, layered GUI for bare-metal i386 that feels modern: composited
+windows, macOS-style chrome, event-driven apps, smooth animations.
+Radically simple at the kernel level, snappy and beautiful at the surface.
 
 ---
 
-## Phase 1 — Nuke the old stack
+## DONE -- Foundation (Phases 1-3)
 
-### Files to delete / gut
-- `desktop.c` — monolithic 3000-line file mixing layout, drawing, input, state
-- `wm.c` — shadow atlas, bg_cache, composite logic tightly coupled to desktop
-- `ui_widget.c` — 8-window hard cap, no layout engine, pixel-perfect hacks
-- `ui_theme.c` — keep color tokens, remove all sizing magic numbers
-- `ui_event.c` — replace with a proper event queue (not a flag + callback)
-- `login.c` — rebuild as a first-class app, not a special boot state
-- `filemgr.c`, `finder.c`, `taskmgr.c`, `monitor.c`, `settings.c` — rebuild
-  as apps on top of the new stack, not one-off drawing routines
+### Phase 1 -- Gut old stack [COMPLETE]
+- Gutted monolithic desktop.c, wm.c, ui_widget.c, ui_event.c
+- Stubbed all old apps (filemgr, taskmgr, settings, monitor, finder)
+- Kept: gfx.c, gfx_path.c, gfx_ttf.c, ui_theme.c (Catppuccin palette)
 
-### What to keep
-- `gfx.c` — backbuffer, `gfx_flip()`, SSE2 `memcpy_nt`, BGA init — solid
-- `gfx_path.c` — vector primitives (rect, circle, line) — keep and extend
-- `gfx_ttf.c` — font rasterizer — keep, add kerning + subpixel hints
-- `ui_theme.c` color tokens (Catppuccin palette is good) — keep values, gut
-  the rest
+### Phase 2 -- Compositor [COMPLETE]
+- `compositor.c` (500 LOC): 64-surface pool, 4 layers (wallpaper/windows/overlay/cursor)
+- Per-surface damage rects, merged into screen-level dirty rect
+- Per-pixel alpha blending with per-surface opacity
+- SSE2 non-temporal flip to MMIO framebuffer
+- Software cursor as compositor surface (hardware cursor on VirtIO GPU)
+- `comp_surface_resize()` for in-place resize without z-order loss
 
----
+### Phase 3 -- Window Manager [COMPLETE]
+- `wm2.c` (700 LOC): 32-window pool, z-order, focus tracking
+- macOS-style decorations: 28px title bar, traffic-light buttons, rounded corners
+- Full mouse interaction: drag-move, 8-zone resize, button hover/press
+- Window states: normal, maximized, minimized
+- Canvas API: apps draw to a client buffer, WM blits to compositor surface
+- Partial redraw: button hover redraws only button area, not full surface
 
-## Phase 2 — New rendering pipeline
-
-### 2.1 Retained-mode scene graph (`compositor.c`)
-Replace the immediate-mode draw-everything-every-frame approach with a
-retained scene graph:
-
-```
-Scene
- └── Layer[]          (z-ordered: wallpaper, windows, overlay, cursor)
-      └── Surface[]   (opaque region + damage rect + pixel buffer)
-```
-
-- Each `Surface` owns a pixel buffer (ARGB 32-bit)
-- Compositor only repaints surfaces whose `damage` rect is non-zero
-- Final blit to backbuffer only copies changed scanline spans → cuts
-  memory bandwidth by 60-80% on typical workloads
-- `gfx_flip()` stays as-is (SSE2 blit to framebuffer)
-
-### 2.2 Damage tracking
-- Every draw call marks a dirty rect on its surface
-- WM merge-clips dirty rects per frame before composite
-- Skip full-screen redraws; only composite what changed
-
-### 2.3 Frame pacing
-- PIT at 1000 Hz gives 1 ms tick resolution
-- Target: 60 fps (16 ms budget), cap at 120 fps on fast paths
-- Frame loop: `input → update → damage-composite → flip → sleep remainder`
-- Remove the current `WM_FRAME_INTERVAL` polling hack
+### Desktop loop [COMPLETE]
+- `desktop.c` (250 LOC): non-blocking spin loop
+- Mouse routed to wm2, keyboard via `keyboard_getchar_nb()` (non-blocking)
+- Bilinear gradient wallpaper on COMP_LAYER_WALLPAPER
+- Demo window with FPS counter, repaints once per second
+- ESC exits to login (placeholder for power menu)
 
 ---
 
-## Phase 3 — Window manager rewrite (`wm2.c`)
+## NEXT -- Phase 4: Desktop Shell
 
-### Core model (inspired by Wayland/KWin internals, simplified)
-```c
-typedef struct {
-    int      id;
-    rect_t   geom;          // x, y, w, h
-    rect_t   damage;        // dirty region this frame
-    uint32_t *pixels;       // client-owned surface buffer
-    char     title[64];
-    uint8_t  alpha;         // window opacity 0-255
-    int      state;         // NORMAL | MAXIMIZED | MINIMIZED | FULLSCREEN
-    int      z;             // z-index
-} wm_client_t;
-```
+The desktop needs its chrome: a menubar at top, a dock at bottom, and
+the infrastructure to launch and manage apps.
 
-- No hard window count cap (dynamic array, heap-allocated)
-- Window decorations drawn by WM into a separate decoration surface,
-  not mixed into client pixels (clean separation like KWin)
-- Rounded corners via pre-computed alpha mask, applied at composite time
-- Drop shadow rendered once into a shadow surface, cached until resize
-
-### Title bar
-- macOS-style: traffic-light buttons (close/min/max) on left
-- Double-click title bar → maximize (toggle)
-- Middle-click title bar → shade (roll up) — KDE feature
-- Right-click title bar → window menu (move, resize, always-on-top, close)
-
-### Resize
-- Invisible 4px resize border on all edges + corners (8 handles)
-- Live resize: redraw client every frame during drag (not just outline)
-- Snap to screen edges and other windows (magnetism like KDE)
-
-### Focus model
-- Click-to-focus with optional sloppy focus (hover = focus)
-- Focus ring drawn by WM at composite time (1px accent-colored border)
-
----
-
-## Phase 4 — Desktop shell rewrite (`shell2/`)
-
-### Layout (macOS + GNOME hybrid)
+### 4.1 Menubar (`menubar.c`)
+Compositor surface on COMP_LAYER_OVERLAY, 28px tall, full width.
 
 ```
-┌─────────────────────────────────────────┐
-│  Menubar  [App menu] [File Edit …]  [Clock CPU Network] │  ← 24px
-├─────────────────────────────────────────┤
-│                                         │
-│              Wallpaper                  │
-│         (desktop icon grid)             │
-│                                         │
-├─────────────────────────────────────────┤
-│  [Icon][Icon][Icon][Icon]  ○○○  [Icon]  │  ← Dock 60px
-└─────────────────────────────────────────┘
+[ Logo ] [ App Name | File  Edit  View ] ............. [ Clock | CPU | Net ]
 ```
 
-### Menubar (`menubar.c`)
-- 24px bar, always on top (own compositor layer)
-- Left: Apple-logo menu → About, Settings, Shutdown
-- Center: active app name + app menu (File, Edit, View, …)
-- Right: system tray — clock, CPU bar, network indicator, volume
-- Menus are popup surfaces, not modal loops
+- Left: ImposOS logo button -> power menu (shutdown, restart, lock, logout)
+- Center: focused app name + its menu titles (click to open dropdown)
+- Right: system tray widgets (clock, CPU %, network status)
+- Dropdown menus: popup surfaces on COMP_LAYER_OVERLAY
+- Menubar redraws only on: focus change, clock tick, tray data change
 
-### Dock (`dock.c`)
-- Centered at bottom, floating (gap between dock and screen edge)
-- App icons: 48×48 SVG-like pixel art or pre-rasterized bitmaps
-- Hover magnification: icon scales to 72px with smooth lerp (60fps)
+### 4.2 Dock (`dock.c`)
+Compositor surface on COMP_LAYER_OVERLAY, centered at bottom, floating.
+
+```
+                 [Term] [Files] [Settings] [Monitor] | [Trash]
+                   .
+```
+
+- 48px icons, 8px padding, 12px gap from screen bottom
+- Rounded-rect background with slight transparency (alpha=220)
+- Separator between pinned apps and running-only apps
 - Running indicator: small dot below icon
-- Drag-to-reorder, drag-off-to-remove
-- App badge overlay (notification count)
+- Hover: highlight icon (brighter background), tooltip with app name
+- Click: launch app or focus existing window
+- Phase 4 skip: magnification effect (add in Phase 7)
 
-### Activity overview (GNOME-inspired, `overview.c`)
-- Triggered by Super key or hot corner (top-left)
-- All windows scale down and spread across screen
-- Search bar at top filters running apps + installed apps
-- Click window thumbnail to focus it
+### 4.3 Wallpaper improvements
+- Current bilinear gradient works, keep it
+- Add: load a raw pixel image from initrd (BMP or raw ARGB)
+- Wallpaper selection in Settings app later
 
-### Wallpaper engine (`wallpaper.c`)
-- Static color, gradient (bilinear, 4-corner), or pixel art image
-- Smooth animated gradient option (slow color shift, ~0.5fps update)
-- Wallpaper drawn once to a locked surface; never recomposited unless changed
-
-### Desktop icons (`icon_grid.c`)
-- Uniform grid layout (auto-arrange option)
-- Single-click selects, double-click opens
-- Rubber-band multi-select
-- Right-click context menu
+### 4.4 Window management polish
+- Alt-Tab switcher: overlay surface showing window thumbnails
+- Snap to edges: drag window to screen edge -> half-screen maximize
+- Double-click title bar -> maximize toggle (already partially there)
 
 ---
 
-## Phase 5 — Input system rewrite (`input.c`)
+## Phase 5 -- App Model
 
-Replace the current `getchar()` polling + IRQ flag approach:
+Replace "app = function that loops forever" with an event-driven model
+where the desktop loop owns the frame and apps respond to events.
 
-### Event queue
+### 5.1 App class
+
+```c
+typedef struct app app_t;
+
+typedef struct {
+    const char *name;
+    const char *icon;           // icon name for dock
+    void (*on_create)(app_t *self);
+    void (*on_destroy)(app_t *self);
+    void (*on_event)(app_t *self, int event_type, int param1, int param2);
+    void (*on_paint)(app_t *self, uint32_t *pixels, int w, int h);
+    void (*on_resize)(app_t *self, int w, int h);
+} app_class_t;
+
+struct app {
+    const app_class_t *klass;
+    int    win_id;              // wm2 window handle
+    void  *state;               // app-private data (malloc'd)
+};
+```
+
+- `on_paint` called when window needs redraw (damage, resize, focus change)
+- `on_event` called for keyboard/mouse events routed by WM to focused app
+- Apps never call compositor directly; they paint pixels, WM handles the rest
+- App registry: static array of app_class_t pointers, indexed by name
+
+### 5.2 App lifecycle
+1. User clicks dock icon (or hotkey)
+2. Desktop calls `app_launch("terminal")` -> finds class, creates app_t
+3. `app_t` gets a wm2 window, calls `on_create`
+4. Desktop loop: drain events -> route to focused app's `on_event`
+5. If app marks damage -> call `on_paint` with canvas buffer
+6. On close button: call `on_destroy`, free state, destroy window
+
+### 5.3 Built-in apps
+
+| App | Priority | Description |
+|-----|----------|-------------|
+| Terminal | HIGH | Shell in a window, VT100 emulation, scrollback |
+| File Manager | HIGH | Grid/list view, breadcrumb nav, open/copy/delete |
+| Settings | MED | Theme picker, keyboard layout, wallpaper, about |
+| Task Manager | MED | Process list, CPU/mem bars, kill button |
+| Text Editor | MED | Wrap existing vi, add syntax highlighting |
+| System Monitor | LOW | Live sparkline graphs (CPU, mem, net) |
+| DOOM | LOW | Already works; wrap in app_class, fullscreen mode |
+
+---
+
+## Phase 6 -- Input System Rewrite
+
+The current keyboard system (getchar.c) has a blocking getchar() that
+halts the CPU. The desktop already works around this with
+keyboard_getchar_nb(), but a proper unified event system is needed.
+
+### 6.1 Unified event queue
+
 ```c
 typedef struct {
-    uint8_t  type;     // KEY_PRESS | KEY_RELEASE | MOUSE_MOVE | MOUSE_BTN | SCROLL
-    uint32_t time_ms;
+    uint8_t  type;      // KEY_DOWN, KEY_UP, MOUSE_MOVE, MOUSE_BTN, SCROLL
+    uint32_t timestamp; // PIT ticks
     union {
-        struct { uint8_t scancode; uint32_t codepoint; uint8_t mods; } key;
-        struct { int16_t dx, dy; int16_t ax, ay; uint8_t buttons; } mouse;
-        struct { int16_t dx, dy; } scroll;
+        struct { uint8_t scancode; char ch; uint8_t mods; } key;
+        struct { int16_t x, y; uint8_t buttons; } mouse;
+        struct { int8_t dx, dy; } scroll;
     };
 } input_event_t;
 ```
 
-- Ring buffer of 256 events, filled by IRQ handlers (keyboard IRQ1, mouse IRQ12)
-- WM drains queue at frame start, routes events to focused window or global shortcuts
-- No more `getchar()` blocking the frame loop
+- Lock-free ring buffer (256 entries), filled by IRQ1 + IRQ12
+- Desktop loop drains at frame start
+- WM routes: global shortcuts first, then to focused window's app
+- Mouse scroll routed to hovered window (not focused) -- like macOS
 
-### Keyboard
-- Decouple scancode → Unicode from the WM; make it a small `kbd_translate()` call
-- Dead key support for compose sequences (é, ü, ñ …)
-- Global shortcuts handled by WM before routing to apps
-
-### Mouse
-- Absolute position tracking (not just deltas)
-- Hardware cursor: write cursor pixels directly to framebuffer after composite,
-  save/restore background — already done, keep this approach
-- Scroll wheel events routed to hovered window (not focused) — like macOS/KDE
+### 6.2 Keyboard improvements
+- Scancode -> character translation extracted into kbd_translate()
+- Dead key / compose support for accented chars
+- Global hotkeys: Alt+Tab, Ctrl+Space (launcher), Super (overview)
 
 ---
 
-## Phase 6 — App model (`app.c`)
+## Phase 7 -- Animations & Effects
 
-Replace the current "app = a function that loops forever" model:
+All animations are purely additive -- nothing depends on them.
 
-### App lifecycle
-```c
-typedef struct {
-    const char *name;
-    void (*init)(app_t *self);
-    void (*on_event)(app_t *self, input_event_t *ev);
-    void (*on_paint)(app_t *self, uint32_t *pixels, int w, int h);
-    void (*on_close)(app_t *self);
-} app_class_t;
-```
-
-- `on_paint` called only when window is damaged
-- Apps do NOT call `gfx_*` directly; they receive a pixel buffer to draw into
-- WM owns the window surface; app writes to it via `on_paint` callback
-- Clean separation: WM composites, app paints — no coupling
-
-### Built-in apps to rewrite on the new model
-| App | Notes |
-|-----|-------|
-| Terminal | Shell in a window; uses existing shell_loop logic |
-| File Manager | Grid + list view, breadcrumb path bar |
-| Settings | Category sidebar + content pane |
-| Task Manager | Live CPU/mem graphs, kill button |
-| Text Editor (vi) | Already exists; wrap in app_class |
-| System Monitor | Sparkline graphs, per-process rows |
-| DOOM | Fullscreen app; bypasses compositor for direct framebuffer access |
+- **Window open**: scale up from 80% to 100% + fade in (150ms ease-out)
+- **Window close**: scale down to 80% + fade out (100ms ease-in)
+- **Minimize**: shrink toward dock icon position (200ms)
+- **Alt-Tab**: smooth slide between thumbnails
+- **Dock hover**: icon scale 48px -> 64px with neighbor spread (lerp)
+- **Notification toast**: slide in from top-right, auto-dismiss (3s)
+- **Login crossfade**: keep existing gfx_crossfade()
+- Animation engine: `anim_tick(dt_ms)` called at frame start, lerps all active tweens
 
 ---
 
-## Phase 7 — Animations & effects
+## Constraints
 
-- **Window open/close**: scale from dock icon position to final size (200ms ease-out)
-- **Expose / overview**: smooth scale + fade (300ms)
-- **Notification toasts**: slide in from top-right, auto-dismiss (3s)
-- **Dock magnification**: per-icon scale lerp at 60fps, no realloc
-- **Crossfade on login**: keep existing `gfx_crossfade()` — it works
-- All animations driven by a global `anim_tick(dt_ms)` called at frame start
-
----
-
-## Constraints & non-goals
-
-- **No MMU per-process isolation** — kernel and apps share address space (bare metal reality)
-- **No GPU shaders** — BGA is a dumb framebuffer; all effects are CPU-side
-- **No dynamic linking** — apps compiled into the kernel binary for now
-- **No anti-aliasing on fonts** — 8×16 bitmap font; add subpixel rendering later
-- **Keep it buildable with i686-elf-gcc** — no C++ features, no libc
+- No MMU process isolation -- kernel and apps share address space
+- No GPU shaders -- BGA/VirtIO is a dumb framebuffer, all CPU-side
+- No dynamic linking -- apps compiled into kernel binary
+- Font: 8x16 bitmap (TTF rasterizer exists for future use)
+- Buildable with i686-elf-gcc, no C++, minimal libc
 
 ---
 
-## File layout after rewrite
+## File layout
 
 ```
 kernel/arch/i386/gui/
-  compositor.c      ← scene graph, damage tracking, blit
-  wm2.c             ← window manager (client list, decorations, focus)
-  input.c           ← event queue, keyboard translate, mouse
-  desktop_shell.c   ← menubar, dock, overview, wallpaper, icon grid
-  app.c             ← app lifecycle, registry
-  anim.c            ← animation engine (lerp, easing, timeline)
-  gfx.c             ← keep (backbuffer, flip, primitives)
-  gfx_path.c        ← keep
-  gfx_ttf.c         ← keep
-  ui_theme.c        ← keep color tokens only
+  compositor.c      [DONE] scene graph, damage tracking, alpha blit
+  wm2.c             [DONE] window manager, decorations, focus, resize
+  desktop.c         [DONE] main loop, wallpaper, demo window
+  menubar.c         [TODO] top bar: app menu, system tray, clock
+  dock.c            [TODO] bottom bar: app icons, launch, indicators
+  app.c             [TODO] app lifecycle, registry, launch/destroy
+  anim.c            [TODO] animation engine (lerp, easing, timeline)
+  gfx.c             [DONE] backbuffer, flip, primitives, cursor
+  gfx_path.c        [DONE] vector paths, bezier, scanline fill
+  gfx_ttf.c         [DONE] TTF parser, glyph cache, scaled text
+  ui_theme.c        [DONE] Catppuccin color tokens, layout metrics
+  input.c           [TODO] unified event queue (replace getchar)
   apps/
-    terminal.c
-    filemgr.c
-    settings.c
-    taskmgr.c
-    doom_app.c
+    terminal.c      [TODO] shell in a window
+    filemgr.c       [TODO] file manager
+    settings.c      [TODO] settings panel
+    taskmgr.c       [TODO] task manager
+    doom_app.c      [TODO] DOOM wrapper
 ```
 
 ---
 
 ## Implementation order
 
-1. `compositor.c` + damage rects (can test standalone with a moving rect)
-2. `input.c` event queue (replaces getchar polling — immediate win)
-3. `wm2.c` basic window stack on top of compositor
-4. `desktop_shell.c` menubar + dock (static, no animations yet)
-5. Port apps one by one to `app_class_t` model
-6. Add animations last (purely additive, not load-bearing)
+1. **Menubar** -- static bar with clock + app name (surfaces on COMP_LAYER_OVERLAY)
+2. **Dock** -- static icon bar with click-to-launch stubs
+3. **App model** -- app_class_t + app_launch() + event routing
+4. **Terminal app** -- first real app, shell in a window
+5. **File Manager** -- second app, exercises the full stack
+6. **Input rewrite** -- unified event queue (current non-blocking approach works for now)
+7. **Animations** -- purely additive, last priority

@@ -178,6 +178,27 @@ static void blit_client(wm2_win_t *win) {
                (size_t)bw * 4);
 }
 
+/* Blit only a sub-rect of the client buffer into the surface */
+static void blit_client_region(wm2_win_t *win, int rx, int ry, int rw, int rh) {
+    int cx, cy, cw, ch, sx, sy, bw, bh, row;
+    if (!win->client_px || !win->surf) return;
+    content_rect(win, &cx, &cy, &cw, &ch);
+    sx = cx - win->x;
+    sy = cy - win->y;
+    /* Clamp region to client bounds */
+    if (rx < 0) { rw += rx; rx = 0; }
+    if (ry < 0) { rh += ry; ry = 0; }
+    if (rx + rw > win->client_w) rw = win->client_w - rx;
+    if (ry + rh > win->client_h) rh = win->client_h - ry;
+    bw = (rx + rw > cw) ? cw - rx : rw;
+    bh = (ry + rh > ch) ? ch - ry : rh;
+    if (bw <= 0 || bh <= 0) return;
+    for (row = 0; row < bh; row++)
+        memcpy(win->surf->pixels + (sy + ry + row) * win->surf->w + (sx + rx),
+               win->client_px + (ry + row) * win->client_w + rx,
+               (size_t)bw * 4);
+}
+
 static void draw_win(wm2_win_t *win) {
     static const uint32_t btn_col[3] = {
         WM2_BTN_CLOSE_C, WM2_BTN_MIN_C, WM2_BTN_MAX_C
@@ -269,6 +290,47 @@ static void draw_win(wm2_win_t *win) {
     blit_client(win);
 
     comp_surface_damage_all(win->surf);
+}
+
+/* ── Partial button redraw (hover only) ─────────────────────────── */
+
+static void draw_win_buttons(wm2_win_t *win) {
+    static const uint32_t btn_col[3] = {
+        WM2_BTN_CLOSE_C, WM2_BTN_MIN_C, WM2_BTN_MAX_C
+    };
+    gfx_surface_t gs;
+    int b, by;
+    uint32_t frame_bg, fab;
+
+    if (!win->surf) return;
+    gs = comp_surface_lock(win->surf);
+
+    frame_bg = win->focused ? ui_theme.win_header_focused
+                             : ui_theme.win_header_bg;
+    fab = frame_bg | 0xFF000000;
+    by  = WM2_TITLEBAR_H / 2;
+
+    /* Damage rect covering all 3 buttons */
+    int bx0 = WM2_BTN_MARGIN - WM2_BTN_R - 1;
+    int bx1 = WM2_BTN_MARGIN + 2 * WM2_BTN_SPACING + WM2_BTN_R + 1;
+    int by0 = by - WM2_BTN_R - 1;
+    int by1 = by + WM2_BTN_R + 1;
+    if (bx0 < 0) bx0 = 0;
+    if (by0 < 0) by0 = 0;
+
+    /* Clear button area to title bar background */
+    gfx_surf_fill_rect(&gs, bx0, by0, bx1 - bx0, by1 - by0, fab);
+
+    /* Redraw all three buttons */
+    for (b = 0; b < 3; b++) {
+        int bcx = WM2_BTN_MARGIN + b * WM2_BTN_SPACING;
+        uint32_t col = (win->focused || win->btn_hover == b + 1)
+                       ? btn_col[b] : WM2_BTN_DIM_C;
+        gfx_surf_fill_circle(&gs, bcx, by, WM2_BTN_R, col | 0xFF000000);
+    }
+
+    /* Damage only the button area — NOT the whole surface */
+    comp_surface_damage(win->surf, bx0, by0, bx1 - bx0, by1 - by0);
 }
 
 /* ── Client buffer ──────────────────────────────────────────────── */
@@ -395,25 +457,17 @@ void wm2_move(int id, int x, int y) {
 
 void wm2_resize(int id, int nw, int nh) {
     wm2_win_t *win = find_win(id);
-    wm2_win_t *fw;
     if (!win) return;
     if (nw < WM2_MIN_W) nw = WM2_MIN_W;
     if (nh < WM2_MIN_H) nh = WM2_MIN_H;
     if (win->w == nw && win->h == nh) return;
     win->w = nw;  win->h = nh;
 
-    /* Recreate surface at the new size */
-    if (win->surf) comp_surface_destroy(win->surf);
-    win->surf = comp_surface_create(nw, nh, COMP_LAYER_WINDOWS);
-    if (win->surf) comp_surface_move(win->surf, win->x, win->y);
+    /* Resize surface in-place — keeps layer position, no z-order issues */
+    if (win->surf) comp_surface_resize(win->surf, nw, nh);
 
     alloc_client(win);
     draw_win(win);
-
-    /* Keep focused window on top after surface recreate */
-    fw = find_win(focused_id);
-    if (fw && fw->surf && fw->id != id)
-        comp_surface_raise(fw->surf);
 }
 
 int        wm2_get_focused(void) { return focused_id; }
@@ -454,7 +508,7 @@ uint32_t *wm2_get_canvas(int id, int *out_w, int *out_h) {
 void wm2_damage_canvas(int id, int x, int y, int w, int h) {
     wm2_win_t *win = find_win(id);
     if (!win || !win->surf) return;
-    blit_client(win);
+    blit_client_region(win, x, y, w, h);
     comp_surface_damage(win->surf, 1+x, WM2_TITLEBAR_H+y, w, h);
 }
 
@@ -590,9 +644,9 @@ void wm2_mouse_event(int mx, int my, uint8_t buttons, uint8_t prev_btn) {
         if (new_id != prev_hover_id || new_hover != prev_btn_hover) {
             if (prev_hover_id != -1) {
                 wm2_win_t *old = find_win(prev_hover_id);
-                if (old) { old->btn_hover = 0; draw_win(old); }
+                if (old) { old->btn_hover = 0; draw_win_buttons(old); }
             }
-            if (hw) { hw->btn_hover = new_hover; draw_win(hw); }
+            if (hw) { hw->btn_hover = new_hover; draw_win_buttons(hw); }
             prev_hover_id  = new_id;
             prev_btn_hover = new_hover;
         }

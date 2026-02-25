@@ -39,8 +39,13 @@ comp_surface_t *comp_surface_create(int w, int h, int layer);
 void comp_surface_destroy(comp_surface_t *s);
 
 /* Move surface to (x, y) in screen coords.
-   Automatically damages the old and new screen regions.              */
+   Automatically damages the old and new screen regions.
+   No-op if position is unchanged.                                    */
 void comp_surface_move(comp_surface_t *s, int x, int y);
+
+/* Resize surface in-place (reallocs pixel buffer, clears to 0).
+   Preserves layer position.  Returns 1 on success, 0 on malloc fail. */
+int  comp_surface_resize(comp_surface_t *s, int new_w, int new_h);
 
 /* Change global opacity (255 = fully opaque, 0 = fully transparent). */
 void comp_surface_set_alpha(comp_surface_t *s, uint8_t alpha);
@@ -94,5 +99,13 @@ void compositor_damage_all(void);
 
 /* Returns composites-per-second (updated once per second).           */
 uint32_t compositor_get_fps(void);
+
+/* ═══ Cursor surface ════════════════════════════════════════════ */
+
+/* Create cursor surface on COMP_LAYER_CURSOR (call after init).    */
+void comp_cursor_init(void);
+
+/* Move cursor to (x, y) screen position (handles hotspot).         */
+void comp_cursor_move(int x, int y);
 
 #endif
