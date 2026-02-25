@@ -22,4 +22,7 @@ int ctx_menu_mouse(int mx, int my, int btn_down, int btn_up);
 /* Repaint (call after hover changes). */
 void ctx_menu_paint(void);
 
+/* Tick: drive open/close alpha animation. Call every frame. */
+void ctx_menu_tick(void);
+
 #endif

@@ -26,4 +26,7 @@ int drawer_key(char ch, int scancode);
 /* Repaint the drawer (call after search/scroll state changes). */
 void drawer_paint(void);
 
+/* Tick: drive open/close alpha animation. Call every frame. */
+void drawer_tick(void);
+
 #endif

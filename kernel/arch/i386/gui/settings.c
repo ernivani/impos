@@ -7,7 +7,7 @@
  * Can be directed to a specific tab: app_settings_open_to("wallpaper").
  */
 #include <kernel/settings_app.h>
-#include <kernel/wm2.h>
+#include <kernel/ui_window.h>
 #include <kernel/wallpaper.h>
 #include <kernel/gfx.h>
 #include <kernel/ui_theme.h>
@@ -32,6 +32,13 @@
 
 static const char *tab_names[TAB_COUNT] = {
     "Wallpaper", "Appearance", "Display", "About"
+};
+
+static const uint32_t tab_icon_colors[TAB_COUNT] = {
+    0xFF3478F6,   /* Wallpaper  — blue   */
+    0xFFCBA6F7,   /* Appearance — purple */
+    0xFF94E2D5,   /* Display    — teal   */
+    0xFF6C7086,   /* About      — gray   */
 };
 
 /* ── State ──────────────────────────────────────────────────────── */
@@ -94,7 +101,7 @@ static void settings_paint(void) {
     if (settings_win_id < 0) return;
 
     int cw, ch;
-    uint32_t *canvas = wm2_get_canvas(settings_win_id, &cw, &ch);
+    uint32_t *canvas = ui_window_canvas(settings_win_id, &cw, &ch);
     if (!canvas) return;
 
     gfx_surface_t gs;
@@ -118,9 +125,13 @@ static void settings_paint(void) {
                        6, 0x4D3478F6);
         }
 
+        /* Icon square (8x8 rounded) */
+        draw_rrect(canvas, cw, 14, ty + (TAB_H - 4 - 10) / 2,
+                   10, 10, 2, tab_icon_colors[t]);
+
         uint32_t fg = active ? 0xFFFFFFFF : 0xFFA6ADC8;
-        gfx_surf_draw_string(&gs, 14, ty + (TAB_H - 16) / 2,
-                             tab_names[t], fg, 0);
+        gfx_surf_draw_string_smooth(&gs, 30, ty + (TAB_H - 16) / 2,
+                             tab_names[t], fg, 1);
     }
 
     /* ── Content pane ───────────────────────────────────────────── */
@@ -131,8 +142,8 @@ static void settings_paint(void) {
 
     case TAB_WALLPAPER: {
         /* Title */
-        gfx_surf_draw_string(&gs, cx, cy, "Wallpaper",
-                             0xFFCDD6F4, 0);
+        gfx_surf_draw_string_smooth(&gs, cx, cy, "Wallpaper",
+                             0xFFCDD6F4, 1);
         cy += 24;
 
         /* Thumbnail grid: 5 style cards */
@@ -177,7 +188,7 @@ static void settings_paint(void) {
             int nlen = strlenx(sname);
             int nx = tx + (THUMB_W - nlen * 8) / 2;
             uint32_t nfg = (s == cur_style) ? 0xFFCDD6F4 : 0xFF6C7086;
-            gfx_surf_draw_string(&gs, nx, ty + THUMB_H + 6, sname, nfg, 0);
+            gfx_surf_draw_string_smooth(&gs, nx, ty + THUMB_H + 6, sname, nfg, 1);
         }
         cy += THUMB_H + 24;
 
@@ -185,7 +196,7 @@ static void settings_paint(void) {
         {
             int cur_theme = wallpaper_get_theme();
             int tc = wallpaper_theme_count(cur_style);
-            gfx_surf_draw_string(&gs, cx, cy, "Theme:", 0xFF6C7086, 0);
+            gfx_surf_draw_string_smooth(&gs, cx, cy, "Theme:", 0xFF6C7086, 1);
             int dot_x = cx + 60;
             for (int i = 0; i < tc; i++) {
                 uint32_t dot_col = wallpaper_theme_color(cur_style, i);
@@ -210,42 +221,42 @@ static void settings_paint(void) {
 
             /* Theme name */
             cy += DOT_R * 2 + 10;
-            gfx_surf_draw_string(&gs, cx, cy,
+            gfx_surf_draw_string_smooth(&gs, cx, cy,
                                  wallpaper_theme_name(cur_style, cur_theme),
-                                 0xFFCDD6F4, 0);
+                                 0xFFCDD6F4, 1);
         }
         break;
     }
 
     case TAB_ABOUT: {
         /* ImposOS logo text */
-        gfx_surf_draw_string(&gs, cx, cy + 20, "ImposOS",
-                             0xFFCDD6F4, 0);
-        gfx_surf_draw_string(&gs, cx, cy + 44, "Version 0.1",
-                             0xFF89B4FA, 0);
-        gfx_surf_draw_string(&gs, cx, cy + 64,
+        gfx_surf_draw_string_smooth(&gs, cx, cy + 20, "ImposOS",
+                             0xFFCDD6F4, 1);
+        gfx_surf_draw_string_smooth(&gs, cx, cy + 44, "Version 0.1",
+                             0xFF89B4FA, 1);
+        gfx_surf_draw_string_smooth(&gs, cx, cy + 64,
                              "A concept desktop environment",
-                             0xFF45475A, 0);
-        gfx_surf_draw_string(&gs, cx, cy + 88,
+                             0xFF45475A, 1);
+        gfx_surf_draw_string_smooth(&gs, cx, cy + 88,
                              "Running on bare-metal i386",
-                             0xFF45475A, 0);
-        gfx_surf_draw_string(&gs, cx, cy + 112,
+                             0xFF45475A, 1);
+        gfx_surf_draw_string_smooth(&gs, cx, cy + 112,
                              "No MMU process isolation",
-                             0xFF313244, 0);
-        gfx_surf_draw_string(&gs, cx, cy + 128,
+                             0xFF313244, 1);
+        gfx_surf_draw_string_smooth(&gs, cx, cy + 128,
                              "All CPU rendering, no GPU",
-                             0xFF313244, 0);
+                             0xFF313244, 1);
         break;
     }
 
     default: {
-        gfx_surf_draw_string(&gs, cx, cy + 20,
-                             "Coming soon...", 0xFF45475A, 0);
+        gfx_surf_draw_string_smooth(&gs, cx, cy + 20,
+                             "Coming soon...", 0xFF45475A, 1);
         break;
     }
     }
 
-    wm2_damage_canvas_all(settings_win_id);
+    ui_window_damage_all(settings_win_id);
 }
 
 /* ── Hit-testing for wallpaper tab ──────────────────────────────── */
@@ -340,7 +351,7 @@ void app_settings_open_to(const char *tab) {
     if (settings_win_id >= 0) {
         /* Already open: bring to front */
         active_tab = tid;
-        wm2_raise(settings_win_id);
+        ui_window_raise(settings_win_id);
         settings_paint();
         return;
     }
@@ -349,32 +360,46 @@ void app_settings_open_to(const char *tab) {
     int sw = (int)gfx_width(), sh = (int)gfx_height();
     int wx = (sw - WIN_W) / 2;
     int wy = (sh - WIN_H) / 2;
-    settings_win_id = wm2_create(wx, wy, WIN_W, WIN_H, "Settings");
+    settings_win_id = ui_window_create(wx, wy, WIN_W, WIN_H, "Settings");
     active_tab = tid;
     hover_style = -1; hover_dot = -1;
     settings_paint();
 }
 
 /* Frame-loop: check for close request and mouse events.
-   Call this from desktop_run() once the settings window is open. */
-void settings_tick(int mx, int my, int btn_up) {
-    if (settings_win_id < 0) return;
+   Call from desktop_run() while settings window is open.
+   Returns 1 if the click was consumed (in content area). */
+int settings_tick(int mx, int my, int btn_down, int btn_up) {
+    if (settings_win_id < 0) return 0;
 
-    if (wm2_close_requested(settings_win_id)) {
-        wm2_destroy(settings_win_id);
+    if (ui_window_close_requested(settings_win_id)) {
+        ui_window_close_clear(settings_win_id);
+        ui_window_close_animated(settings_win_id);
         settings_win_id = -1;
-        return;
+        return 0;
     }
 
-    /* Route mouse events to window if focused */
-    wm2_info_t info = wm2_get_info(settings_win_id);
-    if (info.focused && btn_up) {
-        /* Convert to content-local coords */
-        int cx = mx - info.cx;
-        int cy_ = my - info.cy;
-        if (cx >= 0 && cy_ >= 0 && cx < info.cw && cy_ < info.ch)
-            settings_handle_mouse(cx, cy_, btn_up);
+    ui_win_info_t info = ui_window_info(settings_win_id);
+    if (info.w <= 0) return 0;
+
+    /* Convert to content-local coords */
+    int lx = mx - info.cx;
+    int ly = my - info.cy;
+
+    /* Route mouse to content area for hover + click handling */
+    if (lx >= 0 && ly >= 0 && lx < info.cw && ly < info.ch) {
+        settings_handle_mouse(lx, ly, btn_up);
+
+        /* Consume button events: focus window and prevent WM2 double-handling */
+        if (btn_down) {
+            ui_window_focus(settings_win_id);
+            ui_window_raise(settings_win_id);
+            return 1;
+        }
+        if (btn_up) return 1;
     }
+
+    return 0;
 }
 
 /* Legacy stubs for old API */

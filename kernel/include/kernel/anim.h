@@ -10,7 +10,7 @@
 #define ANIM_SPRING   3   /* overshoot spring */
 
 /* Max simultaneous tweens */
-#define ANIM_MAX_TWEENS 32
+#define ANIM_MAX_TWEENS 64
 
 /* Initialize animation engine. */
 void anim_init(void);

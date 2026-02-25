@@ -9,8 +9,9 @@
 void app_settings_open_to(const char *tab);
 
 /* Per-frame tick: handles close button and mouse events.
-   Call from desktop_run() while settings window is open. */
-void settings_tick(int mx, int my, int btn_up);
+   Call from desktop_run() while settings window is open.
+   Returns 1 if a click in the content area was consumed. */
+int settings_tick(int mx, int my, int btn_down, int btn_up);
 
 /* Returns 1 if the settings window is currently open. */
 int settings_win_open(void);

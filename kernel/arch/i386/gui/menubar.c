@@ -12,12 +12,12 @@
 #include <kernel/compositor.h>
 #include <kernel/gfx.h>
 #include <kernel/ui_theme.h>
-#include <kernel/wm2.h>
+#include <kernel/ui_window.h>
 #include <kernel/rtc.h>
 #include <kernel/idt.h>
 #include <string.h>
 
-#define MENUBAR_BG   0xB7000000  /* ~72% opacity */
+#define MENUBAR_BG   0xB80C1016  /* rgba(12,16,22,0.72) — matches mockup */
 #define PILL_ACTIVE_BG   0x1AFFFFFF
 #define PILL_MIN_BG      0x08FFFFFF
 #define PILL_HOVER_BG    0x26FFFFFF
@@ -73,15 +73,15 @@ void menubar_paint(void) {
     /* Background: semi-transparent dark */
     for (int i = 0; i < w * MENUBAR_HEIGHT; i++) px[i] = MENUBAR_BG;
 
-    /* Bottom border: rgba(255,255,255,0.08) */
+    /* Bottom border: alpha-blend 8% white over the bar background */
     for (int x = 0; x < w; x++)
-        px[(MENUBAR_HEIGHT - 1) * w + x] = 0x14FFFFFF;
+        blend_px(&px[(MENUBAR_HEIGHT - 1) * w + x], 0xFFFFFFFF, 20);
 
     int cx = 0; /* current x cursor */
 
     /* ── Logo ───────────────────────────────────────────────────── */
-    gfx_surf_draw_string(&gs, 10, (MENUBAR_HEIGHT - 16) / 2,
-                         "ImposOS", ui_theme.accent, 0);
+    gfx_surf_draw_string_smooth(&gs, 10, (MENUBAR_HEIGHT - 16) / 2,
+                               "ImposOS", ui_theme.accent, 1);
     logo_x = 4;
     logo_w = 7 * 8 + 12;
     cx = logo_x + logo_w;
@@ -90,8 +90,8 @@ void menubar_paint(void) {
     {
         static const char *menus[] = { "File", "Edit", "View" };
         for (int m = 0; m < 3; m++) {
-            gfx_surf_draw_string(&gs, cx, (MENUBAR_HEIGHT - 16) / 2,
-                                 menus[m], 0x99CDD6F4, 0);
+            gfx_surf_draw_string_smooth(&gs, cx, (MENUBAR_HEIGHT - 16) / 2,
+                                       menus[m], 0x99CDD6F4, 1);
             cx += strlenx(menus[m]) * 8 + 16;
         }
         cx += 8;
@@ -102,12 +102,12 @@ void menubar_paint(void) {
     int pills_start_x = cx;
     (void)pills_start_x;
 
-    for (int wid = 1; wid <= 64 && pill_count < MAX_PILLS; wid++) {
-        wm2_info_t info = wm2_get_info(wid);
-        if (info.id <= 0) continue;
+    for (int wid = 0; wid < 32 && pill_count < MAX_PILLS; wid++) {
+        ui_win_info_t info = ui_window_info(wid);
+        if (info.w <= 0) continue;
         if (!info.title[0]) continue;
 
-        int minimized = (info.state == WM2_STATE_MINIMIZED);
+        int minimized = (info.state == UI_WIN_MINIMIZED);
         int focused   = info.focused;
 
         /* Pill width = text + padding */
@@ -146,8 +146,8 @@ void menubar_paint(void) {
         uint32_t fg = focused   ? 0xD9FFFFFF :
                       minimized ? 0x59CDD6F4  :
                                   0xA6CDD6F4;
-        gfx_surf_draw_string(&gs, pill_x + 10,
-                             (MENUBAR_HEIGHT - 16) / 2, label, fg, 0);
+        gfx_surf_draw_string_smooth(&gs, pill_x + 10,
+                                   (MENUBAR_HEIGHT - 16) / 2, label, fg, 1);
 
         /* Blue underline for active pill */
         if (focused && !minimized) {
@@ -215,8 +215,8 @@ void menubar_paint(void) {
 
         int clock_len = strlenx(clock_str);
         int clock_x = w - clock_len * 8 - 12;
-        gfx_surf_draw_string(&gs, clock_x, (MENUBAR_HEIGHT - 16) / 2,
-                             clock_str, ui_theme.text_primary, 0);
+        gfx_surf_draw_string_smooth(&gs, clock_x, (MENUBAR_HEIGHT - 16) / 2,
+                                   clock_str, ui_theme.text_primary, 1);
     }
 
     comp_surface_damage_all(bar);
@@ -235,6 +235,13 @@ void menubar_init(void) {
 
 void menubar_update_windows(void) {
     menubar_paint();
+}
+
+int menubar_get_pill_x(int win_id) {
+    for (int i = 0; i < pill_count; i++)
+        if (pills[i].win_id == win_id)
+            return pills[i].x + pills[i].w / 2;
+    return -1;
 }
 
 /* ── Mouse ────────────────────────────────────────────────────────── */
@@ -264,12 +271,12 @@ int menubar_mouse(int mx, int my, int btn_down, int btn_up, int right_click) {
     for (int i = 0; i < pill_count; i++) {
         if (mx >= pills[i].x && mx < pills[i].x + pills[i].w) {
             int wid = pills[i].win_id;
-            wm2_info_t info = wm2_get_info(wid);
-            if (info.id > 0) {
-                if (info.state == WM2_STATE_MINIMIZED)
-                    wm2_restore(wid);
+            ui_win_info_t info = ui_window_info(wid);
+            if (info.w > 0) {
+                if (info.state == UI_WIN_MINIMIZED)
+                    ui_window_restore(wid);
                 else
-                    wm2_raise(wid);
+                    ui_window_raise(wid);
             }
             menubar_paint();
             return 1;

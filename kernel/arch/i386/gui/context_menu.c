@@ -6,8 +6,9 @@
  */
 #include <kernel/context_menu.h>
 #include <kernel/compositor.h>
+#include <kernel/anim.h>
 #include <kernel/gfx.h>
-#include <kernel/wm2.h>
+#include <kernel/ui_window.h>
 #include <kernel/app.h>
 #include <string.h>
 
@@ -32,10 +33,12 @@ typedef struct {
 } menu_item_t;
 
 /* Actions */
-#define CTX_WALLPAPER    0
-#define CTX_DISPLAY      1
-#define CTX_ABOUT        2
-#define CTX_SHOW_WIN     3
+#define CTX_CREATE_FOLDER 0
+#define CTX_CREATE_FILE   1
+#define CTX_WALLPAPER     2
+#define CTX_DISPLAY       3
+#define CTX_ABOUT         4
+#define CTX_SHOW_WIN      5
 
 /* ── State ──────────────────────────────────────────────────────── */
 static comp_surface_t *surf = 0;
@@ -47,6 +50,11 @@ static int hover_item = -1;
 static menu_item_t items[MAX_ITEMS];
 static int item_count = 0;
 
+/* Animation */
+static int ctx_anim_alpha = 255;
+static int ctx_anim_id = -1;
+static int ctx_hiding = 0;
+
 /* ── Build item list ────────────────────────────────────────────── */
 
 /* Static storage for minimized window labels */
@@ -55,7 +63,26 @@ static char win_labels[8][72];
 static void build_menu(void) {
     item_count = 0;
 
-    /* Fixed items */
+    /* Create actions (top) */
+    items[item_count].type = ITEM_ACTION;
+    items[item_count].label = "Create Folder";
+    items[item_count].action = CTX_CREATE_FOLDER;
+    items[item_count].win_id = -1;
+    item_count++;
+
+    items[item_count].type = ITEM_ACTION;
+    items[item_count].label = "Create File";
+    items[item_count].action = CTX_CREATE_FILE;
+    items[item_count].win_id = -1;
+    item_count++;
+
+    items[item_count].type = ITEM_SEPARATOR;
+    items[item_count].label = 0;
+    items[item_count].action = 0;
+    items[item_count].win_id = -1;
+    item_count++;
+
+    /* Settings actions */
     items[item_count].type = ITEM_ACTION;
     items[item_count].label = "Change Wallpaper";
     items[item_count].action = CTX_WALLPAPER;
@@ -83,9 +110,9 @@ static void build_menu(void) {
     /* Minimized windows: try IDs 1..64 */
     int added_sep = 0;
     int win_label_idx = 0;
-    for (int wid = 1; wid <= 64 && item_count < MAX_ITEMS - 1; wid++) {
-        wm2_info_t info = wm2_get_info(wid);
-        if (info.id <= 0 || info.state != WM2_STATE_MINIMIZED) continue;
+    for (int wid = 0; wid < 32 && item_count < MAX_ITEMS - 1; wid++) {
+        ui_win_info_t info = ui_window_info(wid);
+        if (info.w <= 0 || info.state != UI_WIN_MINIMIZED) continue;
         if (!info.title[0]) continue;
         if (!added_sep) {
             items[item_count].type = ITEM_SEPARATOR;
@@ -184,9 +211,9 @@ void ctx_menu_paint(void) {
         const char *label = items[i].label;
         uint32_t fg = (i == hover_item) ? 0xFFFFFFFF : 0xFFCDD6F4;
         if (label) {
-            gfx_surf_draw_string(&gs, menu_x + ITEM_PAD_X + 8,
-                                 iy + (ITEM_H - 16) / 2,
-                                 label, fg, 0);
+            gfx_surf_draw_string_smooth(&gs, menu_x + ITEM_PAD_X + 8,
+                                       iy + (ITEM_H - 16) / 2,
+                                       label, fg, 1);
         }
 
         iy += ITEM_H;
@@ -221,7 +248,12 @@ void ctx_menu_show(int x, int y) {
     if (menu_y < 0) menu_y = 0;
 
     hover_item = -1;
+    ctx_hiding = 0;
     vis = 1;
+    if (ctx_anim_id >= 0) anim_cancel(ctx_anim_id);
+    ctx_anim_alpha = 0;
+    ctx_anim_id = anim_start(&ctx_anim_alpha, 0, 255, 120, ANIM_EASE_OUT);
+    comp_surface_set_alpha(surf, 0);
     comp_surface_set_visible(surf, 1);
     comp_surface_raise(surf);
     ctx_menu_paint();
@@ -229,9 +261,10 @@ void ctx_menu_show(int x, int y) {
 
 void ctx_menu_hide(void) {
     if (!surf) return;
-    vis = 0;
-    comp_surface_set_visible(surf, 0);
-    comp_surface_damage_all(surf);
+    if (ctx_hiding) return;
+    ctx_hiding = 1;
+    if (ctx_anim_id >= 0) anim_cancel(ctx_anim_id);
+    ctx_anim_id = anim_start(&ctx_anim_alpha, ctx_anim_alpha, 0, 120, ANIM_EASE_IN);
 }
 
 int ctx_menu_visible(void) { return vis; }
@@ -267,6 +300,10 @@ int ctx_menu_mouse(int mx, int my, int btn_down, int btn_up) {
         ctx_menu_hide();
 
         switch (action) {
+        case CTX_CREATE_FOLDER:
+        case CTX_CREATE_FILE:
+            /* Stub: no-op for now */
+            break;
         case CTX_WALLPAPER:
         case CTX_DISPLAY:
         case CTX_ABOUT:
@@ -274,11 +311,28 @@ int ctx_menu_mouse(int mx, int my, int btn_down, int btn_up) {
             app_launch("settings");
             break;
         case CTX_SHOW_WIN:
-            if (wid >= 0) wm2_restore(wid);
+            if (wid >= 0) ui_window_restore(wid);
             break;
         }
         return 1;
     }
 
     return 1;
+}
+
+void ctx_menu_tick(void) {
+    if (ctx_anim_id < 0) return;
+    if (!surf) return;
+    int a = ctx_anim_alpha;
+    if (a < 0) a = 0; if (a > 255) a = 255;
+    comp_surface_set_alpha(surf, (uint8_t)a);
+    if (!anim_active(ctx_anim_id)) {
+        ctx_anim_id = -1;
+        if (ctx_hiding) {
+            ctx_hiding = 0;
+            vis = 0;
+            comp_surface_set_visible(surf, 0);
+            comp_surface_damage_all(surf);
+        }
+    }
 }

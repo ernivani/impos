@@ -150,9 +150,9 @@ typedef struct ui_window {
     int prev_cw, prev_ch;   /* for resize detection */
 } ui_window_t;
 
-/* Window lifecycle */
-ui_window_t *ui_window_create(int x, int y, int w, int h, const char *title);
-void         ui_window_destroy(ui_window_t *win);
+/* Window lifecycle (legacy widget-window; ui_window.h owns ui_window_* names) */
+ui_window_t *uw_create(int x, int y, int w, int h, const char *title);
+void         uw_destroy(ui_window_t *win);
 
 /* Add widgets (returns widget index or -1) */
 int ui_add_label(ui_window_t *win, int x, int y, int w, int h,
@@ -197,7 +197,7 @@ void ui_focus_next(ui_window_t *win);
 void ui_focus_prev(ui_window_t *win);
 
 /* Rendering */
-void ui_window_redraw(ui_window_t *win);
+void uw_redraw(ui_window_t *win);
 
 /* Check for canvas resize and adapt widget layout */
 void ui_window_check_resize(ui_window_t *win);

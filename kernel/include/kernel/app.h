@@ -28,6 +28,7 @@ typedef struct {
     uint32_t    color;      /* ARGB icon background color */
     int         category;   /* APP_CAT_* */
     int         default_pin;/* 1 if pinned by default */
+    const char *keywords;   /* comma-separated search keywords */
 } app_info_t;
 
 /* Initialize app registry. */

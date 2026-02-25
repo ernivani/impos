@@ -178,12 +178,43 @@ static const theme_t wavest[3] = {
 static int  cur_style = WALLPAPER_MOUNTAINS;
 static int  cur_theme = 0;
 
+/* Cross-fade state: blend from prev to cur over 100 frames (~0.8s) */
+static int  prev_theme = 0;
+static int  trans_t    = 0;    /* 0 = idle, 1..1024 = transitioning */
+#define TRANS_SPEED  10        /* increment per frame (1024/10 ≈ 100 frames) */
+
+/* Blended theme used during transitions */
+static theme_t blend_theme;
+
+static uint32_t lerp_col(uint32_t a, uint32_t b, int t) {
+    /* t in [0, 1024] */
+    int ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+    int br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+    return 0xFF000000 |
+        ((uint32_t)(ar + (br - ar) * t / 1024) << 16) |
+        ((uint32_t)(ag + (bg - ag) * t / 1024) << 8) |
+        (uint32_t)(ab + (bb - ab) * t / 1024);
+}
+
+static void build_blend_theme(const theme_t *a, const theme_t *b, int t) {
+    blend_theme.name = b->name;
+    blend_theme.dot_color = lerp_col(a->dot_color, b->dot_color, t);
+    blend_theme.sky_stops = b->sky_stops > a->sky_stops ? b->sky_stops : a->sky_stops;
+    for (int i = 0; i < 5; i++) {
+        int ai = i < a->sky_stops ? i : a->sky_stops - 1;
+        int bi = i < b->sky_stops ? i : b->sky_stops - 1;
+        blend_theme.sky[i] = lerp_col(a->sky[ai], b->sky[bi], t);
+    }
+    blend_theme.accent1 = lerp_col(a->accent1, b->accent1, t);
+    blend_theme.accent2 = lerp_col(a->accent2, b->accent2, t);
+    blend_theme.accent3 = lerp_col(a->accent3, b->accent3, t);
+}
+
 /* ── Style: Mountains ───────────────────────────────────────────── */
 /* Uses smooth sine-wave silhouettes matching the HTML mockup exactly. */
 
 static void draw_mountains(uint32_t *buf, int w, int h, uint32_t t,
-                            int style, int theme_idx) {
-    const theme_t *th = &mtns[theme_idx];
+                            int style, int theme_idx, const theme_t *th) {
 
     /* Sky gradient: up to 5 stops */
     for (int y = 0; y < h; y++) {
@@ -276,8 +307,7 @@ static void draw_mountains(uint32_t *buf, int w, int h, uint32_t t,
 /* ── Style: Gradient ────────────────────────────────────────────── */
 
 static void draw_gradient(uint32_t *buf, int w, int h, uint32_t t,
-                           int style, int theme_idx) {
-    const theme_t *th = &grads[theme_idx];
+                           int style, int theme_idx, const theme_t *th) {
 
     /* Slowly drifting diagonal gradient — matches mockup drawGradient() */
     int angle = (int)(t / 2) & 255;
@@ -343,8 +373,7 @@ static void draw_gradient(uint32_t *buf, int w, int h, uint32_t t,
 /* Tessellated triangles with pulsing opacity, matching mockup drawGeometric(). */
 
 static void draw_geometric(uint32_t *buf, int w, int h, uint32_t t,
-                            int style, int theme_idx) {
-    const theme_t *th = &geos[theme_idx];
+                            int style, int theme_idx, const theme_t *th) {
 
     /* Base fill */
     for (int i = 0; i < w * h; i++) buf[i] = th->sky[0];
@@ -425,8 +454,7 @@ static void draw_geometric(uint32_t *buf, int w, int h, uint32_t t,
 /* ── Style: Stars ───────────────────────────────────────────────── */
 
 static void draw_stars_wp(uint32_t *buf, int w, int h, uint32_t t,
-                           int style, int theme_idx) {
-    const theme_t *th = &stars_t[theme_idx];
+                           int style, int theme_idx, const theme_t *th) {
 
     /* Deep background */
     for (int y = 0; y < h; y++) {
@@ -517,8 +545,7 @@ static void draw_stars_wp(uint32_t *buf, int w, int h, uint32_t t,
    exact color tables from the HTML theme registry.                    */
 
 static void draw_waves(uint32_t *buf, int w, int h, uint32_t t,
-                        int style, int theme_idx) {
-    const theme_t *th = &wavest[theme_idx];
+                        int style, int theme_idx, const theme_t *th) {
 
     /* Full-height sky gradient */
     for (int y = 0; y < h; y++) {
@@ -578,7 +605,7 @@ static void draw_waves(uint32_t *buf, int w, int h, uint32_t t,
 
 /* ── Dispatch table ─────────────────────────────────────────────── */
 
-typedef void (*draw_fn_t)(uint32_t *, int, int, uint32_t, int, int);
+typedef void (*draw_fn_t)(uint32_t *, int, int, uint32_t, int, int, const theme_t *);
 static const draw_fn_t draw_fns[WALLPAPER_STYLE_COUNT] = {
     draw_mountains,
     draw_gradient,
@@ -610,7 +637,20 @@ void wallpaper_draw(uint32_t *buf, int w, int h, uint32_t t) {
     if (s < 0 || s >= WALLPAPER_STYLE_COUNT) s = 0;
     int tc = theme_counts[s];
     if (th < 0 || th >= tc) th = 0;
-    draw_fns[s](buf, w, h, t, s, th);
+
+    const theme_t *theme_ptr = &all_themes[s][th];
+
+    /* Cross-fade between themes */
+    if (trans_t > 0 && trans_t < 1024) {
+        int pth = prev_theme;
+        if (pth < 0 || pth >= tc) pth = 0;
+        build_blend_theme(&all_themes[s][pth], &all_themes[s][th], trans_t);
+        theme_ptr = &blend_theme;
+        trans_t += TRANS_SPEED;
+        if (trans_t >= 1024) trans_t = 0;
+    }
+
+    draw_fns[s](buf, w, h, t, s, th, theme_ptr);
 }
 
 void wallpaper_draw_thumbnail(uint32_t *buf, int w, int h,
@@ -619,7 +659,8 @@ void wallpaper_draw_thumbnail(uint32_t *buf, int w, int h,
     int tc = theme_counts[style_idx];
     if (theme_idx < 0 || theme_idx >= tc) theme_idx = 0;
     /* Draw at t=64 for a nice mid-animation frame */
-    draw_fns[style_idx](buf, w, h, 64, style_idx, theme_idx);
+    draw_fns[style_idx](buf, w, h, 64, style_idx, theme_idx,
+                        &all_themes[style_idx][theme_idx]);
 }
 
 void wallpaper_set_style(int style_idx, int theme_idx) {
@@ -627,16 +668,25 @@ void wallpaper_set_style(int style_idx, int theme_idx) {
     cur_style = style_idx;
     int tc = theme_counts[style_idx];
     cur_theme = (theme_idx >= 0 && theme_idx < tc) ? theme_idx : 0;
+    prev_theme = cur_theme;
+    trans_t = 0;  /* no cross-fade on style change */
 }
 
 void wallpaper_set_theme(int theme_idx) {
     int tc = theme_counts[cur_style];
-    if (theme_idx >= 0 && theme_idx < tc)
+    if (theme_idx >= 0 && theme_idx < tc && theme_idx != cur_theme) {
+        prev_theme = cur_theme;
         cur_theme = theme_idx;
+        trans_t = 1;  /* start transition */
+    }
 }
 
 int wallpaper_get_style(void) { return cur_style; }
 int wallpaper_get_theme(void) { return cur_theme; }
+
+int wallpaper_is_transitioning(void) {
+    return trans_t > 0 && trans_t < 1024;
+}
 
 int wallpaper_theme_count(int style_idx) {
     if (style_idx < 0 || style_idx >= WALLPAPER_STYLE_COUNT) return 1;

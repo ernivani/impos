@@ -44,4 +44,7 @@ const char *wallpaper_theme_name(int style_idx, int theme_idx);
 /* Representative color dot for a theme (for Settings UI). */
 uint32_t wallpaper_theme_color(int style_idx, int theme_idx);
 
+/* Returns 1 during theme cross-fade transition (for adaptive wallpaper FPS). */
+int wallpaper_is_transitioning(void);
+
 #endif

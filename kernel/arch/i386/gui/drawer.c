@@ -6,6 +6,7 @@
  */
 #include <kernel/drawer.h>
 #include <kernel/compositor.h>
+#include <kernel/anim.h>
 #include <kernel/app.h>
 #include <kernel/icon_cache.h>
 #include <kernel/gfx.h>
@@ -35,6 +36,11 @@ static int filtered_count = 0;
 
 static int hover_tile = -1;  /* tile under mouse */
 
+/* Animation */
+static int drawer_anim_alpha = 255;
+static int drawer_anim_id = -1;
+static int drawer_hiding = 0;
+
 /* ── Search/filter ──────────────────────────────────────────────── */
 
 static int str_has_prefix(const char *hay, const char *needle, int igncase) {
@@ -58,12 +64,30 @@ static int str_contains(const char *hay, const char *needle, int igncase) {
     return 0;
 }
 
+static int kw_match(const char *keywords, const char *q, int igncase) {
+    /* Search comma-separated keywords for substring match */
+    if (!keywords) return 0;
+    const char *kw = keywords;
+    while (*kw) {
+        /* Start of a keyword token */
+        const char *tok = kw;
+        while (*kw && *kw != ',') kw++;
+        /* Check if query matches within this token */
+        for (const char *p = tok; p < kw; p++) {
+            if (str_has_prefix(p, q, igncase)) return 1;
+        }
+        if (*kw == ',') kw++;
+    }
+    return 0;
+}
+
 static int score_app(const app_info_t *ai, const char *q) {
     if (!q || !q[0]) return 1; /* no filter = include all */
     if (str_has_prefix(ai->name, q, 1)) return 100;
     if (str_contains(ai->name, q, 1)) return 60;
     if (str_has_prefix(ai->id, q, 1)) return 50;
     if (str_contains(ai->id, q, 1)) return 40;
+    if (kw_match(ai->keywords, q, 1)) return 35;
     if (str_contains(app_cat_name(ai->category), q, 1)) return 20;
     return 0;
 }
@@ -163,15 +187,15 @@ void drawer_paint(void) {
     /* Search text or placeholder */
     int text_y = sb_y + (SEARCH_H - 16) / 2;
     if (search_len > 0) {
-        gfx_surf_draw_string(&gs, sb_x + 16, text_y, search,
-                             0xFFCDD6F4, 0);
+        gfx_surf_draw_string_smooth(&gs, sb_x + 16, text_y, search,
+                             0xFFCDD6F4, 1);
         /* Cursor */
         int cursor_x = sb_x + 16 + search_len * 8;
         fill_rect(px, sw, cursor_x, text_y, 2, 16, 0xFFCDD6F4);
     } else {
-        gfx_surf_draw_string(&gs, sb_x + 16, text_y,
+        gfx_surf_draw_string_smooth(&gs, sb_x + 16, text_y,
                              "Search apps...",
-                             0xFF45475A, 0);
+                             0xFF45475A, 1);
     }
 
     /* Match count */
@@ -188,8 +212,8 @@ void drawer_paint(void) {
             count_str[i++] = 'p'; if (n != 1) count_str[i++] = 's';
         }
         count_str[i] = '\0';
-        gfx_surf_draw_string(&gs, sb_x + sb_w - i * 8 - 16, text_y,
-                             count_str, 0xFF45475A, 0);
+        gfx_surf_draw_string_smooth(&gs, sb_x + sb_w - i * 8 - 16, text_y,
+                             count_str, 0xFF45475A, 1);
     }
 
     /* ── App tiles ─────────────────────────────────────── */
@@ -242,7 +266,7 @@ void drawer_paint(void) {
         int label_x = tx + (TILE_SIZE - nlen * 8) / 2;
         if (label_x < tx) label_x = tx;
         uint32_t label_color = (ti == hover_tile) ? 0xFFCDD6F4 : 0xFFA6ADC8;
-        gfx_surf_draw_string(&gs, label_x, ly, name, label_color, 0);
+        gfx_surf_draw_string_smooth(&gs, label_x, ly, name, label_color, 1);
         (void)lx;
     }
 
@@ -251,8 +275,8 @@ void drawer_paint(void) {
         const char *hint = "Right-click to pin";
         int hlen = 18;
         int hx = (sw - hlen * 8) / 2;
-        gfx_surf_draw_string(&gs, hx, sh - 24,
-                             hint, 0xFF45475A, 0);
+        gfx_surf_draw_string_smooth(&gs, hx, sh - 24,
+                             hint, 0xFF45475A, 1);
         /* Pin count */
         int pc = app_pin_count();
         char pcount[16];
@@ -260,8 +284,8 @@ void drawer_paint(void) {
         pcount[1] = ' '; pcount[2] = '/'; pcount[3] = ' ';
         pcount[4] = '0' + APP_MAX_PINNED;
         pcount[5] = '\0';
-        gfx_surf_draw_string(&gs, sw / 2 + 80, sh - 24,
-                             pcount, 0xFF6C7086, 0);
+        gfx_surf_draw_string_smooth(&gs, sw / 2 + 80, sh - 24,
+                             pcount, 0xFF6C7086, 1);
     }
 
     comp_surface_damage_all(surf);
@@ -294,7 +318,12 @@ void drawer_show(const char *prefill) {
         search_len = 0;
     }
     rebuild_filter();
+    drawer_hiding = 0;
     vis = 1;
+    if (drawer_anim_id >= 0) anim_cancel(drawer_anim_id);
+    drawer_anim_alpha = 0;
+    drawer_anim_id = anim_start(&drawer_anim_alpha, 0, 255, 220, ANIM_EASE_OUT);
+    comp_surface_set_alpha(surf, 0);
     comp_surface_set_visible(surf, 1);
     comp_surface_raise(surf);
     drawer_paint();
@@ -302,9 +331,10 @@ void drawer_show(const char *prefill) {
 
 void drawer_hide(void) {
     if (!surf) return;
-    vis = 0;
-    comp_surface_set_visible(surf, 0);
-    comp_surface_damage_all(surf);
+    if (drawer_hiding) return;
+    drawer_hiding = 1;
+    if (drawer_anim_id >= 0) anim_cancel(drawer_anim_id);
+    drawer_anim_id = anim_start(&drawer_anim_alpha, drawer_anim_alpha, 0, 180, ANIM_EASE_IN);
 }
 
 int drawer_visible(void) { return vis; }
@@ -397,4 +427,21 @@ int drawer_key(char ch, int scancode) {
         return 1;
     }
     return 1; /* consume all keys while drawer open */
+}
+
+void drawer_tick(void) {
+    if (drawer_anim_id < 0) return;
+    if (!surf) return;
+    int a = drawer_anim_alpha;
+    if (a < 0) a = 0; if (a > 255) a = 255;
+    comp_surface_set_alpha(surf, (uint8_t)a);
+    if (!anim_active(drawer_anim_id)) {
+        drawer_anim_id = -1;
+        if (drawer_hiding) {
+            drawer_hiding = 0;
+            vis = 0;
+            comp_surface_set_visible(surf, 0);
+            comp_surface_damage_all(surf);
+        }
+    }
 }

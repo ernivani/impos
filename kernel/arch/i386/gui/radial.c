@@ -6,15 +6,19 @@
  */
 #include <kernel/radial.h>
 #include <kernel/compositor.h>
+#include <kernel/anim.h>
 #include <kernel/app.h>
 #include <kernel/icon_cache.h>
 #include <kernel/gfx.h>
+#include <kernel/ui_window.h>
 #include <string.h>
 
 /* ── Geometry ───────────────────────────────────────────────────── */
-#define OUTER_R   150   /* ring outer radius */
-#define INNER_R   110   /* icon orbit radius */
-#define CENTER_R   42   /* center circle radius */
+/* Mockup: R=150 (outer/orbit), IR=110 (center circle), ICON=46.
+   We enlarge slightly so icons fit inside the ring band with padding. */
+#define OUTER_R   170   /* ring outer radius */
+#define INNER_R   130   /* icon orbit radius (ring band midpoint) */
+#define CENTER_R   90   /* center circle radius */
 #define ICON_SIZE  46   /* icon square size — matches mockup exactly */
 
 /* ── Integer trig (shared Bhaskara I) ──────────────────────────── */
@@ -66,6 +70,11 @@ static int kb_slot = -1;     /* keyboard-selected slot */
 
 static int is_open = 0;      /* actual display state */
 
+/* Animation */
+static int anim_alpha = 255;
+static int anim_id = -1;
+static int hiding = 0;       /* 1 = fade-out in progress */
+
 /* ── Helpers ────────────────────────────────────────────────────── */
 
 /* Angle (0-255) for pin slot n of N total */
@@ -84,9 +93,11 @@ static void slot_pos(int slot, int n, int *ox, int *oy) {
 
 /* ── Drawing ────────────────────────────────────────────────────── */
 
+static void alpha_blend_pixel(uint32_t *p, uint32_t color, int alpha);
+
 static void draw_circle_outline(uint32_t *px, int pw, int ph,
                                  int cx_, int cy_, int r, int thickness,
-                                 uint32_t color) {
+                                 uint32_t color, int alpha) {
     int r_out = r, r_in = r - thickness;
     if (r_in < 0) r_in = 0;
     for (int y = cy_ - r_out; y <= cy_ + r_out; y++) {
@@ -96,20 +107,7 @@ static void draw_circle_outline(uint32_t *px, int pw, int ph,
             int dx = x - cx_, dy = y - cy_;
             int d2 = dx*dx + dy*dy;
             if (d2 >= r_in*r_in && d2 <= r_out*r_out)
-                px[y * pw + x] = color;
-        }
-    }
-}
-
-static void draw_filled_circle(uint32_t *px, int pw, int ph,
-                                int cx_, int cy_, int r, uint32_t color) {
-    for (int y = cy_ - r; y <= cy_ + r; y++) {
-        if (y < 0 || y >= ph) continue;
-        for (int x = cx_ - r; x <= cx_ + r; x++) {
-            if (x < 0 || x >= pw) continue;
-            int dx = x - cx_, dy = y - cy_;
-            if (dx*dx + dy*dy <= r*r)
-                px[y * pw + x] = color;
+                alpha_blend_pixel(&px[y * pw + x], color, alpha);
         }
     }
 }
@@ -163,47 +161,91 @@ static void radial_draw_content(void) {
     int sw = surf->w, sh = surf->h;
     uint32_t *px = surf->pixels;
 
+    gfx_surface_t gs;
+    gs.buf = px; gs.w = sw; gs.h = sh; gs.pitch = sw;
+
     /* Clear to fully transparent */
     memset(px, 0, (size_t)sw * sh * 4);
 
-    /* Dark overlay background */
+    /* Dark overlay background — mockup: rgba(0,0,0,0.35) */
     for (int i = 0; i < sw * sh; i++)
-        px[i] = 0x59000000; /* ~35% opacity black */
+        px[i] = 0x59000000;
 
     int bcx = sw / 2, bcy = sh / 2;
     int n_pins = app_pin_count();
-
-    /* Ring fill */
-    draw_filled_circle(px, sw, sh, bcx, bcy, OUTER_R, 0xC70C1626);
-
-    /* Wedge highlight for hovered / keyboard-selected slot */
     int active_slot = kb_slot >= 0 ? kb_slot : hover_slot;
+
+    /* ── Glass ring with anti-aliased edges + gradient ── */
+    {
+        int ro = OUTER_R, ri = CENTER_R;
+        int ro2 = ro * ro, ri2 = ri * ri;
+        /* AA band widths (in d² space): 2px smooth edges */
+        int ro_aa_inner = (ro - 2) * (ro - 2);
+        int ri_aa_outer = (ri + 2) * (ri + 2);
+
+        for (int y = bcy - ro; y <= bcy + ro; y++) {
+            if (y < 0 || y >= sh) continue;
+            for (int x = bcx - ro; x <= bcx + ro; x++) {
+                if (x < 0 || x >= sw) continue;
+                int dx = x - bcx, dy = y - bcy;
+                int d2 = dx * dx + dy * dy;
+                if (d2 > ro2 || d2 < ri2) continue;
+
+                /* Base alpha: 80% (204/255) — glass-like, not opaque */
+                int alpha = 200;
+
+                /* Anti-alias outer edge */
+                if (d2 > ro_aa_inner) {
+                    int frac = 255 - (d2 - ro_aa_inner) * 255 / (ro2 - ro_aa_inner + 1);
+                    if (frac < 0) frac = 0;
+                    alpha = alpha * frac / 255;
+                }
+                /* Anti-alias inner edge */
+                if (d2 < ri_aa_outer) {
+                    int frac = 255 - (ri_aa_outer - d2) * 255 / (ri_aa_outer - ri2 + 1);
+                    if (frac < 0) frac = 0;
+                    alpha = alpha * frac / 255;
+                }
+
+                /* Glass gradient: top of ring slightly lighter (reflection) */
+                int gy = y - (bcy - ro);
+                int grad_t = gy * 255 / (2 * ro);
+                /* Top: rgb(18,28,46)  Bottom: rgb(8,16,28) */
+                int cr = 18 - (18 - 8) * grad_t / 255;
+                int cg = 28 - (28 - 16) * grad_t / 255;
+                int cb = 46 - (46 - 28) * grad_t / 255;
+                uint32_t ring_col = 0xFF000000 |
+                    ((uint32_t)cr << 16) | ((uint32_t)cg << 8) | (uint32_t)cb;
+                alpha_blend_pixel(&px[y * sw + x], ring_col, alpha);
+            }
+        }
+
+        /* Inner glow: subtle 2px bright ring at inner edge */
+        draw_circle_outline(px, sw, sh, bcx, bcy, ri + 3, 2, 0xFFFFFFFF, 12);
+        /* Outer ring outline — fine white edge */
+        draw_circle_outline(px, sw, sh, bcx, bcy, ro, 1, 0xFFFFFFFF, 25);
+    }
+
+    /* ── Wedge highlight for hovered / keyboard-selected slot ── */
     if (active_slot >= 0 && active_slot < n_pins) {
         const app_info_t *ai = app_get(app_pin_get(active_slot));
         uint32_t wc = ai ? ai->color : 0xFF3478F6;
         draw_wedge(px, sw, sh, bcx, bcy, active_slot, n_pins, wc);
     }
 
-    /* Ring outline */
-    draw_circle_outline(px, sw, sh, bcx, bcy, OUTER_R, 2, 0x14FFFFFF);
-
-    /* Slice dividers */
+    /* ── Subtle slice dividers (softer than before) ── */
     for (int s = 0; s < n_pins; s++) {
         int ang = slot_angle(s, n_pins);
-        int ex = bcx + icos2(ang) * OUTER_R / 127;
-        int ey = bcy + isin2(ang) * OUTER_R / 127;
-        /* Draw line from center to edge */
-        int steps = OUTER_R;
-        for (int step = CENTER_R; step <= steps; step++) {
+        /* Start divider 6px inside ring edge, end 6px from outer */
+        for (int step = CENTER_R + 6; step <= OUTER_R - 6; step++) {
             int lx = bcx + icos2(ang) * step / 127;
             int ly = bcy + isin2(ang) * step / 127;
             if (lx >= 0 && lx < sw && ly >= 0 && ly < sh)
-                alpha_blend_pixel(&px[ly * sw + lx], 0xFFFFFFFF, 13);
+                alpha_blend_pixel(&px[ly * sw + lx], 0xFFFFFFFF, 10);
         }
-        (void)ex; (void)ey;
     }
 
-    /* App icons in ring */
+    /* ── App icons in ring + name labels ── */
     for (int s = 0; s < n_pins; s++) {
         int idx = app_pin_get(s);
         if (idx < 0) continue;
@@ -228,21 +270,75 @@ static void radial_draw_content(void) {
         }
 
         icon_draw(ai->icon_id, px, sw, ix, iy, ICON_SIZE, bg, fg);
+
+        /* Name label below icon */
+        {
+            const char *name = ai->name;
+            int nlen = 0;
+            const char *p = name;
+            while (*p++) nlen++;
+            int lx = ox - nlen * 4;
+            int ly = oy + ICON_SIZE / 2 + 4;
+            if (lx < 0) lx = 0;
+            if (ly >= 0 && ly < sh - 16) {
+                uint32_t label_fg = (s == active_slot) ? 0xE5FFFFFF : 0x66FFFFFF;
+                gfx_surf_draw_string_smooth(&gs, lx, ly, name, label_fg, 1);
+            }
+        }
     }
 
-    /* Center circle — matches mockup: dark fill, subtle border */
-    draw_filled_circle(px, sw, sh, bcx, bcy, CENTER_R, 0xFF08101A);
-    draw_circle_outline(px, sw, sh, bcx, bcy, CENTER_R, 1, 0x28FFFFFF);
-
-    /* Center content — matches mockup exactly:
-       hovering item: show app name centered
-       idle: 2×2 dot grid + "All apps" label below dots */
+    /* ── Center circle with AA edges + glass gradient ── */
     {
-        gfx_surface_t gs;
-        gs.buf = px; gs.w = sw; gs.h = sh; gs.pitch = sw;
+        int center_hovered = (active_slot < 0 && hover_slot == -1);
+        int cr = CENTER_R;
+        int cr2 = cr * cr;
+        int cr_aa = (cr - 2) * (cr - 2);
 
+        for (int y = bcy - cr; y <= bcy + cr; y++) {
+            if (y < 0 || y >= sh) continue;
+            for (int x = bcx - cr; x <= bcx + cr; x++) {
+                if (x < 0 || x >= sw) continue;
+                int dxc = x - bcx, dyc = y - bcy;
+                int d2c = dxc * dxc + dyc * dyc;
+                if (d2c > cr2) continue;
+
+                int alpha = center_hovered ? 240 : 230;
+
+                /* AA edge */
+                if (d2c > cr_aa) {
+                    int frac = 255 - (d2c - cr_aa) * 255 / (cr2 - cr_aa + 1);
+                    if (frac < 0) frac = 0;
+                    alpha = alpha * frac / 255;
+                }
+
+                /* Center gradient: top lighter for depth */
+                int gy = y - (bcy - cr);
+                int gt = gy * 255 / (2 * cr);
+                int cr_, cg_, cb_;
+                if (center_hovered) {
+                    cr_ = 24 - (24 - 16) * gt / 255;
+                    cg_ = 36 - (36 - 26) * gt / 255;
+                    cb_ = 58 - (58 - 42) * gt / 255;
+                } else {
+                    cr_ = 14 - (14 - 6) * gt / 255;
+                    cg_ = 22 - (22 - 12) * gt / 255;
+                    cb_ = 36 - (36 - 20) * gt / 255;
+                }
+                uint32_t fill = 0xFF000000 |
+                    ((uint32_t)cr_ << 16) | ((uint32_t)cg_ << 8) | (uint32_t)cb_;
+                alpha_blend_pixel(&px[y * sw + x], fill, alpha);
+            }
+        }
+
+        /* Center outline */
+        int center_border_a = center_hovered ? 50 : 20;
+        draw_circle_outline(px, sw, sh, bcx, bcy, cr, 1, 0xFFFFFFFF, center_border_a);
+    }
+
+    /* ── Center content ── */
+    {
         if (active_slot >= 0 && active_slot < n_pins) {
-            /* Show app name */
+            /* Show hovered app name */
             int idx = app_pin_get(active_slot);
             const app_info_t *ai = app_get(idx);
             if (ai) {
@@ -251,10 +347,10 @@ static void radial_draw_content(void) {
                 while (*p++ && len < 9) len++;
                 int tx = bcx - len * 4;
                 int ty = bcy - 8;
-                gfx_surf_draw_string(&gs, tx, ty, ai->name, 0xB3FFFFFF, 0);
+                gfx_surf_draw_string_smooth(&gs, tx, ty, ai->name, 0xB3FFFFFF, 1);
             }
         } else {
-            /* 2×2 dot grid, dot radius 3px, gap 13px — matches mockup */
+            /* 2×2 dot grid, radius 3px, gap 13px */
             int dot_r = 3;
             int gap = 13;
             for (int row = 0; row < 2; row++) {
@@ -262,24 +358,30 @@ static void radial_draw_content(void) {
                     int ddx = col * gap - gap / 2;
                     int ddy = row * gap - gap / 2 - 8;
                     int ddcx = bcx + ddx, ddcy = bcy + ddy;
-                    /* Alpha-blend dots at 30% white opacity */
+                    /* AA dots */
+                    int dr2 = dot_r * dot_r;
+                    int dr_aa = (dot_r - 1) * (dot_r - 1);
                     for (int dy2 = -dot_r; dy2 <= dot_r; dy2++) {
                         for (int dx2 = -dot_r; dx2 <= dot_r; dx2++) {
-                            if (dx2*dx2 + dy2*dy2 > dot_r*dot_r) continue;
+                            int dd = dx2*dx2 + dy2*dy2;
+                            if (dd > dr2) continue;
+                            int da = 77;
+                            if (dd > dr_aa)
+                                da = da * (255 - (dd - dr_aa) * 255 / (dr2 - dr_aa + 1)) / 255;
                             int px2 = ddcx + dx2, py2 = ddcy + dy2;
                             if (px2 >= 0 && px2 < sw && py2 >= 0 && py2 < sh)
                                 alpha_blend_pixel(&px[py2 * sw + px2],
-                                                  0xFFFFFFFF, 77);
+                                                  0xFFFFFFFF, da);
                         }
                     }
                 }
             }
-            /* "All apps" label — 20% opacity white */
+            /* "All apps" label */
             const char *label = "All apps";
             int len = 8;
             int tx = bcx - len * 4;
             int ty = bcy + 10;
-            gfx_surf_draw_string(&gs, tx, ty, label, 0x33FFFFFF, 0);
+            gfx_surf_draw_string_smooth(&gs, tx, ty, label, 0x33FFFFFF, 1);
         }
     }
 
@@ -304,16 +406,24 @@ void radial_show(void) {
     int sw = (int)gfx_width(), sh = (int)gfx_height();
     cx = sw / 2; cy = sh / 2;
     hover_slot = -1; kb_slot = -1;
+    hiding = 0;
     vis = 1; is_open = 1;
+    ui_window_set_all_visible(0);  /* hide windows behind overlay */
+    if (anim_id >= 0) anim_cancel(anim_id);
+    anim_alpha = 0;
+    anim_id = anim_start(&anim_alpha, 0, 255, 180, ANIM_EASE_OUT);
+    comp_surface_set_alpha(surf, 0);
     comp_surface_set_visible(surf, 1);
     radial_draw_content();
 }
 
 void radial_hide(void) {
     if (!surf) return;
-    vis = 0; is_open = 0;
-    comp_surface_set_visible(surf, 0);
-    comp_surface_damage_all(surf);
+    if (hiding) return; /* already animating out */
+    hiding = 1;
+    if (anim_id >= 0) anim_cancel(anim_id);
+    anim_id = anim_start(&anim_alpha, anim_alpha, 0, 120, ANIM_EASE_IN);
+    /* Actual hide happens in radial_tick() when animation completes */
 }
 
 int radial_visible(void) { return vis; }
@@ -442,4 +552,20 @@ int radial_key(char ch, int scancode) {
     }
 
     return 1; /* consume all keys while radial is open */
+}
+
+void radial_tick(void) {
+    if (anim_id < 0) return;
+    if (!surf) return;
+    comp_surface_set_alpha(surf, (uint8_t)(anim_alpha < 0 ? 0 : anim_alpha > 255 ? 255 : anim_alpha));
+    if (!anim_active(anim_id)) {
+        anim_id = -1;
+        if (hiding) {
+            hiding = 0;
+            vis = 0; is_open = 0;
+            comp_surface_set_visible(surf, 0);
+            comp_surface_damage_all(surf);
+            ui_window_set_all_visible(1);  /* restore windows */
+        }
+    }
 }

@@ -3,7 +3,7 @@
  * Layers (bottom to top):
  *   WALLPAPER  — procedural animated wallpaper (5 styles)
  *   WINDOWS    — WM2 managed windows
- *   OVERLAY    — menubar, dock, radial, drawer, context menu
+ *   OVERLAY    — menubar, radial, drawer, context menu
  *   CURSOR     — compositor software cursor
  *
  * Keyboard shortcuts:
@@ -19,9 +19,7 @@
 #include <kernel/gfx.h>
 #include <kernel/ui_theme.h>
 #include <kernel/wm2.h>
-#include <kernel/wm.h>
 #include <kernel/menubar.h>
-#include <kernel/dock.h>
 #include <kernel/wallpaper.h>
 #include <kernel/radial.h>
 #include <kernel/drawer.h>
@@ -47,8 +45,10 @@ static uint32_t wallpaper_last_t = 0;
 
 static void wallpaper_update(uint32_t now) {
     if (!wallpaper_surf) return;
-    /* Redraw every 2 ticks (at 120Hz PIT = ~60fps cap) */
-    if (now - wallpaper_last_t < 2) return;
+    /* Adaptive throttle: fast during theme cross-fade (2 ticks ≈ 60fps)
+       for smooth transitions, slow when idle (8 ticks ≈ 15fps) to save CPU. */
+    uint32_t throttle = wallpaper_is_transitioning() ? 2 : 8;
+    if (now - wallpaper_last_t < throttle) return;
     wallpaper_last_t = now;
     wallpaper_draw(wallpaper_surf->pixels,
                    wallpaper_surf->w,
@@ -84,14 +84,14 @@ static void demo_paint(void) {
     uint32_t bg = 0xFF1E1E2E;
 
     gfx_surf_fill_rect(&gs, 0, 0, cw, ch, bg);
-    gfx_surf_draw_string(&gs,  8,  8, "ImposOS Desktop",  0xFFCDD6F4, bg);
-    gfx_surf_draw_string(&gs,  8, 24, "Phase 4-12: Full Shell", 0xFFA6ADC8, bg);
+    gfx_surf_draw_string_smooth(&gs,  8,  8, "ImposOS Desktop",  0xFFCDD6F4, 1);
+    gfx_surf_draw_string_smooth(&gs,  8, 24, "Phase 4-12: Full Shell", 0xFFA6ADC8, 1);
     gfx_surf_fill_rect(&gs, 8, 42, cw-16, 1, 0xFF45475A);
-    gfx_surf_draw_string(&gs,  8, 52, "Space  — radial launcher",  0xFF6C7086, bg);
-    gfx_surf_draw_string(&gs,  8, 68, "Tab    — app drawer",       0xFF6C7086, bg);
-    gfx_surf_draw_string(&gs,  8, 84, "Escape — close overlay",    0xFF6C7086, bg);
-    gfx_surf_draw_string(&gs,  8, 100,"Right-click desktop → menu",0xFF6C7086, bg);
-    gfx_surf_draw_string(&gs,  8, 116,"Click menubar logo → radial",0xFF6C7086, bg);
+    gfx_surf_draw_string_smooth(&gs,  8, 52, "Space  - radial launcher",  0xFF6C7086, 1);
+    gfx_surf_draw_string_smooth(&gs,  8, 68, "Tab    - app drawer",       0xFF6C7086, 1);
+    gfx_surf_draw_string_smooth(&gs,  8, 84, "Escape - close overlay",    0xFF6C7086, 1);
+    gfx_surf_draw_string_smooth(&gs,  8, 100,"Right-click desktop - menu",0xFF6C7086, 1);
+    gfx_surf_draw_string_smooth(&gs,  8, 116,"Click menubar logo - radial",0xFF6C7086, 1);
     {
         char nb[12]; int nl = 0;
         u32_to_str(compositor_get_fps(), nb, &nl);
@@ -100,7 +100,7 @@ static void demo_paint(void) {
         while (*pre) line[li++] = *pre++;
         int i = 0; while (nb[i]) line[li++] = nb[i++];
         line[li] = '\0';
-        gfx_surf_draw_string(&gs, 8, 140, line, 0xFF89B4FA, bg);
+        gfx_surf_draw_string_smooth(&gs, 8, 140, line, 0xFF89B4FA, 1);
     }
     wm2_damage_canvas_all(demo_id);
 }
@@ -139,7 +139,6 @@ void desktop_init(void) {
 
     /* Overlay elements */
     menubar_init();
-    dock_init();
     radial_init();
     drawer_init();
     ctx_menu_init();
@@ -236,11 +235,18 @@ int desktop_run(void) {
             /* Right-click on desktop (not consumed by overlays) */
             if (!consumed && right_click_up &&
                 !radial_visible() && !drawer_visible() && !ctx_menu_visible()) {
-                /* Check if click is on desktop (not on any window) */
-                int on_desktop = (my > MENUBAR_HEIGHT);
-                /* Quick check: if WM2 would consume it, don't open context menu */
-                /* We open context menu, WM gets first pass later */
-                if (on_desktop) {
+                /* Only open context menu on actual desktop, not on windows */
+                int on_window = 0;
+                if (my > MENUBAR_HEIGHT) {
+                    for (int wid = 1; wid <= 64 && !on_window; wid++) {
+                        wm2_info_t wi = wm2_get_info(wid);
+                        if (wi.id <= 0 || wi.state == WM2_STATE_MINIMIZED) continue;
+                        if (mx >= wi.x && mx < wi.x + wi.w &&
+                            my >= wi.y && my < wi.y + wi.h)
+                            on_window = 1;
+                    }
+                }
+                if (!on_window && my > MENUBAR_HEIGHT) {
                     ctx_menu_show(mx, my);
                     consumed = 1;
                 }
@@ -250,13 +256,9 @@ int desktop_run(void) {
             if (!consumed)
                 consumed = menubar_mouse(mx, my, btn_down, btn_up, right_click_up);
 
-            /* Dock */
-            if (!consumed)
-                consumed = dock_mouse(mx, my, btn_down, btn_up);
-
             /* Settings window mouse */
             if (!consumed && settings_win_open())
-                settings_tick(mx, my, btn_up);
+                consumed = settings_tick(mx, my, btn_down, btn_up);
 
             /* WM2 */
             if (!consumed)
@@ -299,26 +301,12 @@ int desktop_run(void) {
             }
         }
 
-        /* ── Dock actions ───────────────────────────────────────── */
-        {
-            int action = dock_consume_action();
-            if (action >= 0) {
-                switch (action) {
-                case 0: app_launch("terminal"); break;
-                case 1: app_launch("files");    break;
-                case 2: app_launch("settings"); break;
-                case 3: app_launch("monitor");  break;
-                }
-            }
-        }
-
         /* ── Demo window lifecycle ──────────────────────────────── */
         if (demo_id >= 0 && wm2_close_requested(demo_id)) {
-            int sw = (int)gfx_width(), sh = (int)gfx_height();
-            wm2_destroy(demo_id);
-            /* Don't recreate — let user close it */
+            wm2_clear_close_request(demo_id);
+            wm2_close_animated(demo_id);
+            /* destroy is deferred until animation completes */
             demo_id = -1;
-            (void)sw; (void)sh;
             menubar_update_windows();
         }
 
@@ -339,11 +327,19 @@ int desktop_run(void) {
                 /* ~120Hz PIT: each tick ~8.3ms */
                 uint32_t dt = (now - last_anim_tick) * 8;
                 anim_tick(dt);
+                wm2_tick();
+                radial_tick();
+                drawer_tick();
+                ctx_menu_tick();
                 last_anim_tick = now;
             }
         }
 
         /* ── Composite ──────────────────────────────────────────── */
         compositor_frame();
+
+        /* Sleep until next interrupt (PIT 120Hz or mouse/keyboard IRQ).
+           Prevents tight-loop CPU spinning between frames. */
+        asm volatile ("hlt");
     }
 }

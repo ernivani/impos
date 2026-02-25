@@ -16,4 +16,8 @@ int menubar_mouse(int mx, int my, int btn_down, int btn_up, int right_click);
 /* Call after any window open/close/minimize/restore to update pills. */
 void menubar_update_windows(void);
 
+/* Get the screen x-center of the pill for a given window id.
+   Returns -1 if no pill found. Used for minimize fly-to animation. */
+int menubar_get_pill_x(int win_id);
+
 #endif

@@ -26,4 +26,7 @@ int radial_key(char ch, int scancode);
 /* Repaint the radial surface (call after state changes). */
 void radial_paint(void);
 
+/* Tick: drive open/close alpha animation. Call every frame. */
+void radial_tick(void);
+
 #endif
