@@ -265,6 +265,7 @@ int desktop_run(void) {
 
         /* ── Input: keyboard ────────────────────────────────────── */
         {
+            int c = keyboard_getchar_nb();
             if (c > 0) {
                 char ch = (char)c;
 
