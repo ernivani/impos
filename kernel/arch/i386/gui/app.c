@@ -124,19 +124,39 @@ const app_info_t *app_find(const char *id) {
 /* Forward declarations for apps that have real implementations */
 void app_settings_open_to(const char *tab);
 void app_terminal_open(void);
+void app_filemgr_open(void);
+void app_monitor_open(void);
+void app_taskmgr_open(void);
 
 void app_launch(const char *id) {
     if (!id) return;
 
-    /* Real apps */
+    /* Real apps — dispatch by first few chars of id */
     if (id[0]=='s' && id[1]=='e' && id[2]=='t') {
-        /* settings */
         app_settings_open_to("wallpaper");
         return;
     }
     if (id[0]=='t' && id[1]=='e' && id[2]=='r') {
-        /* terminal */
         app_terminal_open();
+        return;
+    }
+    if (id[0]=='f' && id[1]=='i' && id[2]=='l') {
+        app_filemgr_open();
+        return;
+    }
+    if (id[0]=='m' && id[1]=='o' && id[2]=='n') {
+        /* monitor — keywords: task,process,htop,top */
+        app_taskmgr_open();
+        return;
+    }
+    if (id[0]=='s' && id[1]=='y' && id[2]=='s') {
+        /* sysinfo — system stats overview */
+        app_monitor_open();
+        return;
+    }
+    if (id[0]=='d' && id[1]=='i' && id[2]=='s' && id[3]=='k') {
+        /* disk — reuse monitor for now */
+        app_monitor_open();
         return;
     }
 

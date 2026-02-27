@@ -22,6 +22,9 @@
 #include <kernel/anim.h>
 #include <kernel/settings_app.h>
 #include <kernel/terminal_app.h>
+#include <kernel/filemgr.h>
+#include <kernel/taskmgr.h>
+#include <kernel/monitor_app.h>
 #include <kernel/idt.h>
 #include <kernel/mouse.h>
 #include <string.h>
@@ -221,6 +224,18 @@ int ui_shell_run(void)
             if (!consumed && terminal_app_win_open())
                 consumed = terminal_app_tick(mx, my, btn_down, btn_up);
 
+            /* Priority 5c: files window */
+            if (!consumed && filemgr_win_open())
+                consumed = filemgr_tick(mx, my, btn_down, btn_up);
+
+            /* Priority 5d: task manager window */
+            if (!consumed && taskmgr_win_open())
+                consumed = taskmgr_tick(mx, my, btn_down, btn_up);
+
+            /* Priority 5e: system monitor window */
+            if (!consumed && monitor_win_open())
+                consumed = monitor_tick(mx, my, btn_down, btn_up);
+
             /* Priority 6: window manager */
             if (!consumed)
                 ui_window_mouse_event(mx, my, cur_btn, prev_btn);
@@ -262,9 +277,15 @@ int ui_shell_run(void)
             }
         }
 
-        /* ── Terminal tick (close handling, fg app ticks) ──────── */
+        /* ── App ticks (close handling, auto-refresh) ────────── */
         if (terminal_app_win_open())
             terminal_app_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (filemgr_win_open())
+            filemgr_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (taskmgr_win_open())
+            taskmgr_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (monitor_win_open())
+            monitor_tick(mouse_get_x(), mouse_get_y(), 0, 0);
 
         /* ── Demo window lifecycle ───────────────────────────────── */
         if (demo_id >= 0 && ui_window_close_requested(demo_id)) {
