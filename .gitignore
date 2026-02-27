@@ -11,6 +11,7 @@ initrd_staging/
 initrd.tar
 
 .vscode/
+./idea/
 
 # Downloaded BusyBox binary (use 'make download-busybox' to fetch)
 test_programs/busybox
