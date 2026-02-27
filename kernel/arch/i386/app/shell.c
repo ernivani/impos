@@ -3330,7 +3330,7 @@ static void cmd_drmtest(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
 
-    printf("=== DRM Subsystem Test ===\n\n");
+    printf("=== DRM Subsystem Test (Stage 0 + Stage 1) ===\n\n");
 
     /* Step 1: Check DRM availability */
     printf("[1] DRM available: %s\n", drm_is_available() ? "yes" : "no");
@@ -3348,14 +3348,12 @@ static void cmd_drmtest(int argc, char* argv[]) {
         return;
     }
 
-    /* Find a free fd and set it up for DRM */
     int fd = fd_alloc(tid);
     if (fd < 0) {
         printf("FAIL (no free fd)\n");
         return;
     }
 
-    /* Resolve the device node */
     uint32_t parent;
     char name[28];
     int ino = fs_resolve_path("/dev/dri/card0", &parent, name);
@@ -3370,8 +3368,10 @@ static void cmd_drmtest(int argc, char* argv[]) {
     t->fds[fd].offset = 0;
     printf("OK (fd=%d, inode=%d)\n", fd, ino);
 
+    int rc;
+
     /* Step 3: DRM_IOCTL_VERSION */
-    printf("[3] ioctl(DRM_IOCTL_VERSION)... ");
+    printf("[3] DRM_IOCTL_VERSION... ");
     char name_buf[32] = {0};
     char date_buf[16] = {0};
     char desc_buf[64] = {0};
@@ -3381,19 +3381,16 @@ static void cmd_drmtest(int argc, char* argv[]) {
         .desc = desc_buf,  .desc_len = sizeof(desc_buf) - 1,
     };
 
-    int rc = drm_ioctl(DRM_IOCTL_VERSION, &ver);
+    rc = drm_ioctl(DRM_IOCTL_VERSION, &ver);
     if (rc == 0) {
-        printf("OK\n");
-        printf("    Driver: %s v%d.%d.%d\n", name_buf,
+        printf("OK - %s v%d.%d.%d\n", name_buf,
                ver.version_major, ver.version_minor, ver.version_patchlevel);
-        printf("    Date:   %s\n", date_buf);
-        printf("    Desc:   %s\n", desc_buf);
     } else {
         printf("FAIL (rc=%d)\n", rc);
     }
 
     /* Step 4: DRM_IOCTL_GET_CAP */
-    printf("[4] ioctl(DRM_IOCTL_GET_CAP)... ");
+    printf("[4] DRM_IOCTL_GET_CAP... ");
     drm_get_cap_t cap = { .capability = DRM_CAP_DUMB_BUFFER };
     rc = drm_ioctl(DRM_IOCTL_GET_CAP, &cap);
     if (rc == 0) {
@@ -3402,8 +3399,92 @@ static void cmd_drmtest(int argc, char* argv[]) {
         printf("FAIL (rc=%d)\n", rc);
     }
 
-    /* Step 5: Test mmap (allocate a physical page) */
-    printf("[5] mmap(4096 bytes)... ");
+    /* Step 5: DRM_IOCTL_MODE_GETRESOURCES */
+    printf("[5] DRM_IOCTL_MODE_GETRESOURCES... ");
+    uint32_t crtc_ids[4], conn_ids[4], enc_ids[4];
+    drm_mode_card_res_t res = {
+        .crtc_id_ptr = crtc_ids,
+        .connector_id_ptr = conn_ids,
+        .encoder_id_ptr = enc_ids,
+        .count_crtcs = 4,
+        .count_connectors = 4,
+        .count_encoders = 4,
+    };
+    rc = drm_ioctl(DRM_IOCTL_MODE_GETRESOURCES, &res);
+    if (rc == 0) {
+        printf("OK\n");
+        printf("    CRTCs: %u  Connectors: %u  Encoders: %u\n",
+               res.count_crtcs, res.count_connectors, res.count_encoders);
+        printf("    Resolution range: %u-%u x %u-%u\n",
+               res.min_width, res.max_width, res.min_height, res.max_height);
+        if (res.count_crtcs > 0)
+            printf("    CRTC id: %u\n", crtc_ids[0]);
+        if (res.count_connectors > 0)
+            printf("    Connector id: %u\n", conn_ids[0]);
+        if (res.count_encoders > 0)
+            printf("    Encoder id: %u\n", enc_ids[0]);
+    } else {
+        printf("FAIL (rc=%d)\n", rc);
+    }
+
+    /* Step 6: DRM_IOCTL_MODE_GETCONNECTOR */
+    printf("[6] DRM_IOCTL_MODE_GETCONNECTOR... ");
+    drm_mode_modeinfo_t modes[DRM_MAX_MODES];
+    uint32_t enc_list[4];
+    drm_mode_get_connector_t conn = {
+        .connector_id = conn_ids[0],
+        .modes_ptr = modes,
+        .count_modes = DRM_MAX_MODES,
+        .encoders_ptr = enc_list,
+        .count_encoders = 4,
+    };
+    rc = drm_ioctl(DRM_IOCTL_MODE_GETCONNECTOR, &conn);
+    if (rc == 0) {
+        const char *status = "unknown";
+        if (conn.connection == DRM_MODE_CONNECTED) status = "connected";
+        else if (conn.connection == DRM_MODE_DISCONNECTED) status = "disconnected";
+        printf("OK (%s, type=%u, %u modes)\n",
+               status, conn.connector_type, conn.count_modes);
+        printf("    Physical size: %umm x %umm\n", conn.mm_width, conn.mm_height);
+        for (uint32_t i = 0; i < conn.count_modes; i++) {
+            const char *pref = (modes[i].type & DRM_MODE_TYPE_PREFERRED)
+                               ? " [preferred]" : "";
+            printf("    Mode %u: %s (%ux%u @ %uHz, clock=%ukHz)%s\n",
+                   i, modes[i].name, modes[i].hdisplay, modes[i].vdisplay,
+                   modes[i].vrefresh, modes[i].clock, pref);
+        }
+    } else {
+        printf("FAIL (rc=%d)\n", rc);
+    }
+
+    /* Step 7: DRM_IOCTL_MODE_GETENCODER */
+    printf("[7] DRM_IOCTL_MODE_GETENCODER... ");
+    drm_mode_get_encoder_t enc = { .encoder_id = enc_ids[0] };
+    rc = drm_ioctl(DRM_IOCTL_MODE_GETENCODER, &enc);
+    if (rc == 0) {
+        printf("OK (type=%u, crtc_id=%u, possible_crtcs=0x%x)\n",
+               enc.encoder_type, enc.crtc_id, enc.possible_crtcs);
+    } else {
+        printf("FAIL (rc=%d)\n", rc);
+    }
+
+    /* Step 8: DRM_IOCTL_MODE_GETCRTC */
+    printf("[8] DRM_IOCTL_MODE_GETCRTC... ");
+    drm_mode_crtc_t crtc = { .crtc_id = crtc_ids[0] };
+    rc = drm_ioctl(DRM_IOCTL_MODE_GETCRTC, &crtc);
+    if (rc == 0) {
+        printf("OK (fb=%u, mode_valid=%u)\n", crtc.fb_id, crtc.mode_valid);
+        if (crtc.mode_valid) {
+            printf("    Current mode: %s (%ux%u @ %uHz)\n",
+                   crtc.mode.name, crtc.mode.hdisplay,
+                   crtc.mode.vdisplay, crtc.mode.vrefresh);
+        }
+    } else {
+        printf("FAIL (rc=%d)\n", rc);
+    }
+
+    /* Step 9: Test mmap (PMM allocation) */
+    printf("[9] mmap(4096 bytes)... ");
     uint32_t page = pmm_alloc_frame();
     if (page) {
         memset((void *)page, 0xAB, 4096);
@@ -3416,9 +3497,9 @@ static void cmd_drmtest(int argc, char* argv[]) {
         printf("FAIL (out of memory)\n");
     }
 
-    /* Step 6: Close fd */
+    /* Step 10: Close fd */
     t->fds[fd].type = FD_NONE;
-    printf("[6] close(fd=%d)... OK\n", fd);
+    printf("[10] close(fd=%d)... OK\n", fd);
 
     printf("\n=== All DRM tests passed ===\n");
 }

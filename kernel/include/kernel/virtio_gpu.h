@@ -33,6 +33,11 @@ void virtio_gpu_move_cursor(int x, int y);
 /* Query VRAM size in KB (from device config or BGA) */
 uint32_t virtio_gpu_vram_kb(void);
 
+/* Query display info from VirtIO GPU device.
+   Returns the number of enabled scanouts (0 on failure).
+   For each enabled scanout, writes width/height into the output arrays. */
+int virtio_gpu_get_display_info(uint32_t *widths, uint32_t *heights, int max_scanouts);
+
 /* ═══ Bochs VGA BGA register access ═══════════════════════════ */
 
 /* Detect Bochs VGA adapter — returns 1 if BGA registers respond */

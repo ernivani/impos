@@ -171,6 +171,20 @@ struct virtio_gpu_resource_flush_cmd {
     uint32_t padding;
 } __attribute__((packed));
 
+/* GET_DISPLAY_INFO response */
+#define VIRTIO_GPU_MAX_SCANOUTS 16
+
+struct virtio_gpu_display_one {
+    struct virtio_gpu_rect r;
+    uint32_t enabled;
+    uint32_t flags;
+} __attribute__((packed));
+
+struct virtio_gpu_resp_display_info {
+    struct virtio_gpu_ctrl_hdr hdr;
+    struct virtio_gpu_display_one pmodes[VIRTIO_GPU_MAX_SCANOUTS];
+} __attribute__((packed));
+
 struct virtio_gpu_cursor_cmd {
     struct virtio_gpu_ctrl_hdr hdr;
     struct {
@@ -638,6 +652,40 @@ void virtio_gpu_flip_rects(int *rects, int count) {
         virtio_gpu_transfer_2d(x, y, w, h);
         virtio_gpu_flush(x, y, w, h);
     }
+}
+
+/* ═══ Display info query ═══════════════════════════════════════ */
+
+/* Response buffer for display info — large struct, keep static */
+static struct virtio_gpu_resp_display_info disp_info_resp
+    __attribute__((aligned(64)));
+
+int virtio_gpu_get_display_info(uint32_t *widths, uint32_t *heights,
+                                 int max_scanouts) {
+    if (!gpu_active || max_scanouts <= 0) return 0;
+
+    /* Send GET_DISPLAY_INFO command */
+    struct virtio_gpu_ctrl_hdr *cmd = (struct virtio_gpu_ctrl_hdr *)cmd_buf;
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
+
+    memset(&disp_info_resp, 0, sizeof(disp_info_resp));
+    int rc = vq_submit_cmd(&ctrl_vq, 0, cmd, sizeof(*cmd),
+                           &disp_info_resp, sizeof(disp_info_resp));
+    if (rc != 0) return 0;
+    if (disp_info_resp.hdr.type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO) return 0;
+
+    int count = 0;
+    for (int i = 0; i < VIRTIO_GPU_MAX_SCANOUTS && count < max_scanouts; i++) {
+        if (disp_info_resp.pmodes[i].enabled &&
+            disp_info_resp.pmodes[i].r.width > 0 &&
+            disp_info_resp.pmodes[i].r.height > 0) {
+            widths[count] = disp_info_resp.pmodes[i].r.width;
+            heights[count] = disp_info_resp.pmodes[i].r.height;
+            count++;
+        }
+    }
+    return count;
 }
 
 /* ═══ Hardware cursor ══════════════════════════════════════════ */
