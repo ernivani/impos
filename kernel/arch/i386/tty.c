@@ -113,10 +113,10 @@ static void ansi_apply_sgr(void) {
 }
 
 static const uint32_t vga_to_rgb[16] = {
-	0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
-	0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
-	0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
-	0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
+	0xFF000000, 0xFF0000AA, 0xFF00AA00, 0xFF00AAAA,
+	0xFFAA0000, 0xFFAA00AA, 0xFFAA5500, 0xFFAAAAAA,
+	0xFF555555, 0xFF5555FF, 0xFF55FF55, 0xFF55FFFF,
+	0xFFFF5555, 0xFFFF55FF, 0xFFFFFF55, 0xFFFFFFFF
 };
 
 static void ansi_execute_csi(char cmd) {
@@ -305,9 +305,12 @@ void terminal_putentryat(unsigned char c, uint8_t color, size_t x, size_t y) {
 		uint32_t fg = vga_to_rgb[color & 0x0F];
 		uint32_t bg = win_bg_set ? win_bg_color : vga_to_rgb[(color >> 4) & 0x0F];
 		if (canvas_buf) {
-			/* Draw into canvas at relative position */
-			gfx_buf_draw_char(canvas_buf, canvas_pw, canvas_ph,
-			                  (int)x * FONT_W, (int)y * FONT_H, (char)c, fg, bg);
+			/* Draw into canvas: clear cell background, then SDF smooth glyph */
+			gfx_surface_t cs = { canvas_buf, canvas_pw, canvas_ph, canvas_pw };
+			int px = (int)x * FONT_W;
+			int py = (int)y * FONT_H;
+			gfx_surf_fill_rect(&cs, px, py, FONT_W, FONT_H, bg);
+			gfx_surf_draw_char_smooth(&cs, px, py, (char)c, fg, 1);
 			return;
 		}
 		size_t abs_x = win_x + x;

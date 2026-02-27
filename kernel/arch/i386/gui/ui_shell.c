@@ -21,6 +21,7 @@
 #include <kernel/app.h>
 #include <kernel/anim.h>
 #include <kernel/settings_app.h>
+#include <kernel/terminal_app.h>
 #include <kernel/idt.h>
 #include <kernel/mouse.h>
 #include <string.h>
@@ -216,6 +217,10 @@ int ui_shell_run(void)
             if (!consumed && settings_win_open())
                 consumed = settings_tick(mx, my, btn_down, btn_up);
 
+            /* Priority 5b: terminal window */
+            if (!consumed && terminal_app_win_open())
+                consumed = terminal_app_tick(mx, my, btn_down, btn_up);
+
             /* Priority 6: window manager */
             if (!consumed)
                 ui_window_mouse_event(mx, my, cur_btn, prev_btn);
@@ -229,11 +234,16 @@ int ui_shell_run(void)
             int c = keyboard_getchar_nb();
             if (c > 0) {
                 char ch = (char)c;
+                int term_focused = terminal_app_win_open() &&
+                    ui_window_focused() == terminal_app_win_id();
 
                 if (radial_visible()) {
                     radial_key(ch, 0);
                 } else if (drawer_visible()) {
                     drawer_key(ch, 0);
+                } else if (term_focused) {
+                    /* Route to terminal shell */
+                    terminal_app_handle_key(ch);
                 } else {
                     if (ch == ' ') {
                         if (ctx_menu_visible()) ctx_menu_hide();
@@ -251,6 +261,10 @@ int ui_shell_run(void)
                 }
             }
         }
+
+        /* ── Terminal tick (close handling, fg app ticks) ──────── */
+        if (terminal_app_win_open())
+            terminal_app_tick(mouse_get_x(), mouse_get_y(), 0, 0);
 
         /* ── Demo window lifecycle ───────────────────────────────── */
         if (demo_id >= 0 && ui_window_close_requested(demo_id)) {

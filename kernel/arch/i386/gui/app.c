@@ -123,6 +123,7 @@ const app_info_t *app_find(const char *id) {
 
 /* Forward declarations for apps that have real implementations */
 void app_settings_open_to(const char *tab);
+void app_terminal_open(void);
 
 void app_launch(const char *id) {
     if (!id) return;
@@ -131,6 +132,11 @@ void app_launch(const char *id) {
     if (id[0]=='s' && id[1]=='e' && id[2]=='t') {
         /* settings */
         app_settings_open_to("wallpaper");
+        return;
+    }
+    if (id[0]=='t' && id[1]=='e' && id[2]=='r') {
+        /* terminal */
+        app_terminal_open();
         return;
     }
 
