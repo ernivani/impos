@@ -103,10 +103,39 @@ uint32_t pmm_alloc_frame(void) {
     return 0;  /* Out of memory */
 }
 
+uint32_t pmm_alloc_contiguous(uint32_t n_frames) {
+    if (n_frames == 0) return 0;
+    if (n_frames == 1) return pmm_alloc_frame();
+
+    uint32_t start = 0;
+    uint32_t count = 0;
+
+    for (uint32_t f = 0; f < total_frames; f++) {
+        if (frame_test(f)) {
+            count = 0;
+            start = f + 1;
+        } else {
+            count++;
+            if (count >= n_frames) {
+                for (uint32_t i = start; i < start + n_frames; i++)
+                    frame_set(i);
+                return start * FRAME_SIZE;
+            }
+        }
+    }
+    return 0;
+}
+
 void pmm_free_frame(uint32_t phys_addr) {
     uint32_t frame = phys_addr / FRAME_SIZE;
     if (frame < total_frames)
         frame_clear(frame);
+}
+
+void pmm_free_contiguous(uint32_t phys_addr, uint32_t n_frames) {
+    uint32_t frame = phys_addr / FRAME_SIZE;
+    for (uint32_t i = 0; i < n_frames && (frame + i) < total_frames; i++)
+        frame_clear(frame + i);
 }
 
 void pmm_reserve_range(uint32_t phys_start, uint32_t phys_end) {

@@ -3,26 +3,17 @@
 #include <kernel/io.h>
 #include <kernel/gfx.h>
 #include <kernel/virtio_gpu.h>
+#include <kernel/pmm.h>
 #include <string.h>
 #include <stdio.h>
 
 /*
- * DRM Core — Stage 0 + Stage 1: ioctl dispatch, version, and KMS modesetting.
+ * DRM Core — Stages 0-2: ioctl dispatch, KMS modesetting, GEM buffers.
  *
- * All DRM operations go through ioctl() on /dev/dri/card0, which routes
- * here via ioctl_dispatch() -> drm_ioctl().
- *
- * Stage 0 implements:
- *   - DRM_IOCTL_VERSION: Returns driver name, version, description
- *   - DRM_IOCTL_GET_CAP: Reports supported capabilities
- *   - DRM_IOCTL_SET_CLIENT_CAP: Accepts client capability requests
- *
- * Stage 1 adds KMS modesetting:
- *   - DRM_IOCTL_MODE_GETRESOURCES: Lists CRTCs, connectors, encoders
- *   - DRM_IOCTL_MODE_GETCONNECTOR: Connector status + mode list
- *   - DRM_IOCTL_MODE_GETENCODER: Encoder -> CRTC mapping
- *   - DRM_IOCTL_MODE_GETCRTC: Current CRTC configuration
- *   - DRM_IOCTL_MODE_SETCRTC: Set display mode on a CRTC
+ * Stage 0: VERSION, GET_CAP, SET_CLIENT_CAP
+ * Stage 1: KMS — GETRESOURCES, GETCONNECTOR, GETENCODER, GETCRTC, SETCRTC
+ * Stage 2: GEM — CREATE_DUMB, MAP_DUMB, DESTROY_DUMB, GEM_CLOSE,
+ *                 ADDFB, RMFB, PAGE_FLIP
  */
 
 /* ── Driver identity ────────────────────────────────────────────── */
@@ -31,8 +22,10 @@
 #define DRM_DRIVER_DATE     "20260227"
 #define DRM_DRIVER_DESC     "ImposOS DRM driver"
 #define DRM_VERSION_MAJOR   0
-#define DRM_VERSION_MINOR   2
+#define DRM_VERSION_MINOR   3
 #define DRM_VERSION_PATCH   0
+
+#define PAGE_SIZE 4096
 
 /* ── Global DRM device state ────────────────────────────────────── */
 
@@ -40,8 +33,6 @@ static drm_device_t drm_dev;
 
 /* ── Mode helpers ──────────────────────────────────────────────── */
 
-/* Build a drm_mode_modeinfo_t from width/height/refresh.
- * We use simplified timings (no real sync pulses needed for VirtIO/BGA). */
 static void drm_build_mode(drm_mode_modeinfo_t *m, uint32_t w, uint32_t h,
                             uint32_t refresh, uint32_t type_flags) {
     memset(m, 0, sizeof(*m));
@@ -50,8 +41,6 @@ static void drm_build_mode(drm_mode_modeinfo_t *m, uint32_t w, uint32_t h,
     m->vrefresh = refresh;
     m->type = DRM_MODE_TYPE_DRIVER | type_flags;
 
-    /* Simplified timings — not real VESA CVT, but sufficient for
-     * VirtIO GPU and BGA which don't need real sync signals. */
     m->hsync_start = (uint16_t)(w + 48);
     m->hsync_end   = (uint16_t)(w + 48 + 112);
     m->htotal      = (uint16_t)(w + 48 + 112 + 80);
@@ -63,23 +52,87 @@ static void drm_build_mode(drm_mode_modeinfo_t *m, uint32_t w, uint32_t h,
     snprintf(m->name, DRM_DISPLAY_MODE_LEN, "%ux%u", w, h);
 }
 
-/* Add a mode to the connector's mode list (if not already present) */
 static int drm_add_mode(uint32_t w, uint32_t h, uint32_t refresh,
                          uint32_t type_flags) {
     if (drm_dev.connector.num_modes >= DRM_MAX_MODES)
         return -1;
 
-    /* Check for duplicate */
     for (int i = 0; i < drm_dev.connector.num_modes; i++) {
         if (drm_dev.connector.modes[i].hdisplay == (uint16_t)w &&
             drm_dev.connector.modes[i].vdisplay == (uint16_t)h)
-            return 0; /* already present */
+            return 0;
     }
 
     drm_build_mode(&drm_dev.connector.modes[drm_dev.connector.num_modes],
                     w, h, refresh, type_flags);
     drm_dev.connector.num_modes++;
     return 0;
+}
+
+/* ── GEM helpers ───────────────────────────────────────────────── */
+
+static drm_gem_object_t *gem_find_by_handle(uint32_t handle) {
+    for (int i = 0; i < DRM_GEM_MAX_OBJECTS; i++) {
+        if (drm_dev.gem_objects[i].in_use &&
+            drm_dev.gem_objects[i].handle == handle)
+            return &drm_dev.gem_objects[i];
+    }
+    return NULL;
+}
+
+static drm_gem_object_t *gem_alloc_slot(void) {
+    for (int i = 0; i < DRM_GEM_MAX_OBJECTS; i++) {
+        if (!drm_dev.gem_objects[i].in_use)
+            return &drm_dev.gem_objects[i];
+    }
+    return NULL;
+}
+
+static drm_framebuffer_t *fb_find_by_id(uint32_t fb_id) {
+    for (int i = 0; i < DRM_MAX_FRAMEBUFFERS; i++) {
+        if (drm_dev.framebuffers[i].in_use &&
+            drm_dev.framebuffers[i].fb_id == fb_id)
+            return &drm_dev.framebuffers[i];
+    }
+    return NULL;
+}
+
+static drm_framebuffer_t *fb_alloc_slot(void) {
+    for (int i = 0; i < DRM_MAX_FRAMEBUFFERS; i++) {
+        if (!drm_dev.framebuffers[i].in_use)
+            return &drm_dev.framebuffers[i];
+    }
+    return NULL;
+}
+
+/* Flip a framebuffer to the display: copy to the active backbuffer
+ * and trigger a hardware update. */
+static void drm_flip_fb(drm_framebuffer_t *fb) {
+    uint32_t *backbuf = gfx_backbuffer();
+    uint32_t disp_w = gfx_width();
+    uint32_t disp_h = gfx_height();
+    uint32_t disp_pitch = gfx_pitch();  /* bytes */
+
+    if (!backbuf || !fb->phys_addr) return;
+
+    uint32_t *src = (uint32_t *)fb->phys_addr;
+    uint32_t copy_w = fb->width < disp_w ? fb->width : disp_w;
+    uint32_t copy_h = fb->height < disp_h ? fb->height : disp_h;
+
+    /* Copy row by row (pitches may differ) */
+    for (uint32_t y = 0; y < copy_h; y++) {
+        uint32_t *dst_row = (uint32_t *)((uint8_t *)backbuf + y * disp_pitch);
+        uint32_t *src_row = (uint32_t *)((uint8_t *)src + y * fb->pitch);
+        memcpy(dst_row, src_row, copy_w * 4);
+    }
+
+    /* Trigger display update */
+    if (gfx_using_virtio_gpu()) {
+        virtio_gpu_transfer_2d(0, 0, (int)copy_w, (int)copy_h);
+        virtio_gpu_flush(0, 0, (int)copy_w, (int)copy_h);
+    } else {
+        gfx_flip_rect(0, 0, (int)copy_w, (int)copy_h);
+    }
 }
 
 /* ── Stage 0 ioctl handlers ────────────────────────────────────── */
@@ -161,12 +214,10 @@ static int drm_ioctl_mode_getresources(drm_mode_card_res_t *res) {
     if (!res)
         return -1;
 
-    /* Fill in counts — always 1 of each for single-display ImposOS */
     uint32_t crtc_id = drm_dev.crtc.id;
     uint32_t conn_id = drm_dev.connector.id;
     uint32_t enc_id  = drm_dev.encoder.id;
 
-    /* Two-call pattern: if user provides arrays, fill them */
     if (res->crtc_id_ptr && res->count_crtcs >= 1)
         res->crtc_id_ptr[0] = crtc_id;
     if (res->connector_id_ptr && res->count_connectors >= 1)
@@ -174,13 +225,21 @@ static int drm_ioctl_mode_getresources(drm_mode_card_res_t *res) {
     if (res->encoder_id_ptr && res->count_encoders >= 1)
         res->encoder_id_ptr[0] = enc_id;
 
-    /* Always set the counts */
-    res->count_fbs = 0;         /* No framebuffers until Stage 2 */
+    /* Count active framebuffers */
+    uint32_t fb_count = 0;
+    for (int i = 0; i < DRM_MAX_FRAMEBUFFERS; i++) {
+        if (drm_dev.framebuffers[i].in_use) {
+            if (res->fb_id_ptr && fb_count < res->count_fbs)
+                res->fb_id_ptr[fb_count] = drm_dev.framebuffers[i].fb_id;
+            fb_count++;
+        }
+    }
+
+    res->count_fbs = fb_count;
     res->count_crtcs = 1;
     res->count_connectors = 1;
     res->count_encoders = 1;
 
-    /* Resolution limits */
     res->min_width  = 640;
     res->max_width  = 1920;
     res->min_height = 480;
@@ -193,11 +252,9 @@ static int drm_ioctl_mode_getconnector(drm_mode_get_connector_t *conn) {
     if (!conn)
         return -1;
 
-    /* Validate connector_id */
     if (conn->connector_id != drm_dev.connector.id)
         return -1;
 
-    /* Copy modes into user array if provided (two-call pattern) */
     uint32_t num = (uint32_t)drm_dev.connector.num_modes;
     if (conn->modes_ptr && conn->count_modes > 0) {
         uint32_t copy = conn->count_modes < num ? conn->count_modes : num;
@@ -205,11 +262,9 @@ static int drm_ioctl_mode_getconnector(drm_mode_get_connector_t *conn) {
                copy * sizeof(drm_mode_modeinfo_t));
     }
 
-    /* Copy encoder list */
     if (conn->encoders_ptr && conn->count_encoders >= 1)
         conn->encoders_ptr[0] = drm_dev.encoder.id;
 
-    /* Fill in connector info */
     conn->count_modes = num;
     conn->count_props = 0;
     conn->count_encoders = 1;
@@ -233,7 +288,7 @@ static int drm_ioctl_mode_getencoder(drm_mode_get_encoder_t *enc) {
 
     enc->encoder_type = drm_dev.encoder.type;
     enc->crtc_id = drm_dev.encoder.crtc_id;
-    enc->possible_crtcs = 1;    /* bit 0 = our single CRTC */
+    enc->possible_crtcs = 1;
     enc->possible_clones = 0;
 
     return 0;
@@ -265,14 +320,12 @@ static int drm_ioctl_mode_setcrtc(drm_mode_crtc_t *crtc) {
         return -1;
 
     if (!crtc->mode_valid) {
-        /* Disable CRTC */
         drm_dev.crtc.mode_valid = 0;
         drm_dev.crtc.fb_id = 0;
         DBG("DRM: CRTC disabled");
         return 0;
     }
 
-    /* Validate the requested mode against our mode list */
     uint16_t req_w = crtc->mode.hdisplay;
     uint16_t req_h = crtc->mode.vdisplay;
     int found = 0;
@@ -288,21 +341,213 @@ static int drm_ioctl_mode_setcrtc(drm_mode_crtc_t *crtc) {
         return -1;
     }
 
-    /* Record the new mode */
     memcpy(&drm_dev.crtc.mode, &crtc->mode, sizeof(drm_mode_modeinfo_t));
     drm_dev.crtc.mode_valid = 1;
     drm_dev.crtc.fb_id = crtc->fb_id;
     drm_dev.crtc.x = crtc->x;
     drm_dev.crtc.y = crtc->y;
 
-    /* Actually apply the mode change through the hardware backend.
-     * For now, BGA can change modes; VirtIO scanout is set at init. */
     if (drm_dev.backend == DRM_BACKEND_BGA) {
         bga_set_mode((int)req_w, (int)req_h, 32);
         DBG("DRM: BGA mode set to %ux%u", req_w, req_h);
     } else {
-        DBG("DRM: Mode recorded %ux%u (VirtIO scanout unchanged)", req_w, req_h);
+        DBG("DRM: Mode recorded %ux%u", req_w, req_h);
     }
+
+    /* If a framebuffer is attached, display it */
+    if (crtc->fb_id) {
+        drm_framebuffer_t *fb = fb_find_by_id(crtc->fb_id);
+        if (fb) drm_flip_fb(fb);
+    }
+
+    return 0;
+}
+
+/* ── Stage 2 GEM ioctl handlers ────────────────────────────────── */
+
+static int drm_ioctl_mode_create_dumb(drm_mode_create_dumb_t *args) {
+    if (!args || args->width == 0 || args->height == 0 || args->bpp == 0)
+        return -1;
+
+    /* Calculate buffer dimensions */
+    uint32_t pitch = args->width * (args->bpp / 8);
+    /* Align pitch to 64 bytes for cache-line alignment */
+    pitch = (pitch + 63) & ~63u;
+    uint64_t size = (uint64_t)pitch * args->height;
+    if (size > 16 * 1024 * 1024)  /* 16MB max per buffer */
+        return -1;
+
+    uint32_t n_frames = ((uint32_t)size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    /* Allocate contiguous physical frames */
+    uint32_t phys = pmm_alloc_contiguous(n_frames);
+    if (!phys) {
+        DBG("DRM: CREATE_DUMB failed — can't alloc %u contiguous frames", n_frames);
+        return -1;
+    }
+
+    /* Zero the buffer */
+    memset((void *)phys, 0, n_frames * PAGE_SIZE);
+
+    /* Find a free GEM slot */
+    drm_gem_object_t *gem = gem_alloc_slot();
+    if (!gem) {
+        pmm_free_contiguous(phys, n_frames);
+        return -1;
+    }
+
+    gem->in_use = 1;
+    gem->handle = drm_dev.next_gem_handle++;
+    gem->phys_addr = phys;
+    gem->size = (uint32_t)size;
+    gem->n_frames = n_frames;
+    gem->width = args->width;
+    gem->height = args->height;
+    gem->pitch = pitch;
+    gem->bpp = args->bpp;
+    gem->refcount = 1;
+
+    /* Return to caller */
+    args->handle = gem->handle;
+    args->pitch = pitch;
+    args->size = size;
+
+    DBG("DRM: CREATE_DUMB handle=%u %ux%u bpp=%u pitch=%u phys=0x%x (%u frames)",
+        gem->handle, args->width, args->height, args->bpp, pitch, phys, n_frames);
+    return 0;
+}
+
+static int drm_ioctl_mode_map_dumb(drm_mode_map_dumb_t *args) {
+    if (!args)
+        return -1;
+
+    drm_gem_object_t *gem = gem_find_by_handle(args->handle);
+    if (!gem)
+        return -1;
+
+    /* In our identity-mapped kernel, the offset IS the physical address.
+     * Userspace (or kernel code) can directly write to this address. */
+    args->offset = (uint64_t)gem->phys_addr;
+    return 0;
+}
+
+static int drm_ioctl_mode_destroy_dumb(drm_mode_destroy_dumb_t *args) {
+    if (!args)
+        return -1;
+
+    drm_gem_object_t *gem = gem_find_by_handle(args->handle);
+    if (!gem)
+        return -1;
+
+    gem->refcount--;
+    if (gem->refcount <= 0) {
+        pmm_free_contiguous(gem->phys_addr, gem->n_frames);
+        DBG("DRM: DESTROY_DUMB handle=%u freed %u frames at 0x%x",
+            gem->handle, gem->n_frames, gem->phys_addr);
+        memset(gem, 0, sizeof(*gem));
+    }
+    return 0;
+}
+
+static int drm_ioctl_gem_close(drm_gem_close_t *args) {
+    if (!args)
+        return -1;
+
+    drm_gem_object_t *gem = gem_find_by_handle(args->handle);
+    if (!gem)
+        return -1;
+
+    gem->refcount--;
+    if (gem->refcount <= 0) {
+        pmm_free_contiguous(gem->phys_addr, gem->n_frames);
+        memset(gem, 0, sizeof(*gem));
+    }
+    return 0;
+}
+
+static int drm_ioctl_mode_addfb(drm_mode_fb_cmd_t *args) {
+    if (!args)
+        return -1;
+
+    /* Validate the GEM handle */
+    drm_gem_object_t *gem = gem_find_by_handle(args->handle);
+    if (!gem)
+        return -1;
+
+    /* Validate dimensions fit in the GEM buffer */
+    uint64_t needed = (uint64_t)args->pitch * args->height;
+    if (needed > gem->size)
+        return -1;
+
+    /* Find a free framebuffer slot */
+    drm_framebuffer_t *fb = fb_alloc_slot();
+    if (!fb)
+        return -1;
+
+    fb->in_use = 1;
+    fb->fb_id = drm_dev.next_fb_id++;
+    fb->gem_handle = args->handle;
+    fb->width = args->width;
+    fb->height = args->height;
+    fb->pitch = args->pitch;
+    fb->bpp = args->bpp;
+    fb->depth = args->depth;
+    fb->phys_addr = gem->phys_addr;
+
+    /* Bump GEM refcount since FB holds a reference */
+    gem->refcount++;
+
+    args->fb_id = fb->fb_id;
+
+    DBG("DRM: ADDFB fb_id=%u gem=%u %ux%u pitch=%u",
+        fb->fb_id, args->handle, args->width, args->height, args->pitch);
+    return 0;
+}
+
+static int drm_ioctl_mode_rmfb(uint32_t *fb_id_ptr) {
+    if (!fb_id_ptr)
+        return -1;
+
+    uint32_t fb_id = *fb_id_ptr;
+    drm_framebuffer_t *fb = fb_find_by_id(fb_id);
+    if (!fb)
+        return -1;
+
+    /* If this fb is currently displayed, detach it */
+    if (drm_dev.crtc.fb_id == fb_id)
+        drm_dev.crtc.fb_id = 0;
+
+    /* Release GEM reference */
+    drm_gem_object_t *gem = gem_find_by_handle(fb->gem_handle);
+    if (gem) {
+        gem->refcount--;
+        if (gem->refcount <= 0) {
+            pmm_free_contiguous(gem->phys_addr, gem->n_frames);
+            memset(gem, 0, sizeof(*gem));
+        }
+    }
+
+    DBG("DRM: RMFB fb_id=%u", fb_id);
+    memset(fb, 0, sizeof(*fb));
+    return 0;
+}
+
+static int drm_ioctl_mode_page_flip(drm_mode_page_flip_t *args) {
+    if (!args)
+        return -1;
+
+    if (args->crtc_id != drm_dev.crtc.id)
+        return -1;
+
+    drm_framebuffer_t *fb = fb_find_by_id(args->fb_id);
+    if (!fb)
+        return -1;
+
+    /* Update the CRTC's displayed framebuffer */
+    drm_dev.crtc.fb_id = args->fb_id;
+
+    /* Flip: copy the GEM buffer to the display backbuffer and present */
+    drm_flip_fb(fb);
 
     return 0;
 }
@@ -312,19 +557,20 @@ static int drm_ioctl_mode_setcrtc(drm_mode_crtc_t *crtc) {
 void drm_init(void) {
     memset(&drm_dev, 0, sizeof(drm_dev));
 
-    /* Detect backend and populate display info */
+    /* GEM/FB ID counters start at 1 (0 = invalid) */
+    drm_dev.next_gem_handle = 1;
+    drm_dev.next_fb_id = 1;
+
+    /* Detect backend */
     if (virtio_gpu_is_active()) {
         drm_dev.backend = DRM_BACKEND_VIRTIO;
         drm_dev.connector.type = DRM_MODE_CONNECTOR_VIRTUAL;
         drm_dev.encoder.type = DRM_MODE_ENCODER_VIRTUAL;
 
-        /* Query VirtIO display info for native mode */
         uint32_t widths[4], heights[4];
         int n = virtio_gpu_get_display_info(widths, heights, 4);
-        if (n > 0) {
-            /* First scanout's resolution is the preferred mode */
+        if (n > 0)
             drm_add_mode(widths[0], heights[0], 60, DRM_MODE_TYPE_PREFERRED);
-        }
     } else if (bga_detect()) {
         drm_dev.backend = DRM_BACKEND_BGA;
         drm_dev.connector.type = DRM_MODE_CONNECTOR_VGA;
@@ -335,23 +581,19 @@ void drm_init(void) {
         drm_dev.encoder.type = DRM_MODE_ENCODER_NONE;
     }
 
-    /* Always add the current framebuffer resolution as a mode */
     uint32_t cur_w = gfx_width();
     uint32_t cur_h = gfx_height();
     if (cur_w > 0 && cur_h > 0) {
-        /* If no VirtIO modes were added, this becomes the preferred mode */
         uint32_t flags = (drm_dev.connector.num_modes == 0)
                          ? DRM_MODE_TYPE_PREFERRED : 0;
         drm_add_mode(cur_w, cur_h, 60, flags);
     }
 
-    /* Add common standard modes (BGA and VirtIO both support these) */
     drm_add_mode(1920, 1080, 60, 0);
     drm_add_mode(1280,  720, 60, 0);
     drm_add_mode(1024,  768, 60, 0);
     drm_add_mode( 800,  600, 60, 0);
 
-    /* Set up the single CRTC/encoder/connector pipeline */
     drm_dev.crtc.id = 1;
     drm_dev.encoder.id = 1;
     drm_dev.encoder.crtc_id = 1;
@@ -359,13 +601,11 @@ void drm_init(void) {
     drm_dev.connector.encoder_id = 1;
     drm_dev.connector.connection = DRM_MODE_CONNECTED;
 
-    /* Physical size estimate (~24" monitor at current resolution) */
     if (cur_w > 0 && cur_h > 0) {
-        drm_dev.connector.mm_width  = cur_w * 254 / 960;  /* ~96 DPI */
+        drm_dev.connector.mm_width  = cur_w * 254 / 960;
         drm_dev.connector.mm_height = cur_h * 254 / 960;
     }
 
-    /* Set current CRTC mode to the active framebuffer resolution */
     if (drm_dev.connector.num_modes > 0) {
         drm_dev.crtc.mode_valid = 1;
         memcpy(&drm_dev.crtc.mode, &drm_dev.connector.modes[0],
@@ -373,7 +613,7 @@ void drm_init(void) {
     }
 
     drm_dev.initialized = 1;
-    DBG("DRM: initialized (Stage 1: KMS) backend=%d modes=%d",
+    DBG("DRM: initialized (Stage 2: GEM) backend=%d modes=%d",
         drm_dev.backend, drm_dev.connector.num_modes);
 }
 
@@ -385,15 +625,17 @@ int drm_ioctl(uint32_t cmd, void *arg) {
     if (!drm_dev.initialized)
         return -1;
 
-    /* Stage 0 ioctls */
+    /* Stage 0 */
     if (cmd == DRM_IOCTL_VERSION)
         return drm_ioctl_version((drm_version_t *)arg);
     if (cmd == DRM_IOCTL_GET_CAP)
         return drm_ioctl_get_cap((drm_get_cap_t *)arg);
     if (cmd == DRM_IOCTL_SET_CLIENT_CAP)
         return drm_ioctl_set_client_cap((drm_set_client_cap_t *)arg);
+    if (cmd == DRM_IOCTL_GEM_CLOSE)
+        return drm_ioctl_gem_close((drm_gem_close_t *)arg);
 
-    /* Stage 1 KMS ioctls */
+    /* Stage 1 KMS */
     if (cmd == DRM_IOCTL_MODE_GETRESOURCES)
         return drm_ioctl_mode_getresources((drm_mode_card_res_t *)arg);
     if (cmd == DRM_IOCTL_MODE_GETCONNECTOR)
@@ -405,7 +647,20 @@ int drm_ioctl(uint32_t cmd, void *arg) {
     if (cmd == DRM_IOCTL_MODE_SETCRTC)
         return drm_ioctl_mode_setcrtc((drm_mode_crtc_t *)arg);
 
-    /* Unknown ioctl */
+    /* Stage 2 GEM */
+    if (cmd == DRM_IOCTL_MODE_CREATE_DUMB)
+        return drm_ioctl_mode_create_dumb((drm_mode_create_dumb_t *)arg);
+    if (cmd == DRM_IOCTL_MODE_MAP_DUMB)
+        return drm_ioctl_mode_map_dumb((drm_mode_map_dumb_t *)arg);
+    if (cmd == DRM_IOCTL_MODE_DESTROY_DUMB)
+        return drm_ioctl_mode_destroy_dumb((drm_mode_destroy_dumb_t *)arg);
+    if (cmd == DRM_IOCTL_MODE_ADDFB)
+        return drm_ioctl_mode_addfb((drm_mode_fb_cmd_t *)arg);
+    if (cmd == DRM_IOCTL_MODE_RMFB)
+        return drm_ioctl_mode_rmfb((uint32_t *)arg);
+    if (cmd == DRM_IOCTL_MODE_PAGE_FLIP)
+        return drm_ioctl_mode_page_flip((drm_mode_page_flip_t *)arg);
+
     printf("[DRM] Unknown ioctl cmd=0x%x (type='%c' nr=0x%x)\n",
            cmd, (char)_IOC_TYPE(cmd), _IOC_NR(cmd));
     return -1;
