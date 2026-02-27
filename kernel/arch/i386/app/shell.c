@@ -36,6 +36,7 @@
 #include <kernel/io.h>
 #include <kernel/multiboot.h>
 #include <kernel/drm.h>
+#include <kernel/libdrm.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <string.h>
@@ -3330,179 +3331,164 @@ static void cmd_drmtest(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
 
-    printf("=== DRM Test (Stage 0 + 1 + 2) ===\n\n");
+    printf("=== DRM Test via libdrm API ===\n\n");
 
-    /* Step 1: DRM available */
-    printf("[1] DRM available: %s\n", drm_is_available() ? "yes" : "no");
-    if (!drm_is_available()) {
-        printf("    FAIL: DRM not initialized\n");
+    /* Step 1: drmOpen */
+    printf("[1] drmOpen... ");
+    int fd = drmOpen("impos-drm", NULL);
+    if (fd < 0) {
+        printf("FAIL (DRM not available)\n");
         return;
     }
-
-    /* Step 2: Open /dev/dri/card0 */
-    printf("[2] Opening /dev/dri/card0... ");
-    int tid = task_get_current();
-    task_info_t *t = task_get(tid);
-    if (!t) { printf("FAIL (no task)\n"); return; }
-
-    int fd = fd_alloc(tid);
-    if (fd < 0) { printf("FAIL (no free fd)\n"); return; }
-
-    uint32_t parent;
-    char name[28];
-    int ino = fs_resolve_path("/dev/dri/card0", &parent, name);
-    if (ino < 0) {
-        printf("FAIL (device node not found)\n");
-        return;
-    }
-    t->fds[fd].type = FD_DRM;
-    t->fds[fd].inode = (uint32_t)ino;
-    t->fds[fd].offset = 0;
     printf("OK (fd=%d)\n", fd);
 
-    int rc;
-
-    /* Step 3: VERSION */
-    printf("[3] VERSION... ");
-    char nbuf[32] = {0};
-    drm_version_t ver = { .name = nbuf, .name_len = 31 };
-    rc = drm_ioctl(DRM_IOCTL_VERSION, &ver);
-    printf("%s - %s v%d.%d.%d\n", rc == 0 ? "OK" : "FAIL",
-           nbuf, ver.version_major, ver.version_minor, ver.version_patchlevel);
-
-    /* Step 4: GETRESOURCES */
-    printf("[4] GETRESOURCES... ");
-    uint32_t crtc_ids[4], conn_ids[4], enc_ids[4];
-    drm_mode_card_res_t res = {
-        .crtc_id_ptr = crtc_ids, .connector_id_ptr = conn_ids,
-        .encoder_id_ptr = enc_ids,
-        .count_crtcs = 4, .count_connectors = 4, .count_encoders = 4,
-    };
-    rc = drm_ioctl(DRM_IOCTL_MODE_GETRESOURCES, &res);
-    if (rc == 0) {
-        printf("OK (crtc=%u conn=%u enc=%u fbs=%u)\n",
-               res.count_crtcs, res.count_connectors,
-               res.count_encoders, res.count_fbs);
+    /* Step 2: drmGetVersion */
+    printf("[2] drmGetVersion... ");
+    drmVersionPtr ver = drmGetVersion(fd);
+    if (ver) {
+        printf("OK - %s v%d.%d.%d\n",
+               ver->name, ver->version_major,
+               ver->version_minor, ver->version_patchlevel);
+        drmFreeVersion(ver);
     } else {
         printf("FAIL\n");
     }
 
-    /* Step 5: GETCONNECTOR (show modes) */
-    printf("[5] GETCONNECTOR... ");
-    drm_mode_modeinfo_t modes[DRM_MAX_MODES];
-    uint32_t enc_list[4];
-    drm_mode_get_connector_t conn = {
-        .connector_id = conn_ids[0],
-        .modes_ptr = modes, .count_modes = DRM_MAX_MODES,
-        .encoders_ptr = enc_list, .count_encoders = 4,
-    };
-    rc = drm_ioctl(DRM_IOCTL_MODE_GETCONNECTOR, &conn);
-    if (rc == 0) {
-        printf("OK (%u modes)\n", conn.count_modes);
-        for (uint32_t i = 0; i < conn.count_modes && i < 4; i++) {
-            const char *pref = (modes[i].type & DRM_MODE_TYPE_PREFERRED)
-                               ? "*" : " ";
-            printf("    %s %s %ux%u@%uHz\n",
-                   pref, modes[i].name, modes[i].hdisplay,
-                   modes[i].vdisplay, modes[i].vrefresh);
-        }
+    /* Step 3: drmGetCap */
+    printf("[3] drmGetCap(DUMB_BUFFER)... ");
+    uint64_t cap_val = 0;
+    int rc = drmGetCap(fd, DRM_CAP_DUMB_BUFFER, &cap_val);
+    printf("%s (val=%llu)\n", rc == 0 ? "OK" : "FAIL",
+           (unsigned long long)cap_val);
+
+    /* Step 4: drmModeGetResources */
+    printf("[4] drmModeGetResources... ");
+    drmModeResPtr res = drmModeGetResources(fd);
+    if (!res) {
+        printf("FAIL\n");
+        goto done;
+    }
+    printf("OK (crtc=%d conn=%d enc=%d)\n",
+           res->count_crtcs, res->count_connectors, res->count_encoders);
+
+    if (res->count_connectors == 0 || res->count_crtcs == 0) {
+        printf("    No connectors/CRTCs — cannot continue.\n");
+        drmModeFreeResources(res);
+        goto done;
+    }
+
+    uint32_t conn_id = res->connectors[0];
+    uint32_t crtc_id = res->crtcs[0];
+
+    /* Step 5: drmModeGetConnector */
+    printf("[5] drmModeGetConnector(%u)... ", conn_id);
+    drmModeConnectorPtr conn = drmModeGetConnector(fd, conn_id);
+    if (!conn) {
+        printf("FAIL\n");
+        drmModeFreeResources(res);
+        goto done;
+    }
+    printf("OK (%d modes, %s)\n", conn->count_modes,
+           conn->connection == DRM_MODE_CONNECTED ? "connected" : "disconnected");
+    for (int i = 0; i < conn->count_modes && i < 4; i++) {
+        const char *pref = (conn->modes[i].type & DRM_MODE_TYPE_PREFERRED) ? "*" : " ";
+        printf("    %s %s %ux%u@%uHz\n", pref,
+               conn->modes[i].name, conn->modes[i].hdisplay,
+               conn->modes[i].vdisplay, conn->modes[i].vrefresh);
+    }
+
+    /* Step 6: drmModeGetEncoder */
+    printf("[6] drmModeGetEncoder(%u)... ", conn->encoder_id);
+    drmModeEncoderPtr enc = drmModeGetEncoder(fd, conn->encoder_id);
+    if (enc) {
+        printf("OK (crtc=%u)\n", enc->crtc_id);
+        drmModeFreeEncoder(enc);
     } else {
         printf("FAIL\n");
     }
 
-    /* Step 6: GETCRTC */
-    printf("[6] GETCRTC... ");
-    drm_mode_crtc_t crtc = { .crtc_id = crtc_ids[0] };
-    rc = drm_ioctl(DRM_IOCTL_MODE_GETCRTC, &crtc);
-    if (rc == 0) {
-        printf("OK (fb=%u, mode=%s)\n", crtc.fb_id,
-               crtc.mode_valid ? crtc.mode.name : "none");
+    /* Step 7: drmModeGetCrtc */
+    printf("[7] drmModeGetCrtc(%u)... ", crtc_id);
+    drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtc_id);
+    if (crtc) {
+        printf("OK (fb=%u, mode=%s)\n", crtc->buffer_id,
+               crtc->mode_valid ? crtc->mode.name : "none");
+        drmModeFreeCrtc(crtc);
     } else {
         printf("FAIL\n");
     }
 
-    /* ── Stage 2: GEM dumb buffer pipeline ────────────────────── */
-    printf("\n--- Stage 2: GEM Dumb Buffers ---\n");
+    /* ── Stage 2: GEM pipeline via libdrm ────────────────────── */
+    printf("\n--- GEM Dumb Buffer Pipeline ---\n");
 
-    /* Step 7: CREATE_DUMB — allocate a small test buffer */
-    printf("[7] CREATE_DUMB (64x64 32bpp)... ");
-    drm_mode_create_dumb_t create = {
-        .width = 64, .height = 64, .bpp = 32, .flags = 0,
-    };
-    rc = drm_ioctl(DRM_IOCTL_MODE_CREATE_DUMB, &create);
-    if (rc == 0) {
-        printf("OK (handle=%u, pitch=%u, size=%llu)\n",
-               create.handle, create.pitch,
-               (unsigned long long)create.size);
-    } else {
-        printf("FAIL (rc=%d)\n", rc);
-        goto cleanup;
-    }
-
-    /* Step 8: MAP_DUMB — get the physical address */
-    printf("[8] MAP_DUMB (handle=%u)... ", create.handle);
-    drm_mode_map_dumb_t map = { .handle = create.handle };
-    rc = drm_ioctl(DRM_IOCTL_MODE_MAP_DUMB, &map);
-    if (rc == 0) {
-        printf("OK (offset=0x%llx)\n", (unsigned long long)map.offset);
-    } else {
+    /* Step 8: drmModeCreateDumbBuffer */
+    printf("[8] drmModeCreateDumbBuffer(64x64)... ");
+    uint32_t handle = 0, pitch = 0;
+    uint64_t size = 0;
+    rc = drmModeCreateDumbBuffer(fd, 64, 64, 32, 0, &handle, &pitch, &size);
+    if (rc != 0) {
         printf("FAIL\n");
-        goto cleanup;
+        drmModeFreeConnector(conn);
+        drmModeFreeResources(res);
+        goto done;
     }
+    printf("OK (handle=%u, pitch=%u, size=%llu)\n",
+           handle, pitch, (unsigned long long)size);
 
-    /* Step 9: Write pixels — fill with red */
-    printf("[9] Writing pixels... ");
-    uint32_t *pixels = (uint32_t *)(uint32_t)map.offset;
-    uint32_t pixel_count = create.pitch / 4 * 64;
-    for (uint32_t i = 0; i < pixel_count; i++)
-        pixels[i] = 0xFFFF0000;  /* ARGB red */
-    /* Verify */
-    int write_ok = (pixels[0] == 0xFFFF0000 && pixels[pixel_count - 1] == 0xFFFF0000);
-    printf("%s\n", write_ok ? "OK (verified)" : "FAIL");
-
-    /* Step 10: ADDFB — register as framebuffer */
-    printf("[10] ADDFB... ");
-    drm_mode_fb_cmd_t fb_cmd = {
-        .width = 64, .height = 64,
-        .pitch = create.pitch,
-        .bpp = 32, .depth = 24,
-        .handle = create.handle,
-    };
-    rc = drm_ioctl(DRM_IOCTL_MODE_ADDFB, &fb_cmd);
-    if (rc == 0) {
-        printf("OK (fb_id=%u)\n", fb_cmd.fb_id);
-    } else {
+    /* Step 9: drmModeMapDumbBuffer */
+    printf("[9] drmModeMapDumbBuffer(%u)... ", handle);
+    uint64_t offset = 0;
+    rc = drmModeMapDumbBuffer(fd, handle, &offset);
+    if (rc != 0) {
         printf("FAIL\n");
-        goto cleanup;
+        drmModeDestroyDumbBuffer(fd, handle);
+        drmModeFreeConnector(conn);
+        drmModeFreeResources(res);
+        goto done;
     }
+    printf("OK (offset=0x%llx)\n", (unsigned long long)offset);
 
-    /* Step 11: PAGE_FLIP — flip to our tiny buffer (top-left corner) */
-    printf("[11] PAGE_FLIP (fb_id=%u)... ", fb_cmd.fb_id);
-    drm_mode_page_flip_t flip = {
-        .crtc_id = crtc_ids[0],
-        .fb_id = fb_cmd.fb_id,
-    };
-    rc = drm_ioctl(DRM_IOCTL_MODE_PAGE_FLIP, &flip);
+    /* Step 10: Write pixels */
+    printf("[10] Writing red pixels... ");
+    uint32_t *pixels = (uint32_t *)(uint32_t)offset;
+    uint32_t npixels = pitch / 4 * 64;
+    for (uint32_t i = 0; i < npixels; i++)
+        pixels[i] = 0xFFFF0000;
+    int ok = (pixels[0] == 0xFFFF0000 && pixels[npixels - 1] == 0xFFFF0000);
+    printf("%s\n", ok ? "OK (verified)" : "FAIL");
+
+    /* Step 11: drmModeAddFB */
+    printf("[11] drmModeAddFB... ");
+    uint32_t fb_id = 0;
+    rc = drmModeAddFB(fd, 64, 64, 24, 32, pitch, handle, &fb_id);
+    if (rc != 0) { printf("FAIL\n"); goto gem_cleanup; }
+    printf("OK (fb_id=%u)\n", fb_id);
+
+    /* Step 12: drmModePageFlip */
+    printf("[12] drmModePageFlip(fb=%u)... ", fb_id);
+    rc = drmModePageFlip(fd, crtc_id, fb_id, 0, NULL);
     printf("%s\n", rc == 0 ? "OK (flipped!)" : "FAIL");
 
-    /* Step 12: RMFB */
-    printf("[12] RMFB (fb_id=%u)... ", fb_cmd.fb_id);
-    uint32_t rm_id = fb_cmd.fb_id;
-    rc = drm_ioctl(DRM_IOCTL_MODE_RMFB, &rm_id);
+    /* Step 13: drmModeRmFB */
+    printf("[13] drmModeRmFB(%u)... ", fb_id);
+    rc = drmModeRmFB(fd, fb_id);
     printf("%s\n", rc == 0 ? "OK" : "FAIL");
 
-    /* Step 13: DESTROY_DUMB */
-    printf("[13] DESTROY_DUMB (handle=%u)... ", create.handle);
-    drm_mode_destroy_dumb_t destroy = { .handle = create.handle };
-    rc = drm_ioctl(DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+gem_cleanup:
+    /* Step 14: drmModeDestroyDumbBuffer */
+    printf("[14] drmModeDestroyDumbBuffer(%u)... ", handle);
+    rc = drmModeDestroyDumbBuffer(fd, handle);
     printf("%s\n", rc == 0 ? "OK" : "FAIL");
 
-cleanup:
-    /* Step 14: Close fd */
-    t->fds[fd].type = FD_NONE;
-    printf("[14] close... OK\n");
+    drmModeFreeConnector(conn);
+    drmModeFreeResources(res);
 
-    printf("\n=== All DRM tests passed ===\n");
+done:
+    /* Step 15: drmClose */
+    drmClose(fd);
+    printf("[15] drmClose... OK\n");
+
+    printf("\n=== All libdrm tests passed ===\n");
 }
 
 static void cmd_gfxdemo(int argc, char* argv[]) {
