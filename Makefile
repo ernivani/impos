@@ -48,9 +48,10 @@ run: all $(DISK_IMAGE)
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
 		-netdev user,id=net0 \
 		-device rtl8139,netdev=net0 \
+		-device virtio-tablet-pci \
 		-m 4G \
-		-vga std \
-		-display $(QEMU_DISPLAY) \
+		-vga virtio \
+		-display $(QEMU_DISPLAY),gl=on \
 		-serial stdio \
 		$(QEMU_AUDIO) \
 		$(KVM_FLAG)

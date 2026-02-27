@@ -234,10 +234,49 @@ typedef struct {
     uint16_t last_used_idx;
 } virtqueue_t;
 
+/* ═══ VirtIO Modern (MMIO) structures ══════════════════════════ */
+
+#define VIRTIO_PCI_CAP_COMMON_CFG  1
+#define VIRTIO_PCI_CAP_NOTIFY_CFG  2
+#define VIRTIO_PCI_CAP_ISR_CFG     3
+#define VIRTIO_PCI_CAP_DEVICE_CFG  4
+#define PCI_CAP_PTR                0x34
+#define PCI_CAP_ID_VNDR            0x09
+
+struct virtio_pci_common_cfg {
+    uint32_t device_feature_select;
+    uint32_t device_feature;
+    uint32_t driver_feature_select;
+    uint32_t driver_feature;
+    uint16_t msix_config;
+    uint16_t num_queues;
+    uint8_t  device_status;
+    uint8_t  config_generation;
+    uint16_t queue_select;
+    uint16_t queue_size;
+    uint16_t queue_msix_vector;
+    uint16_t queue_enable;
+    uint16_t queue_notify_off;
+    uint32_t queue_desc_lo;
+    uint32_t queue_desc_hi;
+    uint32_t queue_driver_lo;
+    uint32_t queue_driver_hi;
+    uint32_t queue_device_lo;
+    uint32_t queue_device_hi;
+} __attribute__((packed));
+
 /* ═══ Driver state ═════════════════════════════════════════════ */
 
 static int gpu_active = 0;
+static int use_modern = 0;
 static uint16_t gpu_iobase;
+
+/* Modern MMIO pointers (valid when use_modern=1) */
+static volatile struct virtio_pci_common_cfg *common_cfg;
+static volatile uint8_t *notify_base;
+static uint32_t notify_off_multiplier;
+static volatile uint16_t *ctrl_notify_addr;
+static volatile uint16_t *cursor_notify_addr;
 
 /* Virtqueue memory — page-aligned static arrays */
 static uint8_t vq_ctrl_mem[16384] __attribute__((aligned(4096)));
@@ -263,6 +302,83 @@ static uint32_t disp_pitch; /* bytes per row */
 static uint32_t cursor_pixels[CURSOR_W * CURSOR_H] __attribute__((aligned(64)));
 static int hw_cursor_active = 0;
 
+/* ═══ Modern VirtIO PCI capability parsing ═════════════════════ */
+
+static uint32_t bar_to_addr(pci_device_t *dev, uint8_t bar_idx) {
+    if (bar_idx >= 6) return 0;
+    return dev->bar[bar_idx] & ~0xFu;
+}
+
+static int virtio_parse_caps(pci_device_t *dev) {
+    common_cfg = NULL;
+    notify_base = NULL;
+    notify_off_multiplier = 0;
+
+    /* Check capabilities bit in PCI status register */
+    uint16_t status = pci_config_read_word(dev->bus, dev->device,
+                                            dev->function, PCI_STATUS);
+    if (!(status & (1 << 4))) return 0; /* no capabilities list */
+
+    uint8_t cap_ptr = pci_config_read_byte(dev->bus, dev->device,
+                                            dev->function, PCI_CAP_PTR);
+    cap_ptr &= 0xFC; /* align to dword */
+
+    while (cap_ptr) {
+        uint8_t cap_id = pci_config_read_byte(dev->bus, dev->device,
+                                               dev->function, cap_ptr);
+        uint8_t cap_next = pci_config_read_byte(dev->bus, dev->device,
+                                                 dev->function, cap_ptr + 1);
+
+        if (cap_id == PCI_CAP_ID_VNDR) {
+            uint8_t cfg_type = pci_config_read_byte(dev->bus, dev->device,
+                                                     dev->function, cap_ptr + 3);
+            uint8_t bar_idx = pci_config_read_byte(dev->bus, dev->device,
+                                                    dev->function, cap_ptr + 4);
+            uint32_t offset = pci_config_read_dword(dev->bus, dev->device,
+                                                     dev->function, cap_ptr + 8);
+            uint32_t base = bar_to_addr(dev, bar_idx);
+
+            if (base) {
+                switch (cfg_type) {
+                case VIRTIO_PCI_CAP_COMMON_CFG:
+                    common_cfg = (volatile struct virtio_pci_common_cfg *)
+                                 (base + offset);
+                    DBG("[virtio-gpu] common_cfg at BAR%u+0x%x = 0x%x",
+                        bar_idx, offset, base + offset);
+                    break;
+                case VIRTIO_PCI_CAP_NOTIFY_CFG:
+                    notify_base = (volatile uint8_t *)(base + offset);
+                    notify_off_multiplier = pci_config_read_dword(
+                        dev->bus, dev->device, dev->function, cap_ptr + 16);
+                    DBG("[virtio-gpu] notify at BAR%u+0x%x mult=%u",
+                        bar_idx, offset, notify_off_multiplier);
+                    break;
+                case VIRTIO_PCI_CAP_ISR_CFG:
+                    break; /* ISR: not needed for polled I/O */
+                case VIRTIO_PCI_CAP_DEVICE_CFG:
+                    break; /* GPU device config: not needed for basic 2D */
+                }
+            }
+        }
+
+        cap_ptr = cap_next;
+    }
+
+    return common_cfg != NULL && notify_base != NULL;
+}
+
+/* ═══ Notification helper ══════════════════════════════════════ */
+
+static void gpu_notify(uint16_t queue_idx) {
+    if (use_modern) {
+        volatile uint16_t *addr = (queue_idx == 0)
+            ? ctrl_notify_addr : cursor_notify_addr;
+        *addr = queue_idx;
+    } else {
+        outw(gpu_iobase + VIRTIO_REG_QUEUE_NOTIFY, queue_idx);
+    }
+}
+
 /* ═══ Virtqueue helpers ════════════════════════════════════════ */
 
 static void vq_init(virtqueue_t *vq, void *mem, uint16_t size) {
@@ -277,6 +393,9 @@ static void vq_init(virtqueue_t *vq, void *mem, uint16_t size) {
     vq->used = (struct vring_used *)((uint8_t *)mem + used_offset);
     vq->free_head = 0;
     vq->last_used_idx = 0;
+
+    /* Tell device not to generate interrupts — we use polling */
+    vq->avail->flags = 1;  /* VRING_AVAIL_F_NO_INTERRUPT */
 
     /* Build free list */
     for (uint16_t i = 0; i < size - 1; i++) {
@@ -328,14 +447,16 @@ static int vq_submit_cmd(virtqueue_t *vq, uint16_t queue_idx,
     vq->avail->idx = avail_idx + 1;
 
     /* Notify device */
-    outw(gpu_iobase + VIRTIO_REG_QUEUE_NOTIFY, queue_idx);
+    gpu_notify(queue_idx);
 
-    /* Poll for completion */
-    int timeout = 100000;
+    /* Poll for completion (memory clobber forces re-read of used->idx) */
+    int timeout = 1000000;
     while (vq->used->idx == vq->last_used_idx && --timeout > 0)
-        __asm__ volatile("pause");
+        __asm__ volatile("pause" ::: "memory");
 
     if (timeout <= 0) {
+        DBG("[virtio-gpu] vq_submit_cmd TIMEOUT (q=%u cmd_len=%u resp_len=%u)",
+            queue_idx, cmd_len, resp_len);
         vq_free_desc(vq, d0);
         vq_free_desc(vq, d1);
         return -1;
@@ -383,18 +504,24 @@ static int vq_submit_cmd_data(virtqueue_t *vq, uint16_t queue_idx,
     __asm__ volatile("" ::: "memory");
     vq->avail->idx = avail_idx + 1;
 
-    outw(gpu_iobase + VIRTIO_REG_QUEUE_NOTIFY, queue_idx);
+    gpu_notify(queue_idx);
 
-    int timeout = 100000;
+    int timeout = 1000000;
     while (vq->used->idx == vq->last_used_idx && --timeout > 0)
-        __asm__ volatile("pause");
+        __asm__ volatile("pause" ::: "memory");
+
+    if (timeout <= 0) {
+        DBG("[virtio-gpu] vq_submit_cmd_data TIMEOUT (q=%u)", queue_idx);
+        vq_free_desc(vq, d0);
+        vq_free_desc(vq, d1);
+        vq_free_desc(vq, d2);
+        return -1;
+    }
 
     vq->last_used_idx++;
     vq_free_desc(vq, d0);
     vq_free_desc(vq, d1);
     vq_free_desc(vq, d2);
-
-    if (timeout <= 0) return -1;
     struct virtio_gpu_ctrl_hdr *hdr = (struct virtio_gpu_ctrl_hdr *)resp;
     return (hdr->type >= VIRTIO_GPU_RESP_OK_NODATA &&
             hdr->type <= 0x11FF) ? 0 : -1;
@@ -415,12 +542,12 @@ static void vq_submit_cursor(void *cmd, uint32_t cmd_len) {
     __asm__ volatile("" ::: "memory");
     vq->avail->idx = avail_idx + 1;
 
-    outw(gpu_iobase + VIRTIO_REG_QUEUE_NOTIFY, 1);
+    gpu_notify(1);
 
     /* Brief wait for cursor queue */
-    int timeout = 10000;
+    int timeout = 100000;
     while (vq->used->idx == vq->last_used_idx && --timeout > 0)
-        __asm__ volatile("pause");
+        __asm__ volatile("pause" ::: "memory");
     if (vq->used->idx != vq->last_used_idx)
         vq->last_used_idx = vq->used->idx;
 
@@ -514,56 +641,171 @@ int virtio_gpu_init(void) {
 
     /* Find VirtIO GPU PCI device */
     pci_device_t dev;
-    if (!pci_find_device(VIRTIO_VENDOR_ID, VIRTIO_GPU_DEVICE_ID, &dev))
+    if (pci_find_device(VIRTIO_VENDOR_ID, VIRTIO_GPU_DEVICE_ID, &dev) != 0) {
+        DBG("[virtio-gpu] PCI device %04x:%04x not found",
+            VIRTIO_VENDOR_ID, VIRTIO_GPU_DEVICE_ID);
         return 0;
+    }
 
-    /* Get I/O base from BAR0 (legacy VirtIO uses I/O ports) */
-    gpu_iobase = dev.bar[0] & ~0x3u;
-    if (gpu_iobase == 0) return 0;
+    DBG("[virtio-gpu] PCI %d:%d.%d BAR[0]=0x%x [1]=0x%x [2]=0x%x [3]=0x%x [4]=0x%x [5]=0x%x",
+        dev.bus, dev.device, dev.function,
+        dev.bar[0], dev.bar[1], dev.bar[2],
+        dev.bar[3], dev.bar[4], dev.bar[5]);
 
-    /* Enable PCI bus mastering + I/O space */
+    /* Try legacy I/O BAR first (standalone virtio-gpu-pci) */
+    gpu_iobase = 0;
+    for (int i = 0; i < 6; i++) {
+        if (dev.bar[i] & 0x1) {
+            gpu_iobase = (uint16_t)(dev.bar[i] & ~0x3u);
+            break;
+        }
+    }
+
+    /* If no I/O BAR, try modern MMIO via PCI capabilities */
+    if (gpu_iobase == 0) {
+        if (!virtio_parse_caps(&dev)) {
+            DBG("[virtio-gpu] No I/O BAR and no modern caps found");
+            return 0;
+        }
+        use_modern = 1;
+        DBG("[virtio-gpu] Using modern MMIO path");
+    }
+
+    /* Enable PCI bus mastering + I/O + memory space + disable INTx */
     uint16_t cmd_reg = pci_config_read_word(dev.bus, dev.device,
                                              dev.function, PCI_COMMAND);
-    cmd_reg |= PCI_COMMAND_IO | PCI_COMMAND_MASTER;
+    cmd_reg |= PCI_COMMAND_IO | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER
+             | PCI_COMMAND_INTX_DISABLE;
     pci_config_write_word(dev.bus, dev.device, dev.function,
                           PCI_COMMAND, cmd_reg);
+    uint8_t irq_line = pci_config_read_byte(dev.bus, dev.device,
+                                             dev.function, PCI_INTERRUPT_LINE);
+    DBG("[virtio-gpu] PCI IRQ line=%u, cmd=0x%x (INTx %s)",
+        irq_line, cmd_reg, (cmd_reg & PCI_COMMAND_INTX_DISABLE) ? "disabled" : "ENABLED");
 
-    /* Reset device */
-    outb(gpu_iobase + VIRTIO_REG_DEVICE_STATUS, 0);
+    /* ── Device initialization sequence ─────────────────────── */
 
-    /* Acknowledge + driver */
-    outb(gpu_iobase + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-    outb(gpu_iobase + VIRTIO_REG_DEVICE_STATUS,
-         VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+    if (use_modern) {
+        /* Reset */
+        common_cfg->device_status = 0;
+        __asm__ volatile("" ::: "memory");
 
-    /* Read device features, accept none for basic 2D */
-    inl(gpu_iobase + VIRTIO_REG_DEVICE_FEATURES);
-    outl(gpu_iobase + VIRTIO_REG_DRIVER_FEATURES, 0);
+        /* Acknowledge */
+        common_cfg->device_status = VIRTIO_STATUS_ACKNOWLEDGE;
+        /* Driver */
+        common_cfg->device_status = VIRTIO_STATUS_ACKNOWLEDGE |
+                                    VIRTIO_STATUS_DRIVER;
 
-    /* Initialize control virtqueue (queue 0) */
-    outw(gpu_iobase + VIRTIO_REG_QUEUE_SELECT, 0);
-    uint16_t ctrl_size = inw(gpu_iobase + VIRTIO_REG_QUEUE_SIZE);
-    if (ctrl_size == 0 || ctrl_size > 256) ctrl_size = 128;
-    vq_init(&ctrl_vq, vq_ctrl_mem, ctrl_size);
-    outl(gpu_iobase + VIRTIO_REG_QUEUE_PFN,
-         (uint32_t)vq_ctrl_mem >> 12);
+        /* Feature negotiation (accept no features for basic 2D) */
+        common_cfg->device_feature_select = 0;
+        (void)common_cfg->device_feature; /* read features */
+        common_cfg->driver_feature_select = 0;
+        common_cfg->driver_feature = 0;
 
-    /* Initialize cursor virtqueue (queue 1) */
-    outw(gpu_iobase + VIRTIO_REG_QUEUE_SELECT, 1);
-    uint16_t cur_size = inw(gpu_iobase + VIRTIO_REG_QUEUE_SIZE);
-    if (cur_size == 0 || cur_size > 256) cur_size = 128;
-    vq_init(&cursor_vq, vq_cursor_mem, cur_size);
-    outl(gpu_iobase + VIRTIO_REG_QUEUE_PFN,
-         (uint32_t)vq_cursor_mem >> 12);
+        common_cfg->device_status = VIRTIO_STATUS_ACKNOWLEDGE |
+                                    VIRTIO_STATUS_DRIVER |
+                                    VIRTIO_STATUS_FEATURES_OK;
+        __asm__ volatile("" ::: "memory");
 
-    /* Driver OK — device is live */
-    outb(gpu_iobase + VIRTIO_REG_DEVICE_STATUS,
-         VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
-         VIRTIO_STATUS_DRIVER_OK);
+        if (!(common_cfg->device_status & VIRTIO_STATUS_FEATURES_OK)) {
+            DBG("[virtio-gpu] FEATURES_OK not set by device");
+            return 0;
+        }
 
-    gpu_active = 1;
-    DBG("[virtio-gpu] Initialized (iobase=0x%x, ctrl_q=%u, cursor_q=%u)",
-        gpu_iobase, ctrl_size, cur_size);
+        /* Disable MSI-X globally (we use polling, not interrupts) */
+        common_cfg->msix_config = 0xFFFF;
+
+        /* Initialize control virtqueue (queue 0) */
+        common_cfg->queue_select = 0;
+        uint16_t ctrl_size = common_cfg->queue_size;
+        if (ctrl_size == 0 || ctrl_size > 256) ctrl_size = 128;
+        common_cfg->queue_size = ctrl_size;
+        vq_init(&ctrl_vq, vq_ctrl_mem, ctrl_size);
+
+        common_cfg->queue_desc_lo   = (uint32_t)ctrl_vq.desc;
+        common_cfg->queue_desc_hi   = 0;
+        common_cfg->queue_driver_lo = (uint32_t)ctrl_vq.avail;
+        common_cfg->queue_driver_hi = 0;
+        common_cfg->queue_device_lo = (uint32_t)ctrl_vq.used;
+        common_cfg->queue_device_hi = 0;
+        common_cfg->queue_msix_vector = 0xFFFF; /* no MSI-X for queue 0 */
+        common_cfg->queue_enable    = 1;
+
+        uint16_t ctrl_noff = common_cfg->queue_notify_off;
+        ctrl_notify_addr = (volatile uint16_t *)
+            (notify_base + ctrl_noff * notify_off_multiplier);
+
+        /* Initialize cursor virtqueue (queue 1) */
+        common_cfg->queue_select = 1;
+        uint16_t cur_size = common_cfg->queue_size;
+        if (cur_size == 0 || cur_size > 256) cur_size = 128;
+        common_cfg->queue_size = cur_size;
+        vq_init(&cursor_vq, vq_cursor_mem, cur_size);
+
+        common_cfg->queue_desc_lo   = (uint32_t)cursor_vq.desc;
+        common_cfg->queue_desc_hi   = 0;
+        common_cfg->queue_driver_lo = (uint32_t)cursor_vq.avail;
+        common_cfg->queue_driver_hi = 0;
+        common_cfg->queue_device_lo = (uint32_t)cursor_vq.used;
+        common_cfg->queue_device_hi = 0;
+        common_cfg->queue_msix_vector = 0xFFFF; /* no MSI-X for queue 1 */
+        common_cfg->queue_enable    = 1;
+
+        uint16_t cur_noff = common_cfg->queue_notify_off;
+        cursor_notify_addr = (volatile uint16_t *)
+            (notify_base + cur_noff * notify_off_multiplier);
+
+        /* Driver OK */
+        common_cfg->device_status = VIRTIO_STATUS_ACKNOWLEDGE |
+                                    VIRTIO_STATUS_DRIVER |
+                                    VIRTIO_STATUS_FEATURES_OK |
+                                    VIRTIO_STATUS_DRIVER_OK;
+
+        gpu_active = 1;
+        DBG("[virtio-gpu] Modern MMIO init OK (ctrl_q=%u, cursor_q=%u)",
+            ctrl_size, cur_size);
+    } else {
+        /* ── Legacy I/O path ─────────────────────────────────── */
+
+        /* Reset */
+        outb(gpu_iobase + VIRTIO_REG_DEVICE_STATUS, 0);
+
+        /* Acknowledge + driver */
+        outb(gpu_iobase + VIRTIO_REG_DEVICE_STATUS,
+             VIRTIO_STATUS_ACKNOWLEDGE);
+        outb(gpu_iobase + VIRTIO_REG_DEVICE_STATUS,
+             VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+
+        /* Feature negotiation */
+        inl(gpu_iobase + VIRTIO_REG_DEVICE_FEATURES);
+        outl(gpu_iobase + VIRTIO_REG_DRIVER_FEATURES, 0);
+
+        /* Control virtqueue (queue 0) */
+        outw(gpu_iobase + VIRTIO_REG_QUEUE_SELECT, 0);
+        uint16_t ctrl_size = inw(gpu_iobase + VIRTIO_REG_QUEUE_SIZE);
+        if (ctrl_size == 0 || ctrl_size > 256) ctrl_size = 128;
+        vq_init(&ctrl_vq, vq_ctrl_mem, ctrl_size);
+        outl(gpu_iobase + VIRTIO_REG_QUEUE_PFN,
+             (uint32_t)vq_ctrl_mem >> 12);
+
+        /* Cursor virtqueue (queue 1) */
+        outw(gpu_iobase + VIRTIO_REG_QUEUE_SELECT, 1);
+        uint16_t cur_size = inw(gpu_iobase + VIRTIO_REG_QUEUE_SIZE);
+        if (cur_size == 0 || cur_size > 256) cur_size = 128;
+        vq_init(&cursor_vq, vq_cursor_mem, cur_size);
+        outl(gpu_iobase + VIRTIO_REG_QUEUE_PFN,
+             (uint32_t)vq_cursor_mem >> 12);
+
+        /* Driver OK */
+        outb(gpu_iobase + VIRTIO_REG_DEVICE_STATUS,
+             VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
+             VIRTIO_STATUS_DRIVER_OK);
+
+        gpu_active = 1;
+        DBG("[virtio-gpu] Legacy I/O init OK (iobase=0x%x, ctrl_q=%u, cursor_q=%u)",
+            gpu_iobase, ctrl_size, cur_size);
+    }
+
     return 1;
 }
 

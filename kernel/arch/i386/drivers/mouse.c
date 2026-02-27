@@ -51,8 +51,11 @@ static uint8_t mouse_read(void) {
     return inb(PS2_DATA);
 }
 
+static int mouse_irq_count = 0;
+
 static void mouse_irq_handler(registers_t *regs) {
     (void)regs;
+    mouse_irq_count++;
     uint8_t status = inb(PS2_STATUS);
     if (!(status & 0x01))
         return;  /* No data available */
@@ -192,4 +195,15 @@ int mouse_poll(void) {
         return 1;
     }
     return 0;
+}
+
+int mouse_debug_irq_count(void) {
+    return mouse_irq_count;
+}
+
+void mouse_inject_absolute(int x, int y, uint8_t buttons) {
+    mouse_x = x;
+    mouse_y = y;
+    mouse_buttons = buttons;
+    mouse_updated = 1;
 }

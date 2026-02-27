@@ -27,6 +27,7 @@
 #include <kernel/crypto.h>
 #include <kernel/io.h>
 #include <kernel/drm.h>
+#include <kernel/virtio_input.h>
 
 /* Routes putchar/getchar through serial COM1 instead of VGA/PS2 */
 int g_serial_console = 0;
@@ -483,6 +484,9 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Detect GPU acceleration (VirtIO GPU + Bochs VGA BGA) */
     gfx_init_gpu_accel();
+
+    /* Initialize VirtIO tablet input (absolute mouse, bypasses PS/2) */
+    virtio_input_init();
 
     /* Initialize DRM subsystem (GPU ioctl interface) */
     drm_init();

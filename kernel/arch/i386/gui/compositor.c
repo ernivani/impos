@@ -340,6 +340,15 @@ void compositor_init(void) {
 
     /* ── DRM-backed compositing buffer ──────────────────────── */
     drm_active = 0;
+
+    /* When VirtIO GPU is the primary display, the backbuffer IS the GPU
+       resource's backing storage.  Swapping it for a DRM GEM buffer would
+       desync the VirtIO scanout — skip DRM compositing entirely. */
+    if (gfx_using_virtio_gpu()) {
+        DBG("COMP: VirtIO GPU primary, using direct backbuffer");
+        return;
+    }
+
     drm_fd = drmOpen("impos-drm", NULL);
     if (drm_fd < 0) {
         DBG("COMP: DRM not available, using malloc backbuffer");

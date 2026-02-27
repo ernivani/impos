@@ -12,6 +12,7 @@
 #include <kernel/compositor.h>
 #include <kernel/gfx.h>
 #include <kernel/ui_token.h>
+#include <kernel/io.h>
 #include <kernel/ui_font.h>
 #include <kernel/menubar.h>
 #include <kernel/wallpaper.h>
@@ -27,6 +28,7 @@
 #include <kernel/monitor_app.h>
 #include <kernel/idt.h>
 #include <kernel/mouse.h>
+#include <kernel/virtio_input.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -147,6 +149,7 @@ void ui_shell_init(void)
     demo_id = ui_window_create(sw / 2 - 200, sh / 2 - 120,
                                400, 270, "ImposOS");
     demo_paint();
+
 }
 
 /* ── Main event loop ────────────────────────────────────────────── */
@@ -157,6 +160,9 @@ int ui_shell_run(void)
     static int     last_right  = 0;
     if (ui_shell_first_run) {
         ui_shell_first_run = 0;
+        /* Drain any stale scancodes left over from the login prompt */
+        while (keyboard_getchar_nb() != 0)
+            ;
         ui_shell_init();
     }
 
@@ -167,6 +173,7 @@ int ui_shell_run(void)
         wallpaper_update(now);
 
         /* ── Mouse input ─────────────────────────────────────────── */
+        virtio_input_poll();
         if (mouse_poll()) {
             int     mx       = mouse_get_x();
             int     my       = mouse_get_y();
@@ -248,6 +255,7 @@ int ui_shell_run(void)
         {
             int c = keyboard_getchar_nb();
             if (c > 0) {
+                DBG("[ui_shell] key=%d (0x%x)", c, c);
                 char ch = (char)c;
                 int term_focused = terminal_app_win_open() &&
                     ui_window_focused() == terminal_app_win_id();
@@ -271,7 +279,10 @@ int ui_shell_run(void)
                         if      (ctx_menu_visible()) ctx_menu_hide();
                         else if (drawer_visible())   drawer_hide();
                         else if (radial_visible())   radial_hide();
-                        else return DESKTOP_ACTION_POWER;
+                        else {
+                            DBG("[ui_shell] ESC → power action");
+                            return DESKTOP_ACTION_POWER;
+                        }
                     }
                 }
             }

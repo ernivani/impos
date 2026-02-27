@@ -123,8 +123,48 @@ int gfx_init(multiboot_info_t* mbi) {
         } else {
             serial_puts("[gfx] BGA not detected\n");
         }
-        if (addr == 0)
+        /* If BGA failed, try VirtIO GPU as primary display */
+        if (addr == 0) {
+            serial_puts("[gfx] Trying VirtIO GPU as primary display...\n");
+            if (virtio_gpu_init()) {
+                uint32_t widths[4], heights[4];
+                int n = virtio_gpu_get_display_info(widths, heights, 4);
+                if (n > 0) {
+                    /* VirtIO GPU accepts any scanout size — request our
+                       preferred resolution rather than the initial window size.
+                       QEMU will resize its window to match. */
+                    fb_width  = 1920;
+                    fb_height = 1080;
+                    serial_printf("[gfx] VirtIO display reports %ux%u, "
+                                  "requesting %ux%u\n",
+                                  widths[0], heights[0], fb_width, fb_height);
+                    fb_bpp    = 32;
+                    fb_pitch  = fb_width * 4;
+
+                    size_t fb_size = fb_height * fb_pitch;
+                    backbuf_raw = (uint32_t *)malloc(fb_size + 15);
+                    if (backbuf_raw) {
+                        backbuf = (uint32_t *)(((uintptr_t)backbuf_raw + 15) & ~(uintptr_t)15);
+                        have_backbuffer = 1;
+                        memset(backbuf, 0, fb_size);
+
+                        if (virtio_gpu_setup_scanout(backbuf, (int)fb_width,
+                                                     (int)fb_height, (int)fb_pitch)) {
+                            framebuffer = backbuf;
+                            use_virtio_gpu = 1;
+                            gfx_active = 1;
+                            gfx_init_font_sdf();
+                            gfx_init_font_large();
+                            gfx_builtin_font_init();
+                            serial_printf("[gfx] VirtIO GPU primary: %ux%u\n",
+                                          fb_width, fb_height);
+                            return 1;
+                        }
+                    }
+                }
+            }
             return 0;
+        }
     }
 
     /* Validate */
@@ -164,8 +204,8 @@ int gfx_is_active(void) {
 void gfx_init_gpu_accel(void) {
     if (!gfx_active || !have_backbuffer) return;
 
-    /* Try to detect and initialize VirtIO GPU */
-    if (virtio_gpu_init()) {
+    /* Try to detect and initialize VirtIO GPU (skip if already primary) */
+    if (!use_virtio_gpu && virtio_gpu_init()) {
         if (virtio_gpu_setup_scanout(backbuf, (int)fb_width, (int)fb_height,
                                      (int)fb_pitch)) {
             use_virtio_gpu = 1;
