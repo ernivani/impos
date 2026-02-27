@@ -4,6 +4,7 @@
 #include <kernel/group.h>
 #include <kernel/rtc.h>
 #include <kernel/crypto.h>
+#include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -486,8 +487,8 @@ int fs_load(void) {
 
     /* Check FS version */
     if (sb.version != FS_VERSION) {
-        printf("[FS] Incompatible FS version %u (expected %u) — reformatting\n",
-               sb.version, FS_VERSION);
+        DBG("[FS] Incompatible FS version %u (expected %u) — reformatting",
+            sb.version, FS_VERSION);
         return -1;
     }
 
@@ -552,8 +553,8 @@ void fs_initialize(void) {
     if (!data_blocks) {
         data_blocks = (uint8_t *)malloc((size_t)NUM_BLOCKS * BLOCK_SIZE);
         if (!data_blocks) {
-            printf("[FS] FATAL: cannot allocate %u MB for data blocks\n",
-                   (NUM_BLOCKS * BLOCK_SIZE) / (1024 * 1024));
+            DBG("[FS] FATAL: cannot allocate %u MB for data blocks",
+                (NUM_BLOCKS * BLOCK_SIZE) / (1024 * 1024));
             return;
         }
     }
@@ -562,8 +563,8 @@ void fs_initialize(void) {
 
     /* Try to load from disk first */
     if (ata_is_available() && fs_load() == 0) {
-        printf("[FS] Loaded v%u filesystem: %u inodes, %u blocks (%u KB each)\n",
-               sb.version, sb.num_inodes, sb.num_blocks, BLOCK_SIZE / 1024);
+        DBG("[FS] Loaded v%u filesystem: %u inodes, %u blocks (%u KB each)",
+            sb.version, sb.num_inodes, sb.num_blocks, BLOCK_SIZE / 1024);
         return;
     }
 
@@ -610,9 +611,9 @@ void fs_initialize(void) {
 
     fs_change_directory("/home/root");
 
-    printf("[FS] Formatted new v%u filesystem: %u inodes, %u blocks (%u KB each) = %u MB\n",
-           FS_VERSION, NUM_INODES, NUM_BLOCKS, BLOCK_SIZE / 1024,
-           (NUM_BLOCKS * (BLOCK_SIZE / 1024)) / 1024);
+    DBG("[FS] Formatted new v%u filesystem: %u inodes, %u blocks (%u KB each) = %u MB",
+        FS_VERSION, NUM_INODES, NUM_BLOCKS, BLOCK_SIZE / 1024,
+        (NUM_BLOCKS * (BLOCK_SIZE / 1024)) / 1024);
 
     fs_dirty = 1;
 

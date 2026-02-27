@@ -562,8 +562,8 @@ int virtio_gpu_init(void) {
          VIRTIO_STATUS_DRIVER_OK);
 
     gpu_active = 1;
-    printf("[virtio-gpu] Initialized (iobase=0x%x, ctrl_q=%u, cursor_q=%u)\n",
-           gpu_iobase, ctrl_size, cur_size);
+    DBG("[virtio-gpu] Initialized (iobase=0x%x, ctrl_q=%u, cursor_q=%u)",
+        gpu_iobase, ctrl_size, cur_size);
     return 1;
 }
 
@@ -584,7 +584,7 @@ int virtio_gpu_setup_scanout(uint32_t *backbuf, int width, int height,
     scanout_res_id = next_resource_id++;
     if (gpu_create_resource_2d(scanout_res_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
                                disp_w, disp_h) != 0) {
-        printf("[virtio-gpu] Failed to create display resource\n");
+        DBG("[virtio-gpu] Failed to create display resource");
         gpu_active = 0;
         return 0;
     }
@@ -592,14 +592,14 @@ int virtio_gpu_setup_scanout(uint32_t *backbuf, int width, int height,
     /* Attach backbuffer as backing storage */
     uint32_t buf_size = disp_h * disp_pitch;
     if (gpu_attach_backing(scanout_res_id, backbuf, buf_size) != 0) {
-        printf("[virtio-gpu] Failed to attach backing\n");
+        DBG("[virtio-gpu] Failed to attach backing");
         gpu_active = 0;
         return 0;
     }
 
     /* Set scanout 0 to our resource */
     if (gpu_set_scanout(scanout_res_id, 0, 0, 0, disp_w, disp_h) != 0) {
-        printf("[virtio-gpu] Failed to set scanout\n");
+        DBG("[virtio-gpu] Failed to set scanout");
         gpu_active = 0;
         return 0;
     }
@@ -608,8 +608,8 @@ int virtio_gpu_setup_scanout(uint32_t *backbuf, int width, int height,
     gpu_transfer_2d(scanout_res_id, 0, 0, disp_w, disp_h, 0);
     gpu_resource_flush(scanout_res_id, 0, 0, disp_w, disp_h);
 
-    printf("[virtio-gpu] Scanout %ux%u ready (resource %u)\n",
-           disp_w, disp_h, scanout_res_id);
+    DBG("[virtio-gpu] Scanout %ux%u ready (resource %u)",
+        disp_w, disp_h, scanout_res_id);
     return 1;
 }
 

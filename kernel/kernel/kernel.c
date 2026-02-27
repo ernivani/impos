@@ -452,14 +452,14 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Print module info now that printf is safe */
     if (doom_wad_data && doom_wad_size > 0) {
-        printf("[BOOT] DOOM WAD: %u bytes at 0x%x (header: %c%c%c%c)\n",
-               doom_wad_size, (uint32_t)doom_wad_data,
-               doom_wad_data[0], doom_wad_data[1],
-               doom_wad_data[2], doom_wad_data[3]);
+        DBG("[BOOT] DOOM WAD: %u bytes at 0x%x (header: %c%c%c%c)",
+            doom_wad_size, (uint32_t)doom_wad_data,
+            doom_wad_data[0], doom_wad_data[1],
+            doom_wad_data[2], doom_wad_data[3]);
     }
     if (initrd_data && initrd_size > 0) {
-        printf("[BOOT] Initrd: %u bytes at 0x%x\n",
-               initrd_size, (uint32_t)initrd_data);
+        DBG("[BOOT] Initrd: %u bytes at 0x%x",
+            initrd_size, (uint32_t)initrd_data);
     }
 
     /* Initialize task tracking (before any tasks are created) */

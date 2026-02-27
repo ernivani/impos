@@ -74,7 +74,7 @@ void net_initialize(void) {
         DBG("net: RTL8139 OK, MAC=%x:%x:%x:%x:%x:%x",
             net_config.mac[0], net_config.mac[1], net_config.mac[2],
             net_config.mac[3], net_config.mac[4], net_config.mac[5]);
-        printf("Network: RTL8139 initialized\n");
+        DBG("Network: RTL8139 initialized");
     } else {
         DBG("net: RTL8139 not found, trying PCnet...");
         if (pcnet_initialize() == 0) {
@@ -84,10 +84,10 @@ void net_initialize(void) {
             DBG("net: PCnet OK, MAC=%x:%x:%x:%x:%x:%x",
                 net_config.mac[0], net_config.mac[1], net_config.mac[2],
                 net_config.mac[3], net_config.mac[4], net_config.mac[5]);
-            printf("Network: PCnet-FAST III initialized\n");
+            DBG("Network: PCnet-FAST III initialized");
         } else {
             DBG("net: no NIC found!");
-            printf("No network card detected\n");
+            DBG("No network card detected");
         }
     }
 

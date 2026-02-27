@@ -176,8 +176,8 @@ void gfx_init_gpu_accel(void) {
     if (bga_detect()) {
         uint16_t bga_id = bga_read(BGA_REG_ID);
         uint16_t vram = bga_get_vram_64k();
-        printf("[bga] Bochs VGA v%d.%d detected, VRAM: %u KB\n",
-               (bga_id >> 8) & 0xF, bga_id & 0xF, (unsigned)vram * 64);
+        DBG("[bga] Bochs VGA v%d.%d detected, VRAM: %u KB",
+            (bga_id >> 8) & 0xF, bga_id & 0xF, (unsigned)vram * 64);
     }
 }
 

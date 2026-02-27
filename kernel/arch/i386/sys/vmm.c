@@ -1,6 +1,7 @@
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
 #include <kernel/gfx.h>
+#include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -72,7 +73,7 @@ void vmm_init(multiboot_info_t *mbi) {
         : : "r"(cr3) : "eax"
     );
 
-    printf("[VMM] Paging enabled (4KB: 0-256MB, 4MB PSE: 256MB-4GB). CR3=0x%x\n", cr3);
+    DBG("[VMM] Paging enabled (4KB: 0-256MB, 4MB PSE: 256MB-4GB). CR3=0x%x", cr3);
 }
 
 void vmm_map_page(uint32_t virt, uint32_t phys, uint32_t flags) {
@@ -82,13 +83,13 @@ void vmm_map_page(uint32_t virt, uint32_t phys, uint32_t flags) {
     /* Check if this PDE uses a 4MB page — can't do 4KB mapping there */
     if ((kernel_page_directory[pde_idx] & PTE_PRESENT) &&
         (kernel_page_directory[pde_idx] & PTE_4MB)) {
-        printf("[VMM] WARN: PDE %u is a 4MB page, can't map 4KB (virt 0x%x)\n", pde_idx, virt);
+        DBG("[VMM] WARN: PDE %u is a 4MB page, can't map 4KB (virt 0x%x)", pde_idx, virt);
         return;
     }
 
     /* Get or verify page table exists */
     if (!(kernel_page_directory[pde_idx] & PTE_PRESENT)) {
-        printf("[VMM] WARN: No page table for PDE %u (virt 0x%x)\n", pde_idx, virt);
+        DBG("[VMM] WARN: No page table for PDE %u (virt 0x%x)", pde_idx, virt);
         return;
     }
 

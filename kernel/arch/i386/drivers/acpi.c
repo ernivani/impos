@@ -162,20 +162,20 @@ int acpi_initialize(void) {
 
     struct rsdp_descriptor *rsdp = acpi_find_rsdp();
     if (!rsdp) {
-        printf("ACPI: RSDP not found\n");
+        DBG("ACPI: RSDP not found");
         return -1;
     }
 
     struct acpi_sdt_header *rsdt =
         (struct acpi_sdt_header *)(uintptr_t)rsdp->rsdt_address;
     if (!acpi_checksum(rsdt, rsdt->length)) {
-        printf("ACPI: RSDT checksum invalid\n");
+        DBG("ACPI: RSDT checksum invalid");
         return -1;
     }
 
     struct acpi_sdt_header *fadt_hdr = acpi_find_table(rsdt, "FACP");
     if (!fadt_hdr) {
-        printf("ACPI: FADT not found\n");
+        DBG("ACPI: FADT not found");
         return -1;
     }
 
@@ -188,19 +188,19 @@ int acpi_initialize(void) {
     struct acpi_sdt_header *dsdt =
         (struct acpi_sdt_header *)(uintptr_t)fadt->dsdt;
     if (!dsdt || !acpi_checksum(dsdt, dsdt->length)) {
-        printf("ACPI: DSDT invalid\n");
+        DBG("ACPI: DSDT invalid");
         return -1;
     }
 
     if (!acpi_parse_s5(dsdt)) {
-        printf("ACPI: _S5 object not found in DSDT\n");
+        DBG("ACPI: _S5 object not found in DSDT");
         return -1;
     }
 
     acpi_enable_if_needed();
     acpi_ready = 1;
-    printf("ACPI: Initialized (PM1a=0x%x SLP_TYPa=%d)\n",
-           pm1a_cnt_blk, slp_typa);
+    DBG("ACPI: Initialized (PM1a=0x%x SLP_TYPa=%d)",
+        pm1a_cnt_blk, slp_typa);
     return 0;
 }
 

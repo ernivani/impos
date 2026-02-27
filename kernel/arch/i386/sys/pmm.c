@@ -1,5 +1,6 @@
 #include <kernel/pmm.h>
 #include <kernel/multiboot.h>
+#include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -33,7 +34,7 @@ void pmm_init(multiboot_info_t *mbi) {
 
     /* Parse multiboot memory map to find available regions */
     if (!(mbi->flags & (1 << 6))) {
-        printf("[PMM] No memory map from bootloader!\n");
+        DBG("[PMM] No memory map from bootloader!");
         return;
     }
 
@@ -81,9 +82,9 @@ next:
     for (uint32_t f = 256; f < kernel_end_frame; f++)
         frame_set(f);
 
-    printf("[PMM] Initialized: %u free frames (%u MB free)\n",
-           pmm_free_frame_count(),
-           pmm_free_frame_count() * 4 / 1024);
+    DBG("[PMM] Initialized: %u free frames (%u MB free)",
+        pmm_free_frame_count(),
+        pmm_free_frame_count() * 4 / 1024);
 }
 
 uint32_t pmm_alloc_frame(void) {
