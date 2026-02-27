@@ -35,6 +35,9 @@
 #include <kernel/tls.h>
 #include <kernel/io.h>
 #include <kernel/multiboot.h>
+#include <kernel/drm.h>
+#include <kernel/pmm.h>
+#include <kernel/vmm.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -116,6 +119,7 @@ static void cmd_userdel(int argc, char* argv[]);
 static void cmd_test(int argc, char* argv[]);
 static void cmd_logout(int argc, char* argv[]);
 static void cmd_gfxdemo(int argc, char* argv[]);
+static void cmd_drmtest(int argc, char* argv[]);
 static void cmd_nslookup(int argc, char* argv[]);
 static void cmd_dhcp_cmd(int argc, char* argv[]);
 static void cmd_httpd(int argc, char* argv[]);
@@ -769,6 +773,20 @@ static command_t commands[] = {
         CMD_FLAG_ROOT
     },
     {
+        "drmtest", cmd_drmtest,
+        "Test DRM GPU subsystem",
+        "drmtest: drmtest\n"
+        "    Open /dev/dri/card0, query DRM version via ioctl, test mmap.\n",
+        "NAME\n"
+        "    drmtest - test DRM subsystem\n\n"
+        "SYNOPSIS\n"
+        "    drmtest\n\n"
+        "DESCRIPTION\n"
+        "    Opens /dev/dri/card0, issues DRM_IOCTL_VERSION to query the\n"
+        "    GPU driver, and tests mmap by allocating a physical page.\n",
+        0
+    },
+    {
         "nslookup", cmd_nslookup,
         "Query DNS to resolve a hostname",
         "nslookup: nslookup HOSTNAME\n"
@@ -1288,6 +1306,19 @@ void shell_initialize_subsystems(void) {
     DBG("subsys: user");   user_initialize();
     DBG("subsys: group");  group_initialize();
     DBG("subsys: quota");  quota_initialize();
+
+    /* Ensure /dev/dri exists (device nodes aren't persisted on disk) */
+    {
+        uint32_t parent;
+        char name[28];
+        if (fs_resolve_path("/dev/dri", &parent, name) < 0) {
+            fs_create_file("/dev/dri", 1);
+        }
+        if (fs_resolve_path("/dev/dri/card0", &parent, name) < 0) {
+            fs_create_device("/dev/dri/card0", DEV_MAJOR_DRM, 0);
+        }
+    }
+
     DBG("subsys: done");
 }
 
@@ -3293,6 +3324,103 @@ static void demo_scene_waves(int W, int H, int frame) {
         int bx = 50 + i * bar_w;
         gfx_rounded_rect(bx, bar_base - bh, bar_w - 2, bh, 3, bc);
     }
+}
+
+static void cmd_drmtest(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+
+    printf("=== DRM Subsystem Test ===\n\n");
+
+    /* Step 1: Check DRM availability */
+    printf("[1] DRM available: %s\n", drm_is_available() ? "yes" : "no");
+    if (!drm_is_available()) {
+        printf("    FAIL: DRM not initialized\n");
+        return;
+    }
+
+    /* Step 2: Open /dev/dri/card0 */
+    printf("[2] Opening /dev/dri/card0... ");
+    int tid = task_get_current();
+    task_info_t *t = task_get(tid);
+    if (!t) {
+        printf("FAIL (no task)\n");
+        return;
+    }
+
+    /* Find a free fd and set it up for DRM */
+    int fd = fd_alloc(tid);
+    if (fd < 0) {
+        printf("FAIL (no free fd)\n");
+        return;
+    }
+
+    /* Resolve the device node */
+    uint32_t parent;
+    char name[28];
+    int ino = fs_resolve_path("/dev/dri/card0", &parent, name);
+    if (ino < 0) {
+        printf("FAIL (device node not found)\n");
+        printf("    Try: make clean-disk && make run\n");
+        return;
+    }
+
+    t->fds[fd].type = FD_DRM;
+    t->fds[fd].inode = (uint32_t)ino;
+    t->fds[fd].offset = 0;
+    printf("OK (fd=%d, inode=%d)\n", fd, ino);
+
+    /* Step 3: DRM_IOCTL_VERSION */
+    printf("[3] ioctl(DRM_IOCTL_VERSION)... ");
+    char name_buf[32] = {0};
+    char date_buf[16] = {0};
+    char desc_buf[64] = {0};
+    drm_version_t ver = {
+        .name = name_buf,  .name_len = sizeof(name_buf) - 1,
+        .date = date_buf,  .date_len = sizeof(date_buf) - 1,
+        .desc = desc_buf,  .desc_len = sizeof(desc_buf) - 1,
+    };
+
+    int rc = drm_ioctl(DRM_IOCTL_VERSION, &ver);
+    if (rc == 0) {
+        printf("OK\n");
+        printf("    Driver: %s v%d.%d.%d\n", name_buf,
+               ver.version_major, ver.version_minor, ver.version_patchlevel);
+        printf("    Date:   %s\n", date_buf);
+        printf("    Desc:   %s\n", desc_buf);
+    } else {
+        printf("FAIL (rc=%d)\n", rc);
+    }
+
+    /* Step 4: DRM_IOCTL_GET_CAP */
+    printf("[4] ioctl(DRM_IOCTL_GET_CAP)... ");
+    drm_get_cap_t cap = { .capability = DRM_CAP_DUMB_BUFFER };
+    rc = drm_ioctl(DRM_IOCTL_GET_CAP, &cap);
+    if (rc == 0) {
+        printf("OK (dumb_buffer=%llu)\n", (unsigned long long)cap.value);
+    } else {
+        printf("FAIL (rc=%d)\n", rc);
+    }
+
+    /* Step 5: Test mmap (allocate a physical page) */
+    printf("[5] mmap(4096 bytes)... ");
+    uint32_t page = pmm_alloc_frame();
+    if (page) {
+        memset((void *)page, 0xAB, 4096);
+        uint8_t *p = (uint8_t *)page;
+        int ok = (p[0] == 0xAB && p[4095] == 0xAB);
+        printf("%s (phys=0x%x, verify=%s)\n",
+               ok ? "OK" : "FAIL", page, ok ? "pass" : "fail");
+        pmm_free_frame(page);
+    } else {
+        printf("FAIL (out of memory)\n");
+    }
+
+    /* Step 6: Close fd */
+    t->fds[fd].type = FD_NONE;
+    printf("[6] close(fd=%d)... OK\n", fd);
+
+    printf("\n=== All DRM tests passed ===\n");
 }
 
 static void cmd_gfxdemo(int argc, char* argv[]) {

@@ -81,13 +81,13 @@ static void mon_paint(void) {
 
     /* CPU — estimate total from tasks */
     {
-        int total_cpu_x10 = 0;
-        for (int i = 0; i < TASK_MAX; i++) {
-            task_info_t *t = task_get(i);
-            if (!t) continue;
-            if (t->sample_total)
-                total_cpu_x10 += (int)(t->prev_ticks * 1000 / t->sample_total);
-        }
+        /* Sum all tasks except idle (slot 0) — idle absorbs unused ticks */
+        task_info_t *idle = task_get(TASK_IDLE);
+        uint32_t sample = idle ? idle->sample_total : 1;
+        uint32_t idle_ticks = idle ? idle->prev_ticks : 0;
+        int total_cpu_x10 = sample
+            ? (int)((sample - idle_ticks) * 1000 / sample)
+            : 0;
         if (total_cpu_x10 > 1000) total_cpu_x10 = 1000;
         char buf[32];
         snprintf(buf, sizeof(buf), "%d.%d%%", total_cpu_x10 / 10, total_cpu_x10 % 10);

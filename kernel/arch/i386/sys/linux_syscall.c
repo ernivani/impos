@@ -10,6 +10,7 @@
 #include <kernel/fs.h>
 #include <kernel/user.h>
 #include <kernel/hostname.h>
+#include <kernel/drm.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -112,7 +113,9 @@ static int32_t linux_sys_open(const char *path, uint32_t flags, uint32_t mode) {
     switch (node.type) {
         case INODE_FILE:    fd_type = FD_FILE; break;
         case INODE_DIR:     fd_type = FD_DIR;  break;
-        case INODE_CHARDEV: fd_type = FD_DEV;  break;
+        case INODE_CHARDEV:
+            fd_type = ((uint8_t)node.blocks[0] == DEV_MAJOR_DRM) ? FD_DRM : FD_DEV;
+            break;
         case INODE_SYMLINK: {
             /* Follow symlink: re-resolve using readlink target */
             char target[256];
@@ -611,6 +614,9 @@ static int32_t linux_sys_ioctl(uint32_t fd, uint32_t cmd, uint32_t arg) {
                 return -LINUX_ENOSYS;
         }
     }
+
+    if (fde->type == FD_DRM)
+        return drm_ioctl(cmd, (void *)arg);
 
     return -LINUX_ENOSYS;
 }

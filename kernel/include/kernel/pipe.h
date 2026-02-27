@@ -15,6 +15,7 @@
 #define FD_DEV    4  /* character device */
 #define FD_DIR    5  /* open directory */
 #define FD_TTY    6  /* console stdin/stdout/stderr */
+#define FD_DRM    7  /* DRM GPU device (/dev/dri/card0) */
 
 /* Linux open flags */
 #define LINUX_O_RDONLY     0x0000

@@ -26,6 +26,7 @@
 #include <kernel/clipboard.h>
 #include <kernel/crypto.h>
 #include <kernel/io.h>
+#include <kernel/drm.h>
 
 /* Routes putchar/getchar through serial COM1 instead of VGA/PS2 */
 int g_serial_console = 0;
@@ -482,6 +483,9 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Detect GPU acceleration (VirtIO GPU + Bochs VGA BGA) */
     gfx_init_gpu_accel();
+
+    /* Initialize DRM subsystem (GPU ioctl interface) */
+    drm_init();
 
     if (gfx_is_active() && !terminal_mode) {
         /* Graphical boot: init subsystems, then run state machine */

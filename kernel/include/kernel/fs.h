@@ -36,6 +36,7 @@
 #define DEV_MAJOR_ZERO    2
 #define DEV_MAJOR_TTY     3
 #define DEV_MAJOR_URANDOM 4
+#define DEV_MAJOR_DRM     5   /* /dev/dri/card0 — GPU DRM device */
 
 /* Disk sector layout (512-byte sectors) */
 #define DISK_SECTOR_SUPERBLOCK  0       /* Sectors 0-7: superblock (4KB) */

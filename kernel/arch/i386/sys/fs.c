@@ -150,6 +150,10 @@ static int dev_read(inode_t* node, uint8_t* buffer, size_t* size) {
         prng_random(buffer, requested);
         *size = requested;
         return 0;
+    case DEV_MAJOR_DRM:
+        /* DRM is ioctl-driven, not read/write */
+        *size = 0;
+        return 0;
     default:
         return -1;
     }
@@ -168,6 +172,9 @@ static int dev_write(inode_t* node, const uint8_t* data, size_t size) {
         return 0;
     case DEV_MAJOR_URANDOM:
         return 0;  /* discard */
+    case DEV_MAJOR_DRM:
+        /* DRM is ioctl-driven, not read/write */
+        return 0;
     default:
         return -1;
     }
@@ -596,6 +603,10 @@ void fs_initialize(void) {
     fs_create_device("/dev/zero", DEV_MAJOR_ZERO, 0);
     fs_create_device("/dev/tty", DEV_MAJOR_TTY, 0);
     fs_create_device("/dev/urandom", DEV_MAJOR_URANDOM, 0);
+
+    /* DRM device node */
+    fs_create_file("/dev/dri", 1);
+    fs_create_device("/dev/dri/card0", DEV_MAJOR_DRM, 0);
 
     fs_change_directory("/home/root");
 

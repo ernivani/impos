@@ -1,7 +1,7 @@
 /* taskmgr.c — Task Manager: shows running tasks with CPU/memory.
  *
- * Columns: PID, Name, State, CPU%, Memory
- * Auto-refreshes every ~1 second.
+ * Proper column table with PID, Name, State, CPU%, Memory, Type.
+ * Auto-refreshes every ~1 second. Hides idle task.
  * Pattern follows settings.c: singleton window, per-frame tick.
  */
 #include <kernel/taskmgr.h>
@@ -27,10 +27,26 @@
 #define COL_GREEN   0xFFA6E3A1
 #define COL_RED     0xFFF38BA8
 #define COL_YELLOW  0xFFF9E2AF
+#define COL_ROW_ALT 0xFF232334
+
+/* Column X positions (px) */
+#define COL_PID     12
+#define COL_NAME    60
+#define COL_STATE   240
+#define COL_CPU     330
+#define COL_MEM     410
+#define COL_TYPE    490
 
 /* ── State ──────────────────────────────────────────────────────── */
 static int tm_win_id = -1;
 static uint32_t tm_last_refresh = 0;
+
+/* ── Helpers ────────────────────────────────────────────────────── */
+
+static void draw_row_bg(gfx_surface_t *gs, int y, int cw, int row_idx) {
+    uint32_t bg = (row_idx & 1) ? COL_ROW_ALT : COL_BG;
+    gfx_surf_fill_rect(gs, 0, y - 2, cw, ROW_H, bg);
+}
 
 /* ── Paint ──────────────────────────────────────────────────────── */
 
@@ -52,64 +68,71 @@ static void tm_paint(void) {
     uint32_t free_frames = pmm_free_frame_count();
     uint32_t free_mb = (free_frames * 4) / 1024;
     char summary[80];
-    snprintf(summary, sizeof(summary), "Tasks: %d   Free RAM: %d MB", tc, (int)free_mb);
-    gfx_surf_draw_string_smooth(&gs, 10, (HDR_H - 16) / 2, summary, COL_TEXT, 1);
+    snprintf(summary, sizeof(summary), "Tasks: %d    Free RAM: %d MB", tc, (int)free_mb);
+    gfx_surf_draw_string_smooth(&gs, 12, (HDR_H - 16) / 2, summary, COL_TEXT, 1);
+
+    /* CPU% denominator: total sample ticks (idle gives us the reference) */
+    task_info_t *idle_t = task_get(TASK_IDLE);
+    uint32_t sample = (idle_t && idle_t->sample_total) ? idle_t->sample_total : 1;
 
     /* Column headers */
-    int y = HDR_H + 6;
-    gfx_surf_draw_string_smooth(&gs, 10,  y, "PID",   COL_DIM, 1);
-    gfx_surf_draw_string_smooth(&gs, 58,  y, "Name",  COL_DIM, 1);
-    gfx_surf_draw_string_smooth(&gs, 260, y, "State", COL_DIM, 1);
-    gfx_surf_draw_string_smooth(&gs, 340, y, "CPU%",  COL_DIM, 1);
-    gfx_surf_draw_string_smooth(&gs, 410, y, "Mem",   COL_DIM, 1);
-    gfx_surf_draw_string_smooth(&gs, 490, y, "Type",  COL_DIM, 1);
-    y += ROW_H + 2;
-    gfx_surf_fill_rect(&gs, 8, y - 4, cw - 16, 1, COL_BORDER);
+    int y = HDR_H + 8;
+    gfx_surf_draw_string_smooth(&gs, COL_PID,   y, "PID",   COL_DIM, 1);
+    gfx_surf_draw_string_smooth(&gs, COL_NAME,  y, "NAME",  COL_DIM, 1);
+    gfx_surf_draw_string_smooth(&gs, COL_STATE, y, "STATE", COL_DIM, 1);
+    gfx_surf_draw_string_smooth(&gs, COL_CPU,   y, "CPU",   COL_DIM, 1);
+    gfx_surf_draw_string_smooth(&gs, COL_MEM,   y, "MEM",   COL_DIM, 1);
+    gfx_surf_draw_string_smooth(&gs, COL_TYPE,  y, "TYPE",  COL_DIM, 1);
+    y += 18;
+    gfx_surf_fill_rect(&gs, 8, y, cw - 16, 1, COL_BORDER);
+    y += 6;
 
-    /* Task rows */
-    for (int i = 0; i < TASK_MAX; i++) {
+    /* Task rows (skip idle task — slot 0) */
+    int row_idx = 0;
+    for (int i = 1; i < TASK_MAX; i++) {
         task_info_t *t = task_get(i);
         if (!t) continue;
         if (y + ROW_H > ch - 4) break;
 
+        /* Alternating row background */
+        draw_row_bg(&gs, y, cw, row_idx++);
+
         /* PID */
         char buf[16];
         snprintf(buf, sizeof(buf), "%d", task_get_pid(i));
-        gfx_surf_draw_string_smooth(&gs, 10, y, buf, COL_ACCENT, 1);
+        gfx_surf_draw_string_smooth(&gs, COL_PID, y, buf, COL_ACCENT, 1);
 
         /* Name */
-        gfx_surf_draw_string_smooth(&gs, 58, y, t->name, COL_TEXT, 1);
+        gfx_surf_draw_string_smooth(&gs, COL_NAME, y, t->name, COL_TEXT, 1);
 
         /* State */
         const char *sname;
         uint32_t state_col;
-        if (t->killed)                          { sname = "Killed";  state_col = COL_RED; }
-        else if (t->state == TASK_STATE_SLEEPING) { sname = "Sleep";   state_col = COL_YELLOW; }
-        else if (t->state == TASK_STATE_BLOCKED)  { sname = "Blocked"; state_col = COL_YELLOW; }
-        else if (t->state == TASK_STATE_RUNNING)  { sname = "Running"; state_col = COL_GREEN; }
-        else                                      { sname = "Ready";   state_col = COL_DIM; }
-        gfx_surf_draw_string_smooth(&gs, 260, y, sname, state_col, 1);
+        if (t->killed)                            { sname = "Killed";  state_col = COL_RED; }
+        else if (t->state == TASK_STATE_SLEEPING)  { sname = "Sleep";   state_col = COL_YELLOW; }
+        else if (t->state == TASK_STATE_BLOCKED)   { sname = "Blocked"; state_col = COL_YELLOW; }
+        else if (t->state == TASK_STATE_RUNNING)   { sname = "Run";     state_col = COL_GREEN; }
+        else                                       { sname = "Ready";   state_col = COL_DIM; }
+        gfx_surf_draw_string_smooth(&gs, COL_STATE, y, sname, state_col, 1);
 
         /* CPU% */
-        int cpu_x10 = t->sample_total
-            ? (int)(t->prev_ticks * 1000 / t->sample_total)
-            : 0;
-        snprintf(buf, sizeof(buf), "%d.%d", cpu_x10 / 10, cpu_x10 % 10);
-        gfx_surf_draw_string_smooth(&gs, 340, y, buf,
+        int cpu_x10 = (int)(t->prev_ticks * 1000 / sample);
+        snprintf(buf, sizeof(buf), "%d.%d%%", cpu_x10 / 10, cpu_x10 % 10);
+        gfx_surf_draw_string_smooth(&gs, COL_CPU, y, buf,
                                      cpu_x10 > 0 ? COL_TEXT : COL_DIM, 1);
 
         /* Memory */
         if (t->mem_kb > 0) {
             snprintf(buf, sizeof(buf), "%dK", t->mem_kb);
-            gfx_surf_draw_string_smooth(&gs, 410, y, buf, COL_TEXT, 1);
+            gfx_surf_draw_string_smooth(&gs, COL_MEM, y, buf, COL_TEXT, 1);
         } else {
-            gfx_surf_draw_string_smooth(&gs, 410, y, "--", COL_DIM, 1);
+            gfx_surf_draw_string_smooth(&gs, COL_MEM, y, "--", COL_DIM, 1);
         }
 
         /* Type */
         const char *type = t->is_pe ? "PE" : t->is_elf ? "ELF" :
                            t->is_user ? "User" : "Kern";
-        gfx_surf_draw_string_smooth(&gs, 490, y, type, COL_DIM, 1);
+        gfx_surf_draw_string_smooth(&gs, COL_TYPE, y, type, COL_DIM, 1);
 
         y += ROW_H;
     }
