@@ -14,6 +14,7 @@
  * Stage 1: KMS — GETRESOURCES, GETCONNECTOR, GETENCODER, GETCRTC, SETCRTC
  * Stage 2: GEM — CREATE_DUMB, MAP_DUMB, DESTROY_DUMB, GEM_CLOSE,
  *                 ADDFB, RMFB, PAGE_FLIP
+ * Stage 4: DRM-backed compositor — zero-copy flip when GEM == backbuffer
  */
 
 /* ── Driver identity ────────────────────────────────────────────── */
@@ -22,7 +23,7 @@
 #define DRM_DRIVER_DATE     "20260227"
 #define DRM_DRIVER_DESC     "ImposOS DRM driver"
 #define DRM_VERSION_MAJOR   0
-#define DRM_VERSION_MINOR   3
+#define DRM_VERSION_MINOR   4
 #define DRM_VERSION_PATCH   0
 
 #define PAGE_SIZE 4096
@@ -105,8 +106,10 @@ static drm_framebuffer_t *fb_alloc_slot(void) {
     return NULL;
 }
 
-/* Flip a framebuffer to the display: copy to the active backbuffer
- * and trigger a hardware update. */
+/* Flip a framebuffer to the display.
+ * If the GEM buffer IS the backbuffer (compositor DRM integration),
+ * skip the copy — the compositor already rendered into it.
+ * Otherwise, copy GEM → backbuffer row by row. */
 static void drm_flip_fb(drm_framebuffer_t *fb) {
     uint32_t *backbuf = gfx_backbuffer();
     uint32_t disp_w = gfx_width();
@@ -119,11 +122,13 @@ static void drm_flip_fb(drm_framebuffer_t *fb) {
     uint32_t copy_w = fb->width < disp_w ? fb->width : disp_w;
     uint32_t copy_h = fb->height < disp_h ? fb->height : disp_h;
 
-    /* Copy row by row (pitches may differ) */
-    for (uint32_t y = 0; y < copy_h; y++) {
-        uint32_t *dst_row = (uint32_t *)((uint8_t *)backbuf + y * disp_pitch);
-        uint32_t *src_row = (uint32_t *)((uint8_t *)src + y * fb->pitch);
-        memcpy(dst_row, src_row, copy_w * 4);
+    /* Zero-copy path: GEM buffer is already the backbuffer */
+    if (src != backbuf) {
+        for (uint32_t y = 0; y < copy_h; y++) {
+            uint32_t *dst_row = (uint32_t *)((uint8_t *)backbuf + y * disp_pitch);
+            uint32_t *src_row = (uint32_t *)((uint8_t *)src + y * fb->pitch);
+            memcpy(dst_row, src_row, copy_w * 4);
+        }
     }
 
     /* Trigger display update */

@@ -1,9 +1,12 @@
 #include <kernel/compositor.h>
 #include <kernel/gfx.h>
+#include <kernel/libdrm.h>
+#include <kernel/drm.h>
 #include <kernel/ui_theme.h>
 #include <kernel/idt.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #define COMP_MAX_SURFACES   64
 #define COMP_MAX_PER_LAYER  16
@@ -23,6 +26,13 @@ static uint32_t fps_value       = 0;
 
 static int  screen_dirty = 0;
 static int  sdx, sdy, sdw, sdh;
+
+/* ── DRM-backed compositing state ──────────────────────────────── */
+static int      drm_fd       = -1;
+static uint32_t drm_gem_handle = 0;
+static uint32_t drm_fb_id    = 0;
+static uint32_t drm_crtc_id  = 0;
+static int      drm_active   = 0;   /* 1 = compositor using DRM buffers */
 
 static void rect_union(int *dx, int *dy, int *dw, int *dh,
                        int ax, int ay, int aw, int ah) {
@@ -327,6 +337,59 @@ void compositor_init(void) {
     sdx = sdy = 0;
     sdw = (int)gfx_width();
     sdh = (int)gfx_height();
+
+    /* ── DRM-backed compositing buffer ──────────────────────── */
+    drm_active = 0;
+    drm_fd = drmOpen("impos-drm", NULL);
+    if (drm_fd < 0) return;
+
+    uint32_t w = gfx_width(), h = gfx_height();
+    uint32_t pitch = 0;
+    uint64_t size = 0;
+
+    if (drmModeCreateDumbBuffer(drm_fd, w, h, 32, 0,
+                                &drm_gem_handle, &pitch, &size) != 0) {
+        drmClose(drm_fd); drm_fd = -1;
+        return;
+    }
+
+    /* Map the GEM buffer to get its address (identity-mapped) */
+    uint64_t offset = 0;
+    if (drmModeMapDumbBuffer(drm_fd, drm_gem_handle, &offset) != 0) {
+        drmModeDestroyDumbBuffer(drm_fd, drm_gem_handle);
+        drmClose(drm_fd); drm_fd = -1;
+        return;
+    }
+
+    /* Register as a DRM framebuffer */
+    if (drmModeAddFB(drm_fd, w, h, 24, 32, pitch,
+                     drm_gem_handle, &drm_fb_id) != 0) {
+        drmModeDestroyDumbBuffer(drm_fd, drm_gem_handle);
+        drmClose(drm_fd); drm_fd = -1;
+        return;
+    }
+
+    /* Get the CRTC id */
+    drmModeResPtr res = drmModeGetResources(drm_fd);
+    if (res && res->count_crtcs > 0) {
+        drm_crtc_id = res->crtcs[0];
+        drmModeFreeResources(res);
+    } else {
+        if (res) drmModeFreeResources(res);
+        drmModeRmFB(drm_fd, drm_fb_id);
+        drmModeDestroyDumbBuffer(drm_fd, drm_gem_handle);
+        drmClose(drm_fd); drm_fd = -1;
+        return;
+    }
+
+    /* Point the gfx backbuffer at the GEM buffer — zero-copy compositing */
+    uint32_t *gem_ptr = (uint32_t *)(uint32_t)offset;
+    memset(gem_ptr, 0, (size_t)size);
+    gfx_set_backbuffer(gem_ptr);
+
+    drm_active = 1;
+    printf("[COMP] DRM-backed compositing active (GEM handle=%u, fb=%u)\n",
+           drm_gem_handle, drm_fb_id);
 }
 
 void compositor_damage_all(void) {
@@ -385,6 +448,9 @@ void compositor_frame(void) {
         }
     }
 
+    /* Flip the dirty region to display.
+     * When DRM is active, backbuffer IS the GEM buffer (zero-copy).
+     * gfx_flip_rect still handles the backbuf → framebuffer transfer. */
     gfx_flip_rect(sdx, sdy, sdw, sdh);
 
     for (int i = 0; i < COMP_MAX_SURFACES; i++) {

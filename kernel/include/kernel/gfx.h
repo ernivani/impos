@@ -55,6 +55,7 @@ void gfx_crossfade(int steps, int delay_ms);
 
 uint32_t* gfx_backbuffer(void);
 uint32_t* gfx_framebuffer(void);
+void      gfx_set_backbuffer(uint32_t *buf);  /* override backbuf (DRM integration) */
 
 void gfx_blend_pixel(int x, int y, uint32_t color);
 void gfx_fill_rect_alpha(int x, int y, int w, int h, uint32_t color);

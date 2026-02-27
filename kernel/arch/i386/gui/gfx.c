@@ -196,6 +196,7 @@ uint32_t gfx_get_system_ram_mb(void) { return system_ram_mb; }
 
 uint32_t* gfx_backbuffer(void) { return backbuf; }
 uint32_t* gfx_framebuffer(void) { return framebuffer; }
+void gfx_set_backbuffer(uint32_t *buf) { if (buf) backbuf = buf; }
 
 gfx_surface_t gfx_get_surface(void) {
     gfx_surface_t s;
