@@ -1,22 +1,26 @@
 #include <kernel/compositor.h>
+#include <kernel/gpu_compositor.h>
 #include <kernel/gfx.h>
 #include <kernel/libdrm.h>
 #include <kernel/drm.h>
+#include <kernel/virtio_gpu.h>
+#include <kernel/virtio_gpu_3d.h>
+#include <kernel/virtio_gpu_internal.h>
 #include <kernel/ui_theme.h>
 #include <kernel/idt.h>
 #include <kernel/io.h>
+#include <kernel/pmm.h>
 #include <string.h>
 #include <stdlib.h>
 
-#define COMP_MAX_SURFACES   64
-#define COMP_MAX_PER_LAYER  16
 #define FRAME_TICKS          2   /* 120Hz / 2 = 60fps */
 
-static comp_surface_t pool[COMP_MAX_SURFACES];
+/* Shared with gpu_compositor.c (declared extern in compositor.h) */
+comp_surface_t comp_pool[COMP_MAX_SURFACES];
 
 /* layers[L][0] is back, layers[L][count-1] is front */
-static int  layer_idx[COMP_LAYER_COUNT][COMP_MAX_PER_LAYER];
-static int  layer_count[COMP_LAYER_COUNT];
+int  comp_layer_idx[COMP_LAYER_COUNT][COMP_MAX_PER_LAYER];
+int  comp_layer_count[COMP_LAYER_COUNT];
 
 static uint32_t last_frame_tick = 0;
 
@@ -33,6 +37,9 @@ static uint32_t drm_gem_handle = 0;
 static uint32_t drm_fb_id    = 0;
 static uint32_t drm_crtc_id  = 0;
 static int      drm_active   = 0;   /* 1 = compositor using DRM buffers */
+
+/* ── Virgl compositor state (Stage 4a) ─────────────────────────── */
+static int      virgl_comp_active = 0;  /* reserved for future virgl compositor */
 
 static void rect_union(int *dx, int *dy, int *dw, int *dh,
                        int ax, int ay, int aw, int ah) {
@@ -141,11 +148,11 @@ static void bb_fill_rect(int x, int y, int w, int h, uint32_t color) {
 
 comp_surface_t *comp_surface_create(int w, int h, int layer) {
     if (layer < 0 || layer >= COMP_LAYER_COUNT) return 0;
-    if (layer_count[layer] >= COMP_MAX_PER_LAYER) return 0;
+    if (comp_layer_count[layer] >= COMP_MAX_PER_LAYER) return 0;
 
     comp_surface_t *s = 0;
     for (int i = 0; i < COMP_MAX_SURFACES; i++) {
-        if (!pool[i].in_use) { s = &pool[i]; break; }
+        if (!comp_pool[i].in_use) { s = &comp_pool[i]; break; }
     }
     if (!s) return 0;
 
@@ -164,7 +171,12 @@ comp_surface_t *comp_surface_create(int w, int h, int layer) {
     s->damage_all = 1;
     s->dmg_x = s->dmg_y = s->dmg_w = s->dmg_h = 0;
 
-    layer_idx[layer][layer_count[layer]++] = (int)(s - pool);
+    int pidx = (int)(s - comp_pool);
+    comp_layer_idx[layer][comp_layer_count[layer]++] = pidx;
+
+    if (virgl_comp_active)
+        gpu_comp_surface_created(pidx, w, h);
+
     return s;
 }
 
@@ -175,16 +187,20 @@ void comp_surface_destroy(comp_surface_t *s) {
                s->screen_x, s->screen_y, s->w, s->h);
     screen_dirty = 1;
 
+    int pool_idx = (int)(s - comp_pool);
+
+    if (virgl_comp_active)
+        gpu_comp_surface_destroyed(pool_idx);
+
     free(s->pixels);
     s->pixels = 0;
-    int pool_idx = (int)(s - pool);
 
     int L = s->layer;
-    for (int i = 0; i < layer_count[L]; i++) {
-        if (layer_idx[L][i] == pool_idx) {
-            for (int j = i; j < layer_count[L] - 1; j++)
-                layer_idx[L][j] = layer_idx[L][j + 1];
-            layer_count[L]--;
+    for (int i = 0; i < comp_layer_count[L]; i++) {
+        if (comp_layer_idx[L][i] == pool_idx) {
+            for (int j = i; j < comp_layer_count[L] - 1; j++)
+                comp_layer_idx[L][j] = comp_layer_idx[L][j + 1];
+            comp_layer_count[L]--;
             break;
         }
     }
@@ -218,6 +234,10 @@ int comp_surface_resize(comp_surface_t *s, int new_w, int new_h) {
     rect_union(&sdx, &sdy, &sdw, &sdh,
                s->screen_x, s->screen_y, new_w, new_h);
     screen_dirty = 1;
+
+    if (virgl_comp_active)
+        gpu_comp_surface_resized((int)(s - comp_pool), new_w, new_h);
+
     return 1;
 }
 
@@ -237,12 +257,12 @@ void comp_surface_set_visible(comp_surface_t *s, int visible) {
 
 void comp_surface_raise(comp_surface_t *s) {
     if (!s || !s->in_use) return;
-    int L = s->layer, pi = (int)(s - pool);
-    for (int i = 0; i < layer_count[L]; i++) {
-        if (layer_idx[L][i] == pi) {
-            for (int j = i; j < layer_count[L] - 1; j++)
-                layer_idx[L][j] = layer_idx[L][j + 1];
-            layer_idx[L][layer_count[L] - 1] = pi;
+    int L = s->layer, pi = (int)(s - comp_pool);
+    for (int i = 0; i < comp_layer_count[L]; i++) {
+        if (comp_layer_idx[L][i] == pi) {
+            for (int j = i; j < comp_layer_count[L] - 1; j++)
+                comp_layer_idx[L][j] = comp_layer_idx[L][j + 1];
+            comp_layer_idx[L][comp_layer_count[L] - 1] = pi;
             break;
         }
     }
@@ -251,12 +271,12 @@ void comp_surface_raise(comp_surface_t *s) {
 
 void comp_surface_lower(comp_surface_t *s) {
     if (!s || !s->in_use) return;
-    int L = s->layer, pi = (int)(s - pool);
-    for (int i = 0; i < layer_count[L]; i++) {
-        if (layer_idx[L][i] == pi) {
+    int L = s->layer, pi = (int)(s - comp_pool);
+    for (int i = 0; i < comp_layer_count[L]; i++) {
+        if (comp_layer_idx[L][i] == pi) {
             for (int j = i; j > 0; j--)
-                layer_idx[L][j] = layer_idx[L][j - 1];
-            layer_idx[L][0] = pi;
+                comp_layer_idx[L][j] = comp_layer_idx[L][j - 1];
+            comp_layer_idx[L][0] = pi;
             break;
         }
     }
@@ -326,9 +346,9 @@ void comp_surf_clear(comp_surface_t *s, uint32_t color) {
 }
 
 void compositor_init(void) {
-    memset(pool,        0, sizeof(pool));
-    memset(layer_idx,   0, sizeof(layer_idx));
-    memset(layer_count, 0, sizeof(layer_count));
+    memset(comp_pool,        0, sizeof(comp_pool));
+    memset(comp_layer_idx,   0, sizeof(comp_layer_idx));
+    memset(comp_layer_count, 0, sizeof(comp_layer_count));
     last_frame_tick  = 0;
     fps_frame_count  = 0;
     fps_last_tick    = 0;
@@ -337,6 +357,17 @@ void compositor_init(void) {
     sdx = sdy = 0;
     sdw = (int)gfx_width();
     sdh = (int)gfx_height();
+
+    /* ── Virgl GPU-accelerated compositing ─────────────────── */
+    virgl_comp_active = 0;
+
+    if (gfx_using_virtio_gpu() && virtio_gpu_has_virgl()) {
+        if (gpu_comp_init()) {
+            virgl_comp_active = 1;
+            return;  /* GPU compositor is active, skip DRM setup */
+        }
+        DBG("COMP: GPU compositor init failed, using software path");
+    }
 
     /* ── DRM-backed compositing buffer ──────────────────────── */
     drm_active = 0;
@@ -408,7 +439,7 @@ void compositor_init(void) {
 
 void compositor_damage_all(void) {
     for (int i = 0; i < COMP_MAX_SURFACES; i++) {
-        if (pool[i].in_use) pool[i].damage_all = 1;
+        if (comp_pool[i].in_use) comp_pool[i].damage_all = 1;
     }
     screen_dirty = 1;
     sdx = sdy = 0;
@@ -423,6 +454,23 @@ void compositor_frame(void) {
 
     if (!screen_dirty) goto fps_update;
 
+    /* ── GPU-accelerated path ──────────────────────────────── */
+    if (virgl_comp_active && gpu_comp_is_active()) {
+        gpu_comp_render_frame();
+
+        /* Clear damage tracking (same as software path) */
+        for (int i = 0; i < COMP_MAX_SURFACES; i++) {
+            if (!comp_pool[i].in_use) continue;
+            comp_pool[i].damage_all = 0;
+            comp_pool[i].dmg_x = comp_pool[i].dmg_y = 0;
+            comp_pool[i].dmg_w = comp_pool[i].dmg_h = 0;
+        }
+        screen_dirty = 0;
+        sdx = sdy = sdw = sdh = 0;
+        goto fps_update;
+    }
+
+    /* ── Software compositor path ──────────────────────────── */
     {
         int sw = (int)gfx_width(), sh = (int)gfx_height();
         rect_clamp(&sdx, &sdy, &sdw, &sdh, sw, sh);
@@ -433,8 +481,8 @@ void compositor_frame(void) {
        Skip if wallpaper covers the entire dirty rect (it's opaque, full-screen). */
     {
         int need_clear = 1;
-        if (layer_count[COMP_LAYER_WALLPAPER] > 0) {
-            comp_surface_t *wp = &pool[layer_idx[COMP_LAYER_WALLPAPER][0]];
+        if (comp_layer_count[COMP_LAYER_WALLPAPER] > 0) {
+            comp_surface_t *wp = &comp_pool[comp_layer_idx[COMP_LAYER_WALLPAPER][0]];
             if (wp->in_use && wp->visible && wp->alpha == 255 &&
                 wp->screen_x <= sdx && wp->screen_y <= sdy &&
                 wp->screen_x + wp->w >= sdx + sdw &&
@@ -446,8 +494,8 @@ void compositor_frame(void) {
     }
 
     for (int L = 0; L < COMP_LAYER_COUNT; L++) {
-        for (int i = 0; i < layer_count[L]; i++) {
-            comp_surface_t *s = &pool[layer_idx[L][i]];
+        for (int i = 0; i < comp_layer_count[L]; i++) {
+            comp_surface_t *s = &comp_pool[comp_layer_idx[L][i]];
             if (!s->in_use || !s->visible) continue;
 
             int blit_sx, blit_sy, blit_dx, blit_dy, blit_w, blit_h;
@@ -463,14 +511,14 @@ void compositor_frame(void) {
     }
 
     /* Flip the dirty region to display.
-     * When DRM is active, backbuffer IS the GEM buffer (zero-copy).
-     * gfx_flip_rect still handles the backbuf → framebuffer transfer. */
+       gfx_flip_rect routes through virtio_gpu_transfer_2d + flush,
+       which automatically uses 3D or 2D commands as appropriate. */
     gfx_flip_rect(sdx, sdy, sdw, sdh);
 
     for (int i = 0; i < COMP_MAX_SURFACES; i++) {
-        if (!pool[i].in_use) continue;
-        pool[i].damage_all = 0;
-        pool[i].dmg_x = pool[i].dmg_y = pool[i].dmg_w = pool[i].dmg_h = 0;
+        if (!comp_pool[i].in_use) continue;
+        comp_pool[i].damage_all = 0;
+        comp_pool[i].dmg_x = comp_pool[i].dmg_y = comp_pool[i].dmg_w = comp_pool[i].dmg_h = 0;
     }
     screen_dirty = 0;
     sdx = sdy = sdw = sdh = 0;

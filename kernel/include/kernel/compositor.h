@@ -84,6 +84,15 @@ void comp_surf_draw_string(comp_surface_t *s, int x, int y,
 /* Clear entire surface to color and mark damage_all.                 */
 void comp_surf_clear(comp_surface_t *s, uint32_t color);
 
+/* ═══ Shared compositor state (used by gpu_compositor.c) ════════ */
+
+#define COMP_MAX_SURFACES   64
+#define COMP_MAX_PER_LAYER  16
+
+extern comp_surface_t comp_pool[COMP_MAX_SURFACES];
+extern int  comp_layer_idx[COMP_LAYER_COUNT][COMP_MAX_PER_LAYER];
+extern int  comp_layer_count[COMP_LAYER_COUNT];
+
 /* ═══ Compositor control ════════════════════════════════════════ */
 
 /* Must be called once after gfx_init().                              */

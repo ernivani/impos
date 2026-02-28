@@ -566,9 +566,18 @@ void drm_init(void) {
     drm_dev.next_gem_handle = 1;
     drm_dev.next_fb_id = 1;
 
+    /* VirtGPU 3D state */
+    drm_dev.virgl_ctx_id = 0;
+    drm_dev.virgl_ctx_created = 0;
+
     /* Detect backend */
     if (virtio_gpu_is_active()) {
-        drm_dev.backend = DRM_BACKEND_VIRTIO;
+        if (virtio_gpu_has_virgl()) {
+            drm_dev.backend = DRM_BACKEND_VIRTIO_3D;
+            DBG("DRM: VirtIO GPU with virgl 3D support");
+        } else {
+            drm_dev.backend = DRM_BACKEND_VIRTIO;
+        }
         drm_dev.connector.type = DRM_MODE_CONNECTOR_VIRTUAL;
         drm_dev.encoder.type = DRM_MODE_ENCODER_VIRTUAL;
 
@@ -626,6 +635,10 @@ int drm_is_available(void) {
     return drm_dev.initialized;
 }
 
+drm_device_t *drm_get_device(void) {
+    return drm_dev.initialized ? &drm_dev : NULL;
+}
+
 int drm_ioctl(uint32_t cmd, void *arg) {
     if (!drm_dev.initialized)
         return -1;
@@ -665,6 +678,13 @@ int drm_ioctl(uint32_t cmd, void *arg) {
         return drm_ioctl_mode_rmfb((uint32_t *)arg);
     if (cmd == DRM_IOCTL_MODE_PAGE_FLIP)
         return drm_ioctl_mode_page_flip((drm_mode_page_flip_t *)arg);
+
+    /* VirtGPU 3D ioctls (nr 0x41..0x4B) */
+    if (drm_dev.backend == DRM_BACKEND_VIRTIO_3D) {
+        int rc = drm_virtgpu_ioctl(&drm_dev, cmd, arg);
+        if (rc != -1 || _IOC_NR(cmd) >= 0x41)
+            return rc;
+    }
 
     printf("[DRM] Unknown ioctl cmd=0x%x (type='%c' nr=0x%x)\n",
            cmd, (char)_IOC_TYPE(cmd), _IOC_NR(cmd));

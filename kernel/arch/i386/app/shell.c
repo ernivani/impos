@@ -121,6 +121,7 @@ static void cmd_test(int argc, char* argv[]);
 static void cmd_logout(int argc, char* argv[]);
 static void cmd_gfxdemo(int argc, char* argv[]);
 static void cmd_drmtest(int argc, char* argv[]);
+extern void cmd_virgl_test(int argc, char* argv[]);
 static void cmd_nslookup(int argc, char* argv[]);
 static void cmd_dhcp_cmd(int argc, char* argv[]);
 static void cmd_httpd(int argc, char* argv[]);
@@ -785,6 +786,21 @@ static command_t commands[] = {
         "DESCRIPTION\n"
         "    Opens /dev/dri/card0, issues DRM_IOCTL_VERSION to query the\n"
         "    GPU driver, and tests mmap by allocating a physical page.\n",
+        0
+    },
+    {
+        "virgl_test", cmd_virgl_test,
+        "Test VirtIO GPU 3D (virgl) pipeline",
+        "virgl_test: virgl_test\n"
+        "    Create virgl context, clear render target, verify pixels.\n",
+        "NAME\n"
+        "    virgl_test - test VirtIO GPU 3D pipeline\n\n"
+        "SYNOPSIS\n"
+        "    virgl_test\n\n"
+        "DESCRIPTION\n"
+        "    Validates the virgl 3D command pipeline by creating a context,\n"
+        "    encoding Gallium clear commands, and verifying pixel output.\n"
+        "    Requires QEMU with -vga virtio -display sdl,gl=on.\n",
         0
     },
     {

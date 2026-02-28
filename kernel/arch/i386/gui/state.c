@@ -4,9 +4,15 @@
 #include <kernel/desktop.h>    /* DESKTOP_ACTION_* constants + stubs */
 #include <kernel/shell.h>
 #include <kernel/io.h>
+#include <kernel/gpu_compositor.h>  /* GPU_DEBUG: self-test */
 
 void state_run(void) {
     os_state_t state = STATE_SPLASH;
+
+    /* GPU_DEBUG: run GPU compositor self-test before login blocks */
+    DBG("state: GPU_DEBUG self-test before login");
+    gpu_comp_init();
+    DBG("state: GPU_DEBUG self-test done");
 
     while (1) {
         switch (state) {

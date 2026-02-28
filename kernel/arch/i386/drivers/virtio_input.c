@@ -439,9 +439,6 @@ static void vi_process_event(struct virtio_input_event *ev) {
     }
 }
 
-static uint32_t vi_event_count = 0;
-static uint32_t vi_last_log_tick = 0;
-
 void virtio_input_poll(void) {
     if (!vi_active) return;
 
@@ -456,23 +453,11 @@ void virtio_input_poll(void) {
         uint16_t desc_idx = (uint16_t)vi_used->ring[slot].id;
         vi_last_used_idx++;
 
-        /* Process the event */
-        if (desc_idx < VI_QUEUE_SIZE) {
+        if (desc_idx < VI_QUEUE_SIZE)
             vi_process_event(&vi_events[desc_idx]);
-            vi_event_count++;
-        }
 
         /* Re-post the buffer */
         vi_repost(desc_idx);
-    }
-
-    /* Periodic diagnostic: log event count every ~2 seconds */
-    uint32_t now = pit_get_ticks();
-    if (now - vi_last_log_tick >= 240) {
-        if (vi_event_count > 0 || vi_last_log_tick == 0)
-            DBG("[virtio-input] events=%u used_idx=%u", vi_event_count,
-                vi_used->idx);
-        vi_last_log_tick = now;
     }
 }
 

@@ -255,7 +255,6 @@ int ui_shell_run(void)
         {
             int c = keyboard_getchar_nb();
             if (c > 0) {
-                DBG("[ui_shell] key=%d (0x%x)", c, c);
                 char ch = (char)c;
                 int term_focused = terminal_app_win_open() &&
                     ui_window_focused() == terminal_app_win_id();

@@ -1,4 +1,4 @@
-# Mesa GPU Integration Plan for ImposOS
+[# Mesa GPU Integration Plan for ImposOS
 
 ## Goal
 
@@ -563,3 +563,4 @@ kernel/
 - [Linux virtio-gpu driver](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/virtio) -- reference (~5K LOC, much simpler)
 - [TinyGL](https://bellard.org/TinyGL/) -- quick OpenGL 1.x alternative
 - [OSDev Wiki: VGA Hardware](https://wiki.osdev.org/VGA_Hardware) -- BGA/VBE mode setting
+]()

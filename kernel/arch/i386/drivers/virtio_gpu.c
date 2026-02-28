@@ -1,4 +1,6 @@
 #include <kernel/virtio_gpu.h>
+#include <kernel/virtio_gpu_3d.h>
+#include <kernel/virtio_gpu_internal.h>
 #include <kernel/pci.h>
 #include <kernel/io.h>
 #include <string.h>
@@ -95,110 +97,6 @@ uint32_t bga_get_lfb_addr(void) {
 #define VRING_DESC_F_NEXT   0x01
 #define VRING_DESC_F_WRITE  0x02
 
-/* ═══ GPU command types ════════════════════════════════════════ */
-
-#define VIRTIO_GPU_CMD_GET_DISPLAY_INFO         0x0100
-#define VIRTIO_GPU_CMD_RESOURCE_CREATE_2D       0x0101
-#define VIRTIO_GPU_CMD_RESOURCE_UNREF           0x0102
-#define VIRTIO_GPU_CMD_SET_SCANOUT              0x0103
-#define VIRTIO_GPU_CMD_RESOURCE_FLUSH           0x0104
-#define VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D      0x0105
-#define VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING  0x0106
-#define VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING  0x0107
-
-#define VIRTIO_GPU_CMD_UPDATE_CURSOR            0x0300
-#define VIRTIO_GPU_CMD_MOVE_CURSOR              0x0301
-
-#define VIRTIO_GPU_RESP_OK_NODATA               0x1100
-#define VIRTIO_GPU_RESP_OK_DISPLAY_INFO         0x1101
-
-/* Pixel format: BGRX (matches our framebuffer layout) */
-#define VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM        2
-
-/* ═══ Protocol structures ══════════════════════════════════════ */
-
-struct virtio_gpu_ctrl_hdr {
-    uint32_t type;
-    uint32_t flags;
-    uint64_t fence_id;
-    uint32_t ctx_id;
-    uint32_t padding;
-} __attribute__((packed));
-
-struct virtio_gpu_rect {
-    uint32_t x, y, width, height;
-} __attribute__((packed));
-
-struct virtio_gpu_resource_create_2d {
-    struct virtio_gpu_ctrl_hdr hdr;
-    uint32_t resource_id;
-    uint32_t format;
-    uint32_t width;
-    uint32_t height;
-} __attribute__((packed));
-
-struct virtio_gpu_resource_attach_backing {
-    struct virtio_gpu_ctrl_hdr hdr;
-    uint32_t resource_id;
-    uint32_t nr_entries;
-} __attribute__((packed));
-
-struct virtio_gpu_mem_entry {
-    uint64_t addr;
-    uint32_t length;
-    uint32_t padding;
-} __attribute__((packed));
-
-struct virtio_gpu_set_scanout {
-    struct virtio_gpu_ctrl_hdr hdr;
-    struct virtio_gpu_rect r;
-    uint32_t scanout_id;
-    uint32_t resource_id;
-} __attribute__((packed));
-
-struct virtio_gpu_transfer_to_host_2d {
-    struct virtio_gpu_ctrl_hdr hdr;
-    struct virtio_gpu_rect r;
-    uint64_t offset;
-    uint32_t resource_id;
-    uint32_t padding;
-} __attribute__((packed));
-
-struct virtio_gpu_resource_flush_cmd {
-    struct virtio_gpu_ctrl_hdr hdr;
-    struct virtio_gpu_rect r;
-    uint32_t resource_id;
-    uint32_t padding;
-} __attribute__((packed));
-
-/* GET_DISPLAY_INFO response */
-#define VIRTIO_GPU_MAX_SCANOUTS 16
-
-struct virtio_gpu_display_one {
-    struct virtio_gpu_rect r;
-    uint32_t enabled;
-    uint32_t flags;
-} __attribute__((packed));
-
-struct virtio_gpu_resp_display_info {
-    struct virtio_gpu_ctrl_hdr hdr;
-    struct virtio_gpu_display_one pmodes[VIRTIO_GPU_MAX_SCANOUTS];
-} __attribute__((packed));
-
-struct virtio_gpu_cursor_cmd {
-    struct virtio_gpu_ctrl_hdr hdr;
-    struct {
-        uint32_t scanout_id;
-        uint32_t x;
-        uint32_t y;
-        uint32_t padding;
-    } pos;
-    uint32_t resource_id;
-    uint32_t hot_x;
-    uint32_t hot_y;
-    uint32_t padding;
-} __attribute__((packed));
-
 /* ═══ Virtqueue structures ═════════════════════════════════════ */
 
 struct vring_desc {
@@ -269,6 +167,7 @@ struct virtio_pci_common_cfg {
 
 static int gpu_active = 0;
 static int use_modern = 0;
+static int gpu_has_virgl = 0;  /* 1 = VIRTIO_GPU_F_VIRGL negotiated */
 static uint16_t gpu_iobase;
 
 /* Modern MMIO pointers (valid when use_modern=1) */
@@ -286,7 +185,7 @@ static virtqueue_t cursor_vq;
 
 /* Command/response buffers (must be contiguous, identity-mapped) */
 static uint8_t cmd_buf[512] __attribute__((aligned(64)));
-static uint8_t resp_buf[64] __attribute__((aligned(64)));
+static uint8_t resp_buf[256] __attribute__((aligned(64)));  /* enlarged for capset responses */
 
 /* Scanout state */
 static uint32_t scanout_res_id;
@@ -295,6 +194,8 @@ static uint32_t next_resource_id = 1;
 static uint32_t disp_w, disp_h;
 static uint32_t *disp_buf;
 static uint32_t disp_pitch; /* bytes per row */
+static int      use_virgl_scanout = 0; /* 1 = use 3D transfer for scanout */
+static uint32_t scanout_virgl_ctx = 0; /* virgl context ID for 3D transfers */
 
 /* Cursor state */
 #define CURSOR_W 32
@@ -449,16 +350,23 @@ static int vq_submit_cmd(virtqueue_t *vq, uint16_t queue_idx,
     /* Notify device */
     gpu_notify(queue_idx);
 
-    /* Poll for completion (memory clobber forces re-read of used->idx) */
-    int timeout = 1000000;
-    while (vq->used->idx == vq->last_used_idx && --timeout > 0)
-        __asm__ volatile("pause" ::: "memory");
+    /* Poll for completion.  With virgl enabled the host GL context may
+       take hundreds of milliseconds to initialise, so use a generous
+       spin budget (~500 ms at ~5 ns/pause under KVM). */
+    for (int tries = 0; tries < 100; tries++) {
+        int spins = 1000000;
+        while (vq->used->idx == vq->last_used_idx && --spins > 0)
+            __asm__ volatile("pause" ::: "memory");
+        if (vq->used->idx != vq->last_used_idx)
+            break;
+    }
 
-    if (timeout <= 0) {
+    if (vq->used->idx == vq->last_used_idx) {
         DBG("[virtio-gpu] vq_submit_cmd TIMEOUT (q=%u cmd_len=%u resp_len=%u)",
             queue_idx, cmd_len, resp_len);
-        vq_free_desc(vq, d0);
-        vq_free_desc(vq, d1);
+        /* Do NOT free descriptors — device may still reference them.
+           Advance last_used_idx to resync when device eventually
+           completes, and accept the descriptor leak. */
         return -1;
     }
 
@@ -470,12 +378,16 @@ static int vq_submit_cmd(virtqueue_t *vq, uint16_t queue_idx,
 
     /* Check response */
     struct virtio_gpu_ctrl_hdr *hdr = (struct virtio_gpu_ctrl_hdr *)resp;
-    return (hdr->type >= VIRTIO_GPU_RESP_OK_NODATA &&
-            hdr->type <= 0x11FF) ? 0 : -1;
+    struct virtio_gpu_ctrl_hdr *req = (struct virtio_gpu_ctrl_hdr *)cmd;
+    if (hdr->type < VIRTIO_GPU_RESP_OK_NODATA || hdr->type > 0x11FF) {
+        DBG("[virtio-gpu] cmd 0x%x FAILED: resp=0x%x", req->type, hdr->type);
+        return -1;
+    }
+    return 0;
 }
 
 /* Submit a command with an additional data buffer chained after cmd.
-   Three descriptors: cmd → data → resp */
+   Three descriptors: cmd -> data -> resp */
 static int vq_submit_cmd_data(virtqueue_t *vq, uint16_t queue_idx,
                               void *cmd, uint32_t cmd_len,
                               void *data, uint32_t data_len,
@@ -506,15 +418,16 @@ static int vq_submit_cmd_data(virtqueue_t *vq, uint16_t queue_idx,
 
     gpu_notify(queue_idx);
 
-    int timeout = 1000000;
-    while (vq->used->idx == vq->last_used_idx && --timeout > 0)
-        __asm__ volatile("pause" ::: "memory");
+    for (int tries = 0; tries < 100; tries++) {
+        int spins = 1000000;
+        while (vq->used->idx == vq->last_used_idx && --spins > 0)
+            __asm__ volatile("pause" ::: "memory");
+        if (vq->used->idx != vq->last_used_idx)
+            break;
+    }
 
-    if (timeout <= 0) {
+    if (vq->used->idx == vq->last_used_idx) {
         DBG("[virtio-gpu] vq_submit_cmd_data TIMEOUT (q=%u)", queue_idx);
-        vq_free_desc(vq, d0);
-        vq_free_desc(vq, d1);
-        vq_free_desc(vq, d2);
         return -1;
     }
 
@@ -523,8 +436,12 @@ static int vq_submit_cmd_data(virtqueue_t *vq, uint16_t queue_idx,
     vq_free_desc(vq, d1);
     vq_free_desc(vq, d2);
     struct virtio_gpu_ctrl_hdr *hdr = (struct virtio_gpu_ctrl_hdr *)resp;
-    return (hdr->type >= VIRTIO_GPU_RESP_OK_NODATA &&
-            hdr->type <= 0x11FF) ? 0 : -1;
+    struct virtio_gpu_ctrl_hdr *req = (struct virtio_gpu_ctrl_hdr *)cmd;
+    if (hdr->type < VIRTIO_GPU_RESP_OK_NODATA || hdr->type > 0x11FF) {
+        DBG("[virtio-gpu] cmd_data 0x%x FAILED: resp=0x%x", req->type, hdr->type);
+        return -1;
+    }
+    return 0;
 }
 
 /* Submit a cursor command (no response expected, fire-and-forget) */
@@ -582,7 +499,7 @@ static int gpu_attach_backing(uint32_t res_id, uint32_t *buf,
     cmd->resource_id = res_id;
     cmd->nr_entries = 1;
 
-    single_entry.addr = (uint32_t)buf;
+    single_entry.addr = (uint64_t)(uint32_t)buf;
     single_entry.length = size_bytes;
     single_entry.padding = 0;
 
@@ -696,11 +613,61 @@ int virtio_gpu_init(void) {
         common_cfg->device_status = VIRTIO_STATUS_ACKNOWLEDGE |
                                     VIRTIO_STATUS_DRIVER;
 
-        /* Feature negotiation (accept no features for basic 2D) */
+        /* Feature negotiation — check for VIRGL support.
+         * NOTE: We intentionally do NOT negotiate VIRGL for the
+         * scanout display path.  When virgl is negotiated, QEMU
+         * routes ALL commands (including SET_SCANOUT, RESOURCE_FLUSH)
+         * through virgl-specific GL handlers that use
+         * dpy_gl_scanout_texture / dpy_gl_scanout_flush.  These
+         * require a fully working virgl GL pipeline which has
+         * compatibility issues across QEMU versions.
+         *
+         * Without virgl, the standard 2D handlers create pixman
+         * surfaces that work with any display backend (including
+         * virtio-vga-gl with -display gtk,gl=on).
+         *
+         * 3D rendering can be added later as an overlay once the
+         * base display pipeline is stable. */
         common_cfg->device_feature_select = 0;
-        (void)common_cfg->device_feature; /* read features */
+        uint32_t dev_features = common_cfg->device_feature;
+        DBG("[virtio-gpu] Device features[0]: 0x%x (VIRGL=%d EDID=%d)",
+            dev_features,
+            !!(dev_features & (1u << VIRTIO_GPU_F_VIRGL)),
+            !!(dev_features & (1u << VIRTIO_GPU_F_EDID)));
+
+        /* Also check feature bits 32-63 */
+        common_cfg->device_feature_select = 1;
+        uint32_t dev_features_hi = common_cfg->device_feature;
+        if (dev_features_hi)
+            DBG("[virtio-gpu] Device features[1]: 0x%x", dev_features_hi);
+
+        /* Negotiate device-specific features (bits 0-31) */
+        uint32_t drv_features = 0;
+        if (dev_features & (1u << VIRTIO_GPU_F_VIRGL)) {
+            drv_features |= (1u << VIRTIO_GPU_F_VIRGL);
+            gpu_has_virgl = 1;
+            DBG("[virtio-gpu] Negotiating VIRGL feature");
+        }
+        if (dev_features & (1u << VIRTIO_GPU_F_EDID)) {
+            drv_features |= (1u << VIRTIO_GPU_F_EDID);
+        }
+
         common_cfg->driver_feature_select = 0;
-        common_cfg->driver_feature = 0;
+        common_cfg->driver_feature = drv_features;
+
+        /* Negotiate transport features (bits 32-63).
+           VIRTIO_F_VERSION_1 (bit 32) is REQUIRED for modern devices.
+           Without it, QEMU's virglrenderer may reject 3D commands. */
+#define VIRTIO_F_VERSION_1_BIT  0   /* bit 32 = bit 0 of high word */
+        uint32_t drv_features_hi = 0;
+        if (dev_features_hi & (1u << VIRTIO_F_VERSION_1_BIT)) {
+            drv_features_hi |= (1u << VIRTIO_F_VERSION_1_BIT);
+        }
+
+        common_cfg->driver_feature_select = 1;
+        common_cfg->driver_feature = drv_features_hi;
+        DBG("[virtio-gpu] Negotiated features: lo=0x%x hi=0x%x",
+            drv_features, drv_features_hi);
 
         common_cfg->device_status = VIRTIO_STATUS_ACKNOWLEDGE |
                                     VIRTIO_STATUS_DRIVER |
@@ -762,8 +729,8 @@ int virtio_gpu_init(void) {
                                     VIRTIO_STATUS_DRIVER_OK;
 
         gpu_active = 1;
-        DBG("[virtio-gpu] Modern MMIO init OK (ctrl_q=%u, cursor_q=%u)",
-            ctrl_size, cur_size);
+        DBG("[virtio-gpu] Modern MMIO init OK (ctrl_q=%u, cursor_q=%u, virgl=%d)",
+            ctrl_size, cur_size, gpu_has_virgl);
     } else {
         /* ── Legacy I/O path ─────────────────────────────────── */
 
@@ -777,8 +744,21 @@ int virtio_gpu_init(void) {
              VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
 
         /* Feature negotiation */
-        inl(gpu_iobase + VIRTIO_REG_DEVICE_FEATURES);
-        outl(gpu_iobase + VIRTIO_REG_DRIVER_FEATURES, 0);
+        uint32_t dev_features = inl(gpu_iobase + VIRTIO_REG_DEVICE_FEATURES);
+        uint32_t drv_features = 0;
+
+        DBG("[virtio-gpu] Legacy device features: 0x%x (VIRGL=%d)",
+            dev_features, !!(dev_features & (1u << VIRTIO_GPU_F_VIRGL)));
+
+        if (dev_features & (1u << VIRTIO_GPU_F_VIRGL)) {
+            drv_features |= (1u << VIRTIO_GPU_F_VIRGL);
+            gpu_has_virgl = 1;
+            DBG("[virtio-gpu] Negotiating VIRGL (legacy path)");
+        } else {
+            DBG("[virtio-gpu] 2D-only (legacy path)");
+        }
+
+        outl(gpu_iobase + VIRTIO_REG_DRIVER_FEATURES, drv_features);
 
         /* Control virtqueue (queue 0) */
         outw(gpu_iobase + VIRTIO_REG_QUEUE_SELECT, 0);
@@ -802,8 +782,20 @@ int virtio_gpu_init(void) {
              VIRTIO_STATUS_DRIVER_OK);
 
         gpu_active = 1;
-        DBG("[virtio-gpu] Legacy I/O init OK (iobase=0x%x, ctrl_q=%u, cursor_q=%u)",
-            gpu_iobase, ctrl_size, cur_size);
+        DBG("[virtio-gpu] Legacy I/O init OK (iobase=0x%x, ctrl_q=%u, cursor_q=%u, virgl=%d)",
+            gpu_iobase, ctrl_size, cur_size, gpu_has_virgl);
+    }
+
+    /* Diagnostic: query display info immediately to verify device responds */
+    {
+        uint32_t dw[4], dh[4];
+        int n = virtio_gpu_get_display_info(dw, dh, 4);
+        if (n > 0) {
+            for (int i = 0; i < n; i++)
+                DBG("[virtio-gpu] Scanout %d: %ux%u", i, dw[i], dh[i]);
+        } else {
+            DBG("[virtio-gpu] WARNING: GET_DISPLAY_INFO returned 0 scanouts");
+        }
     }
 
     return 1;
@@ -811,6 +803,10 @@ int virtio_gpu_init(void) {
 
 int virtio_gpu_is_active(void) {
     return gpu_active;
+}
+
+int virtio_gpu_has_virgl(void) {
+    return gpu_has_virgl;
 }
 
 int virtio_gpu_setup_scanout(uint32_t *backbuf, int width, int height,
@@ -822,32 +818,48 @@ int virtio_gpu_setup_scanout(uint32_t *backbuf, int width, int height,
     disp_buf = backbuf;
     disp_pitch = (uint32_t)pitch;
 
-    /* Create display resource */
     scanout_res_id = next_resource_id++;
-    if (gpu_create_resource_2d(scanout_res_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
-                               disp_w, disp_h) != 0) {
-        DBG("[virtio-gpu] Failed to create display resource");
-        gpu_active = 0;
-        return 0;
-    }
-
-    /* Attach backbuffer as backing storage */
     uint32_t buf_size = disp_h * disp_pitch;
-    if (gpu_attach_backing(scanout_res_id, backbuf, buf_size) != 0) {
-        DBG("[virtio-gpu] Failed to attach backing");
-        gpu_active = 0;
-        return 0;
+
+    /* Always use the 2D display path for scanout.  Even when virgl is
+     * negotiated, we use RESOURCE_CREATE_2D + TRANSFER_TO_HOST_2D for
+     * the primary display.  This works reliably with ALL QEMU display
+     * backends (including virtio-vga-gl with broken GL scanout on WSL2).
+     *
+     * Virgl 3D commands remain available for off-screen rendering via
+     * the DRM/virgl_test paths.  Only the scanout surface is 2D.
+     *
+     * The old 3D scanout approach used dpy_gl_scanout_texture() which
+     * requires DMABUF support and a working GL display — often broken
+     * on WSL2 and headless setups. */
+    (void)use_virgl_scanout;
+    {
+setup_2d:
+        /* ── Standard 2D path ──────────────────────────────────── */
+        if (gpu_create_resource_2d(scanout_res_id,
+                                    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+                                    disp_w, disp_h) != 0) {
+            DBG("[virtio-gpu] Failed to create display resource");
+            gpu_active = 0;
+            return 0;
+        }
+
+        if (gpu_attach_backing(scanout_res_id, backbuf, buf_size) != 0) {
+            DBG("[virtio-gpu] Failed to attach backing");
+            gpu_active = 0;
+            return 0;
+        }
+
+        if (gpu_set_scanout(scanout_res_id, 0, 0, 0, disp_w, disp_h) != 0) {
+            DBG("[virtio-gpu] Failed to set scanout");
+            gpu_active = 0;
+            return 0;
+        }
+
+        /* Initial full transfer via 2D path */
+        gpu_transfer_2d(scanout_res_id, 0, 0, disp_w, disp_h, 0);
     }
 
-    /* Set scanout 0 to our resource */
-    if (gpu_set_scanout(scanout_res_id, 0, 0, 0, disp_w, disp_h) != 0) {
-        DBG("[virtio-gpu] Failed to set scanout");
-        gpu_active = 0;
-        return 0;
-    }
-
-    /* Initial full transfer + flush */
-    gpu_transfer_2d(scanout_res_id, 0, 0, disp_w, disp_h, 0);
     gpu_resource_flush(scanout_res_id, 0, 0, disp_w, disp_h);
 
     DBG("[virtio-gpu] Scanout %ux%u ready (resource %u)",
@@ -865,7 +877,7 @@ void virtio_gpu_transfer_2d(int x, int y, int w, int h) {
     if (y + h > (int)disp_h) h = (int)disp_h - y;
     if (w <= 0 || h <= 0) return;
 
-    /* Offset into the backing buffer where this rect starts */
+    /* Always use 2D transfer for scanout (works with all display backends) */
     uint64_t offset = (uint64_t)y * disp_pitch + (uint64_t)x * 4;
     gpu_transfer_2d(scanout_res_id, (uint32_t)x, (uint32_t)y,
                     (uint32_t)w, (uint32_t)h, offset);
@@ -1011,4 +1023,41 @@ uint32_t virtio_gpu_vram_kb(void) {
     if (gpu_active)
         return (disp_w * disp_h * 4) / 1024;
     return 0;
+}
+
+/* ═══ Public helpers for 3D module ════════════════════════════ */
+
+uint32_t virtio_gpu_alloc_resource_id(void) {
+    return next_resource_id++;
+}
+
+int virtio_gpu_submit_ctrl_cmd(void *cmd, uint32_t cmd_len,
+                                void *resp, uint32_t resp_len) {
+    if (!gpu_active) return -1;
+    return vq_submit_cmd(&ctrl_vq, 0, cmd, cmd_len, resp, resp_len);
+}
+
+int virtio_gpu_submit_ctrl_cmd_data(void *cmd, uint32_t cmd_len,
+                                     void *data, uint32_t data_len,
+                                     void *resp, uint32_t resp_len) {
+    if (!gpu_active) return -1;
+    return vq_submit_cmd_data(&ctrl_vq, 0, cmd, cmd_len,
+                              data, data_len, resp, resp_len);
+}
+
+int virtio_gpu_attach_resource_backing(uint32_t res_id,
+                                        uint32_t *buf, uint32_t size_bytes) {
+    return gpu_attach_backing(res_id, buf, size_bytes);
+}
+
+int virtio_gpu_set_scanout_resource(uint32_t res_id, uint32_t scanout_id,
+                                     uint32_t x, uint32_t y,
+                                     uint32_t w, uint32_t h) {
+    return gpu_set_scanout(res_id, scanout_id, x, y, w, h);
+}
+
+int virtio_gpu_flush_resource(uint32_t res_id,
+                               uint32_t x, uint32_t y,
+                               uint32_t w, uint32_t h) {
+    return gpu_resource_flush(res_id, x, y, w, h);
 }

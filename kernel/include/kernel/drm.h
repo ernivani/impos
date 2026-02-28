@@ -78,9 +78,39 @@
 #define DRM_MODE_PAGE_FLIP_EVENT    0x01
 
 /* Backend types */
-#define DRM_BACKEND_NONE    0
-#define DRM_BACKEND_VIRTIO  1
-#define DRM_BACKEND_BGA     2
+#define DRM_BACKEND_NONE        0
+#define DRM_BACKEND_VIRTIO      1
+#define DRM_BACKEND_BGA         2
+#define DRM_BACKEND_VIRTIO_3D   3  /* VirtIO GPU with virgl 3D */
+
+/* ── DRM VirtGPU ioctl numbers (driver-specific, base 0x40) ────── */
+
+#define DRM_VIRTGPU_MAP                 0x01
+#define DRM_VIRTGPU_EXECBUFFER          0x02
+#define DRM_VIRTGPU_GETPARAM            0x03
+#define DRM_VIRTGPU_RESOURCE_CREATE     0x04
+#define DRM_VIRTGPU_RESOURCE_INFO       0x05
+#define DRM_VIRTGPU_TRANSFER_FROM_HOST  0x06
+#define DRM_VIRTGPU_TRANSFER_TO_HOST    0x07
+#define DRM_VIRTGPU_WAIT                0x08
+#define DRM_VIRTGPU_GET_CAPS            0x09
+#define DRM_VIRTGPU_CONTEXT_INIT        0x0B
+
+/* VirtGPU ioctl command encodings (type 'd', nr = 0x40 + virtgpu_nr) */
+#define DRM_IOCTL_VIRTGPU_MAP              _IOWR(DRM_IOCTL_BASE, 0x41, sizeof(drm_virtgpu_map_t))
+#define DRM_IOCTL_VIRTGPU_EXECBUFFER       _IOWR(DRM_IOCTL_BASE, 0x42, sizeof(drm_virtgpu_execbuffer_t))
+#define DRM_IOCTL_VIRTGPU_GETPARAM         _IOWR(DRM_IOCTL_BASE, 0x43, sizeof(drm_virtgpu_getparam_t))
+#define DRM_IOCTL_VIRTGPU_RESOURCE_CREATE  _IOWR(DRM_IOCTL_BASE, 0x44, sizeof(drm_virtgpu_resource_create_t))
+#define DRM_IOCTL_VIRTGPU_RESOURCE_INFO    _IOWR(DRM_IOCTL_BASE, 0x45, sizeof(drm_virtgpu_resource_info_t))
+#define DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST _IOWR(DRM_IOCTL_BASE, 0x46, sizeof(drm_virtgpu_3d_transfer_t))
+#define DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST _IOWR(DRM_IOCTL_BASE, 0x47, sizeof(drm_virtgpu_3d_transfer_t))
+#define DRM_IOCTL_VIRTGPU_WAIT             _IOWR(DRM_IOCTL_BASE, 0x48, sizeof(drm_virtgpu_wait_t))
+#define DRM_IOCTL_VIRTGPU_GET_CAPS         _IOWR(DRM_IOCTL_BASE, 0x49, sizeof(drm_virtgpu_get_caps_t))
+#define DRM_IOCTL_VIRTGPU_CONTEXT_INIT     _IOWR(DRM_IOCTL_BASE, 0x4B, sizeof(drm_virtgpu_context_init_t))
+
+/* VirtGPU getparam IDs */
+#define VIRTGPU_PARAM_3D_FEATURES       1
+#define VIRTGPU_PARAM_CAPSET_QUERY_FIX  2
 
 /* GEM / framebuffer limits */
 #define DRM_GEM_MAX_OBJECTS     32
@@ -243,6 +273,91 @@ typedef struct {
     uint64_t user_data;
 } drm_mode_page_flip_t;
 
+/* ── VirtGPU DRM structures ─────────────────────────────────────── */
+
+/* DRM_IOCTL_VIRTGPU_MAP */
+typedef struct {
+    uint32_t handle;
+    uint32_t pad;
+    uint64_t offset;     /* output: virtual address (identity-mapped) */
+} drm_virtgpu_map_t;
+
+/* DRM_IOCTL_VIRTGPU_EXECBUFFER */
+typedef struct {
+    uint32_t flags;
+    uint32_t size;       /* size of command buffer in bytes */
+    uint64_t command;    /* pointer to Gallium command stream */
+    uint64_t bo_handles; /* unused for now */
+    uint32_t num_bo_handles;
+    uint32_t pad;
+} drm_virtgpu_execbuffer_t;
+
+/* DRM_IOCTL_VIRTGPU_GETPARAM */
+typedef struct {
+    uint64_t param;
+    uint64_t value;      /* output */
+} drm_virtgpu_getparam_t;
+
+/* DRM_IOCTL_VIRTGPU_RESOURCE_CREATE */
+typedef struct {
+    uint32_t target;
+    uint32_t format;
+    uint32_t bind;
+    uint32_t width;
+    uint32_t height;
+    uint32_t depth;
+    uint32_t array_size;
+    uint32_t last_level;
+    uint32_t nr_samples;
+    uint32_t flags;
+    /* output */
+    uint32_t bo_handle;
+    uint32_t res_handle;
+    uint32_t size;
+    uint32_t stride;
+} drm_virtgpu_resource_create_t;
+
+/* DRM_IOCTL_VIRTGPU_RESOURCE_INFO */
+typedef struct {
+    uint32_t bo_handle;
+    uint32_t res_handle; /* output */
+    uint32_t size;       /* output */
+    uint32_t stride;     /* output (blob_mem) */
+} drm_virtgpu_resource_info_t;
+
+/* DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST / TRANSFER_FROM_HOST */
+typedef struct {
+    uint32_t bo_handle;
+    uint32_t pad;
+    uint64_t offset;
+    uint32_t level;
+    uint32_t stride;
+    uint32_t layer_stride;
+    uint32_t x, y, z, w, h, d;
+} drm_virtgpu_3d_transfer_t;
+
+/* DRM_IOCTL_VIRTGPU_WAIT */
+typedef struct {
+    uint32_t handle;
+    uint32_t flags;
+} drm_virtgpu_wait_t;
+
+/* DRM_IOCTL_VIRTGPU_GET_CAPS */
+typedef struct {
+    uint32_t cap_set_id;
+    uint32_t cap_set_ver;
+    uint64_t addr;       /* pointer to output buffer */
+    uint32_t size;
+    uint32_t pad;
+} drm_virtgpu_get_caps_t;
+
+/* DRM_IOCTL_VIRTGPU_CONTEXT_INIT */
+typedef struct {
+    uint32_t num_params;
+    uint32_t pad;
+    uint64_t ctx_set_params; /* pointer to params array (unused, 0 = virgl) */
+} drm_virtgpu_context_init_t;
+
 /* ── Internal GEM / framebuffer objects ────────────────────────── */
 
 typedef struct {
@@ -255,6 +370,8 @@ typedef struct {
     uint32_t pitch;
     uint32_t bpp;
     int      refcount;
+    /* VirtGPU 3D extension fields */
+    uint32_t res_id;        /* virgl resource ID (0 = 2D-only / dumb buffer) */
 } drm_gem_object_t;
 
 typedef struct {
@@ -309,6 +426,10 @@ typedef struct {
     /* Framebuffer table (Stage 2) */
     uint32_t          next_fb_id;
     drm_framebuffer_t framebuffers[DRM_MAX_FRAMEBUFFERS];
+
+    /* VirtGPU 3D state (Stage 4a) */
+    uint32_t          virgl_ctx_id;      /* active virgl context (0 = none) */
+    int               virgl_ctx_created; /* 1 if ctx has been created */
 } drm_device_t;
 
 /* ── DRM API ────────────────────────────────────────────────────── */
@@ -316,5 +437,11 @@ typedef struct {
 void drm_init(void);
 int drm_ioctl(uint32_t cmd, void *arg);
 int drm_is_available(void);
+
+/* VirtGPU 3D ioctl dispatch (implemented in virtio_gpu_drm.c) */
+int drm_virtgpu_ioctl(drm_device_t *dev, uint32_t cmd, void *arg);
+
+/* Access to DRM device state (for virtgpu module) */
+drm_device_t *drm_get_device(void);
 
 #endif

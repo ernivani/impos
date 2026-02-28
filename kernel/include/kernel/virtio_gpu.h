@@ -38,6 +38,33 @@ uint32_t virtio_gpu_vram_kb(void);
    For each enabled scanout, writes width/height into the output arrays. */
 int virtio_gpu_get_display_info(uint32_t *widths, uint32_t *heights, int max_scanouts);
 
+/* Check if VIRTIO_GPU_F_VIRGL was negotiated */
+int virtio_gpu_has_virgl(void);
+
+/* Allocate a unique resource ID (shared across 2D and 3D) */
+uint32_t virtio_gpu_alloc_resource_id(void);
+
+/* Public control queue submission helpers (used by virtio_gpu_3d.c) */
+int virtio_gpu_submit_ctrl_cmd(void *cmd, uint32_t cmd_len,
+                                void *resp, uint32_t resp_len);
+int virtio_gpu_submit_ctrl_cmd_data(void *cmd, uint32_t cmd_len,
+                                     void *data, uint32_t data_len,
+                                     void *resp, uint32_t resp_len);
+
+/* Attach backing storage to any resource */
+int virtio_gpu_attach_resource_backing(uint32_t res_id,
+                                        uint32_t *buf, uint32_t size_bytes);
+
+/* Set scanout to a specific resource */
+int virtio_gpu_set_scanout_resource(uint32_t res_id, uint32_t scanout_id,
+                                     uint32_t x, uint32_t y,
+                                     uint32_t w, uint32_t h);
+
+/* Flush a resource to display */
+int virtio_gpu_flush_resource(uint32_t res_id,
+                               uint32_t x, uint32_t y,
+                               uint32_t w, uint32_t h);
+
 /* ═══ Bochs VGA BGA register access ═══════════════════════════ */
 
 /* Detect Bochs VGA adapter — returns 1 if BGA registers respond */
