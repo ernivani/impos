@@ -1,17 +1,34 @@
+# Build artifacts
+*.o
+*.d
+*.a
 *.iso
 *.img
-*.o
+*.kernel
 *.log
 *.exe
-*.png
+*.so
 
+# Generated assets
+*.png
+initrd.tar
+
+# Build directories
 isodir/
 sysroot/
 initrd_staging/
-initrd.tar
+/iso
 
+# IDE / editor
 .vscode/
-./idea/
+.idea/
+
+# Debug / tracing artifacts
+gl_intercept.c
+gl_intercept.so
+
+# Game data (user-provided)
+*.wad
 
 # Downloaded BusyBox binary (use 'make download-busybox' to fetch)
 test_programs/busybox
