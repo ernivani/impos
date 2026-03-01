@@ -21,6 +21,8 @@
 #define SYS_SHM_DETACH 14  /* EBX=region_id → EAX=0 or -1 */
 #define SYS_IOCTL      15  /* EBX=fd, ECX=cmd, EDX=arg → EAX=0 or -errno */
 #define SYS_MMAP       16  /* EBX=addr, ECX=len, EDX=prot, ESI=flags → EAX=addr or -1 */
+#define SYS_WAITPID    17  /* EBX=pid, ECX=&wstatus, EDX=options → EAX=child_pid or -1 */
+#define SYS_NICE       18  /* EBX=priority (0-3) → EAX=0 or -1 */
 
 /* Syscall dispatcher — called from isr_handler for INT 0x80.
  * Returns (possibly different) stack pointer after scheduling. */

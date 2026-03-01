@@ -7,6 +7,9 @@
 #include <kernel/signal.h>
 #include <kernel/win32_seh.h>
 #include <kernel/vmm.h>
+#include <kernel/vma.h>
+#include <kernel/pmm.h>
+#include <kernel/frame_ref.h>
 #include <kernel/gfx.h>
 #include <stdint.h>
 #include <string.h>
@@ -296,6 +299,7 @@ static void pit_handler(registers_t* regs) {
         pit_busy_ticks++;
     }
     task_tick();
+    sig_check_alarms();
     second_counter++;
     if (second_counter >= TARGET_HZ) {
         second_counter = 0;
@@ -420,6 +424,55 @@ registers_t* isr_handler(registers_t* regs) {
                 if (seh_dispatch_exception(t, regs, int_no))
                     return regs;  /* SEH handler handled it */
             }
+
+            /* ── Demand paging: not-present fault in a valid VMA ── */
+            if (int_no == 14 && t && t->vma) {
+                uint32_t page_va = cr2 & PAGE_MASK;
+                uint32_t err = regs->err_code;
+
+                /* Not-present fault (bit 0 = 0): demand page */
+                if (!(err & 1)) {
+                    vma_t *vma = vma_find(t->vma, cr2);
+                    if (vma) {
+                        uint32_t frame = pmm_alloc_frame();
+                        if (frame) {
+                            memset((void *)frame, 0, PAGE_SIZE);
+                            uint32_t pflags = PTE_PRESENT | PTE_USER;
+                            if (vma->vm_flags & VMA_WRITE) pflags |= PTE_WRITABLE;
+                            vmm_map_user_page(t->page_dir, page_va, frame, pflags);
+                            return regs;  /* fault handled — resume execution */
+                        }
+                        /* OOM: fall through to SIGSEGV */
+                    }
+                }
+
+                /* Protection fault + write (bits 0,1 set): check for COW */
+                if ((err & 1) && (err & 2)) {
+                    uint32_t pte = vmm_get_pte(t->page_dir, page_va);
+                    if (pte & PTE_COW) {
+                        uint32_t old_frame = pte & PAGE_MASK;
+                        uint32_t new_flags = (pte & 0xFFF) | PTE_WRITABLE;
+                        new_flags &= ~PTE_COW;
+
+                        if (frame_ref_get(old_frame) == 1) {
+                            /* Sole owner: just make writable again */
+                            vmm_map_user_page(t->page_dir, page_va, old_frame, new_flags);
+                        } else {
+                            /* Copy the page, decrement old refcount */
+                            uint32_t new_frame = pmm_alloc_frame();
+                            if (new_frame) {
+                                memcpy((void *)new_frame, (void *)old_frame, PAGE_SIZE);
+                                frame_ref_dec(old_frame);
+                                vmm_map_user_page(t->page_dir, page_va, new_frame, new_flags);
+                            }
+                            /* OOM: fall through to SIGSEGV */
+                            else goto cow_done;
+                        }
+                        return regs;  /* COW resolved */
+                    }
+                }
+            }
+cow_done:
 
             /* PE task crash dialog — show crash info in a graphical dialog */
             if (t && t->is_pe && gfx_is_active()) {

@@ -1333,20 +1333,18 @@ typedef struct {
 static int shim__stat(const char *path, msvcrt_stat_t *buf) {
     if (!path || !buf) return -1;
     memset(buf, 0, sizeof(*buf));
-    uint8_t tmp[1];
-    size_t size = 0;
-    /* Try reading the file to get its size */
-    uint8_t *data = (uint8_t *)malloc(MAX_FILE_SIZE);
-    if (!data) return -1;
-    if (fs_read_file(path, data, &size) != 0) {
-        free(data);
-        return -1;
-    }
-    free(data);
-    buf->st_size = (uint32_t)size;
-    buf->st_mode = 0100644; /* regular file */
+    uint32_t parent;
+    char name[28];
+    int ino = fs_resolve_path(path, &parent, name);
+    if (ino < 0) return -1;
+    inode_t node;
+    fs_read_inode(ino, &node);
+    buf->st_size = node.size;
+    buf->st_mode = (node.type == 2) ? 0040755 : 0100644;
     buf->st_nlink = 1;
-    (void)tmp;
+    buf->st_mtime = node.modified_at;
+    buf->st_atime = node.accessed_at;
+    buf->st_ctime = node.created_at;
     return 0;
 }
 
@@ -1368,12 +1366,10 @@ static int shim__fstat(int fd, msvcrt_stat_t *buf) {
 static int shim__access(const char *path, int mode) {
     (void)mode;
     if (!path) return -1;
-    uint8_t *data = (uint8_t *)malloc(MAX_FILE_SIZE);
-    if (!data) return -1;
-    size_t size;
-    int ret = fs_read_file(path, data, &size);
-    free(data);
-    return ret == 0 ? 0 : -1;
+    uint32_t parent;
+    char name[28];
+    int ino = fs_resolve_path(path, &parent, name);
+    return ino >= 0 ? 0 : -1;
 }
 
 /* ── msvcrt global state ─────────────────────────────────────── */

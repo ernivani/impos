@@ -21,7 +21,7 @@ extern volatile uint32_t pit_ticks;
 int ioctl_dispatch(int fd, uint32_t cmd, void *arg) {
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
-    if (!t || fd < 0 || fd >= MAX_FDS)
+    if (!t || !t->fds || fd < 0 || fd >= t->fd_count)
         return -1;
 
     fd_entry_t *fde = &t->fds[fd];
@@ -56,8 +56,19 @@ registers_t* syscall_handler(registers_t* regs) {
             if (t) {
                 pipe_cleanup_task(tid);
                 shm_cleanup_task(tid);
+                t->exit_code = (int)regs->ebx;
                 t->state = TASK_STATE_ZOMBIE;
                 t->active = 0;
+                task_reparent_children(tid);
+                /* Wake parent if blocked in waitpid */
+                int ptid = t->parent_tid;
+                if (ptid >= 0 && ptid < TASK_MAX) {
+                    task_info_t *parent = task_get(ptid);
+                    if (parent && parent->state == TASK_STATE_BLOCKED && parent->wait_tid != -1) {
+                        if (parent->wait_tid == 0 || parent->wait_tid == tid)
+                            parent->state = TASK_STATE_READY;
+                    }
+                }
             }
             return schedule(regs);
         }
@@ -260,6 +271,27 @@ registers_t* syscall_handler(registers_t* regs) {
             uint32_t cmd = regs->ecx;
             void *arg = (void *)regs->edx;
             regs->eax = (uint32_t)ioctl_dispatch(fd, cmd, arg);
+            return regs;
+        }
+
+        case SYS_WAITPID: {
+            int pid = (int)regs->ebx;
+            int *wstatus = (int *)regs->ecx;
+            int options = (int)regs->edx;
+            int rc = sys_waitpid(pid, wstatus, options);
+            if (rc == 0 && !(options & WNOHANG)) {
+                /* Blocked and yielded — after wakeup, retry */
+                return schedule(regs);
+            }
+            regs->eax = (uint32_t)rc;
+            return regs;
+        }
+
+        case SYS_NICE: {
+            int tid = task_get_current();
+            uint8_t prio = (uint8_t)regs->ebx;
+            sched_set_priority(tid, prio);
+            regs->eax = 0;
             return regs;
         }
 

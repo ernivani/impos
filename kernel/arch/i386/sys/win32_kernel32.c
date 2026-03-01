@@ -130,19 +130,31 @@ static HANDLE WINAPI shim_CreateFileA(
 
     if (dwCreationDisposition == CREATE_ALWAYS || dwCreationDisposition == CREATE_NEW) {
         fs_create_file(lpFileName, 0);
-        wh->buffer = malloc(MAX_FILE_SIZE);
+        wh->buffer = malloc(4096);  /* initial buffer for new files */
         wh->size = 0;
         wh->pos = 0;
     } else {
-        wh->buffer = malloc(MAX_FILE_SIZE);
-        if (!wh->buffer) {
-            free_handle(h);
-            return INVALID_HANDLE_VALUE;
-        }
-        wh->size = MAX_FILE_SIZE;
-        if (fs_read_file(lpFileName, wh->buffer, &wh->size) < 0) {
+        /* Resolve file and get actual size before allocating */
+        uint32_t parent;
+        char fname[28];
+        int ino = fs_resolve_path(lpFileName, &parent, fname);
+        if (ino >= 0) {
+            inode_t node;
+            fs_read_inode(ino, &node);
+            size_t alloc_sz = node.size > 0 ? node.size : 4096;
+            wh->buffer = malloc(alloc_sz);
+            if (!wh->buffer) {
+                free_handle(h);
+                return INVALID_HANDLE_VALUE;
+            }
+            wh->size = alloc_sz;
+            if (fs_read_file(lpFileName, wh->buffer, &wh->size) < 0) {
+                wh->size = 0;
+            }
+        } else {
             if (dwCreationDisposition == OPEN_ALWAYS) {
                 fs_create_file(lpFileName, 0);
+                wh->buffer = malloc(4096);
                 wh->size = 0;
             } else {
                 free_handle(h);
@@ -449,19 +461,28 @@ static BOOL WINAPI shim_MoveFileA(LPCSTR lpExistingFileName, LPCSTR lpNewFileNam
 }
 
 static BOOL WINAPI shim_CopyFileA(LPCSTR lpSrc, LPCSTR lpDst, BOOL bFailIfExists) {
-    uint8_t *buf = malloc(MAX_FILE_SIZE);
+    uint32_t parent;
+    char name[28];
+    int ino = fs_resolve_path(lpSrc, &parent, name);
+    if (ino < 0) return FALSE;
+
+    inode_t node;
+    fs_read_inode(ino, &node);
+    if (node.type != 1 || node.size == 0) return FALSE;
+
+    uint8_t *buf = malloc(node.size);
     if (!buf) return FALSE;
 
-    size_t sz = MAX_FILE_SIZE;
-    if (fs_read_file(lpSrc, buf, &sz) < 0) {
-        free(buf);
-        return FALSE;
+    uint32_t offset = 0;
+    while (offset < node.size) {
+        int n = fs_read_at(ino, buf + offset, offset, node.size - offset);
+        if (n <= 0) { free(buf); return FALSE; }
+        offset += n;
     }
 
     if (bFailIfExists) {
-        size_t check = 1;
-        uint8_t tmp;
-        if (fs_read_file(lpDst, &tmp, &check) >= 0) {
+        int dst_ino = fs_resolve_path(lpDst, &parent, name);
+        if (dst_ino >= 0) {
             free(buf);
             last_error = 80;  /* ERROR_FILE_EXISTS */
             return FALSE;
@@ -469,7 +490,7 @@ static BOOL WINAPI shim_CopyFileA(LPCSTR lpSrc, LPCSTR lpDst, BOOL bFailIfExists
     }
 
     fs_create_file(lpDst, 0);
-    int ret = fs_write_file(lpDst, buf, sz);
+    int ret = fs_write_file(lpDst, buf, node.size);
     free(buf);
     return ret >= 0 ? TRUE : FALSE;
 }
@@ -989,7 +1010,9 @@ static void *WINAPI shim_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
 }
 
 static LPCSTR WINAPI shim_GetCommandLineA(void) {
-    return "";
+    int tid = task_get_current();
+    const char *cmd = pe_get_command_line(tid);
+    return (cmd && cmd[0]) ? cmd : "program.exe";
 }
 
 static DWORD WINAPI shim_GetCurrentProcessId(void) {
@@ -2132,6 +2155,10 @@ HANDLE WINAPI shim_CreateThread(
     return h;
 }
 
+/* Futex ops — direct kernel calls (no INT 0x80 needed, identity-mapped) */
+#define FUTEX_WAIT  0
+#define FUTEX_WAKE  1
+
 void WINAPI shim_ExitThread(DWORD dwExitCode) {
     int tid = task_get_current();
     /* Find our handle and set exit code */
@@ -2139,6 +2166,8 @@ void WINAPI shim_ExitThread(DWORD dwExitCode) {
         if (handle_table[i].type == HTYPE_THREAD && handle_table[i].tid == tid) {
             handle_table[i].thread_exit = dwExitCode;
             handle_table[i].thread_done = 1;
+            /* Wake any thread waiting on thread_done */
+            sys_futex((uint32_t *)&handle_table[i].thread_done, FUTEX_WAKE, 0x7FFFFFFF);
             break;
         }
     }
@@ -2338,6 +2367,7 @@ static BOOL WINAPI shim_SetEvent(HANDLE hEvent) {
     win32_handle_t *wh = get_handle(hEvent);
     if (!wh || wh->type != HTYPE_EVENT) return FALSE;
     wh->signaled = 1;
+    sys_futex((uint32_t *)&wh->signaled, FUTEX_WAKE, 0x7FFFFFFF);
     return TRUE;
 }
 
@@ -2372,8 +2402,10 @@ static BOOL WINAPI shim_ReleaseMutex(HANDLE hMutex) {
     DWORD me = (DWORD)task_get_current();
     if (wh->mutex_owner != me) return FALSE;
     wh->mutex_count--;
-    if (wh->mutex_count == 0)
+    if (wh->mutex_count == 0) {
         wh->mutex_owner = 0;
+        sys_futex((uint32_t *)&wh->mutex_owner, FUTEX_WAKE, 1);
+    }
     return TRUE;
 }
 
@@ -2406,6 +2438,7 @@ static BOOL WINAPI shim_ReleaseSemaphore(
     if (wh->sem_count > wh->sem_max)
         wh->sem_count = wh->sem_max;
     irq_restore(flags);
+    sys_futex((uint32_t *)&wh->sem_count, FUTEX_WAKE, lReleaseCount);
     return TRUE;
 }
 
@@ -2431,6 +2464,11 @@ static DWORD WINAPI shim_WaitForSingleObject(HANDLE hHandle, DWORD dwMillisecond
         switch (wh->type) {
         case HTYPE_THREAD:
             if (wh->thread_done) return WAIT_OBJECT_0;
+            /* For INFINITE waits, sleep on thread_done via futex */
+            if (dwMilliseconds == INFINITE) {
+                sys_futex((uint32_t *)&wh->thread_done, FUTEX_WAIT, 0);
+                continue;  /* re-check condition after wake */
+            }
             break;
 
         case HTYPE_PROCESS:
@@ -2438,11 +2476,14 @@ static DWORD WINAPI shim_WaitForSingleObject(HANDLE hHandle, DWORD dwMillisecond
                 DBG("WaitForSingleObject: process done, returning");
                 return WAIT_OBJECT_0;
             }
-            /* Also check if the task is no longer alive */
             if (task_get(wh->proc_tid) == NULL) {
                 DBG("WaitForSingleObject: proc_tid=%d task dead, marking done", wh->proc_tid);
                 wh->proc_done = 1;
                 return WAIT_OBJECT_0;
+            }
+            if (dwMilliseconds == INFINITE) {
+                sys_futex((uint32_t *)&wh->proc_done, FUTEX_WAIT, 0);
+                continue;
             }
             break;
 
@@ -2455,6 +2496,10 @@ static DWORD WINAPI shim_WaitForSingleObject(HANDLE hHandle, DWORD dwMillisecond
                 return WAIT_OBJECT_0;
             }
             irq_restore(flags);
+            if (dwMilliseconds == INFINITE) {
+                sys_futex((uint32_t *)&wh->signaled, FUTEX_WAIT, 0);
+                continue;
+            }
             break;
 
         case HTYPE_MUTEX: {
@@ -2471,7 +2516,12 @@ static DWORD WINAPI shim_WaitForSingleObject(HANDLE hHandle, DWORD dwMillisecond
                 irq_restore(flags);
                 return WAIT_OBJECT_0;
             }
+            DWORD cur_owner = wh->mutex_owner;
             irq_restore(flags);
+            if (dwMilliseconds == INFINITE) {
+                sys_futex((uint32_t *)&wh->mutex_owner, FUTEX_WAIT, cur_owner);
+                continue;
+            }
             break;
         }
 
@@ -2483,13 +2533,17 @@ static DWORD WINAPI shim_WaitForSingleObject(HANDLE hHandle, DWORD dwMillisecond
                 return WAIT_OBJECT_0;
             }
             irq_restore(flags);
+            if (dwMilliseconds == INFINITE) {
+                sys_futex((uint32_t *)&wh->sem_count, FUTEX_WAIT, 0);
+                continue;
+            }
             break;
 
         default:
             return WAIT_FAILED;
         }
 
-        /* Check timeout */
+        /* Check timeout (finite waits use polling fallback) */
         if (dwMilliseconds != INFINITE) {
             uint32_t elapsed = pit_get_ticks() - start;
             if (elapsed >= timeout_ticks)
@@ -3359,6 +3413,185 @@ static void WINAPI shim_GetStartupInfoW_real(void *si) {
     if (si) memset(si, 0, 68); /* sizeof STARTUPINFOW */
 }
 
+/* ── Phase 7: Console API ────────────────────────────────────── */
+
+/* Console modes */
+#define ENABLE_PROCESSED_INPUT   0x0001
+#define ENABLE_LINE_INPUT        0x0002
+#define ENABLE_ECHO_INPUT        0x0004
+#define ENABLE_PROCESSED_OUTPUT  0x0001
+#define ENABLE_WRAP_AT_EOL_OUTPUT 0x0002
+
+static DWORD console_input_mode = ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT;
+static DWORD console_output_mode = ENABLE_PROCESSED_OUTPUT | ENABLE_WRAP_AT_EOL_OUTPUT;
+
+static BOOL WINAPI shim_ReadConsoleA(HANDLE h, LPVOID buf, DWORD nChars,
+    LPDWORD pRead, LPVOID pInput)
+{
+    (void)h; (void)pInput;
+    char *cbuf = (char *)buf;
+    DWORD i = 0;
+    while (i < nChars) {
+        int c = getchar();
+        if (c < 0) break;
+        cbuf[i++] = (char)c;
+        if (c == '\n' || c == '\r') break;
+    }
+    if (pRead) *pRead = i;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_WriteConsoleA(HANDLE h, const void *buf, DWORD nChars,
+    LPDWORD pWritten, LPVOID reserved)
+{
+    (void)h; (void)reserved;
+    const char *s = (const char *)buf;
+    for (DWORD i = 0; i < nChars; i++)
+        putchar(s[i]);
+    if (pWritten) *pWritten = nChars;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_GetConsoleMode(HANDLE h, LPDWORD lpMode) {
+    if (!lpMode) return FALSE;
+    int idx = (int)h - 1;
+    /* stdin = handle 1 (idx 0), stdout/stderr = handle 2,3 (idx 1,2) */
+    if (idx == 0)
+        *lpMode = console_input_mode;
+    else
+        *lpMode = console_output_mode;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_SetConsoleMode(HANDLE h, DWORD dwMode) {
+    int idx = (int)h - 1;
+    if (idx == 0)
+        console_input_mode = dwMode;
+    else
+        console_output_mode = dwMode;
+    return TRUE;
+}
+
+static BOOL WINAPI shim_SetConsoleTitleA(LPCSTR lpTitle) {
+    (void)lpTitle;
+    return TRUE;
+}
+
+typedef struct {
+    short X;
+    short Y;
+} COORD_S;
+
+typedef struct {
+    short Left, Top, Right, Bottom;
+} SMALL_RECT;
+
+typedef struct {
+    COORD_S dwSize;
+    COORD_S dwCursorPosition;
+    WORD  wAttributes;
+    SMALL_RECT srWindow;
+    COORD_S dwMaximumWindowSize;
+} CONSOLE_SCREEN_BUFFER_INFO;
+
+static BOOL WINAPI shim_GetConsoleScreenBufferInfo(HANDLE h,
+    CONSOLE_SCREEN_BUFFER_INFO *info)
+{
+    (void)h;
+    if (!info) return FALSE;
+    memset(info, 0, sizeof(*info));
+    info->dwSize.X = 80;
+    info->dwSize.Y = 25;
+    info->srWindow.Right = 79;
+    info->srWindow.Bottom = 24;
+    info->dwMaximumWindowSize.X = 80;
+    info->dwMaximumWindowSize.Y = 25;
+    info->wAttributes = 0x07; /* light gray on black */
+    return TRUE;
+}
+
+static BOOL WINAPI shim_SetConsoleTextAttribute(HANDLE h, WORD attr) {
+    (void)h; (void)attr;
+    return TRUE;
+}
+
+/* ── Phase 7: Environment Strings ────────────────────────────── */
+
+static LPSTR WINAPI shim_GetEnvironmentStringsA(void) {
+    /* Build "KEY=VALUE\0KEY=VALUE\0\0" block */
+    char *block = malloc(8192);
+    if (!block) return NULL;
+
+    char *p = block;
+    for (int i = 0; i < MAX_ENV_VARS; i++) {
+        const char *name, *value;
+        if (env_get_entry(i, &name, &value)) {
+            int nlen = strlen(name);
+            int vlen = strlen(value);
+            if ((p - block) + nlen + 1 + vlen + 2 > 8192) break;
+            memcpy(p, name, nlen);
+            p += nlen;
+            *p++ = '=';
+            memcpy(p, value, vlen);
+            p += vlen;
+            *p++ = '\0';
+        }
+    }
+    *p = '\0';  /* double-NUL terminator */
+    return block;
+}
+
+static BOOL WINAPI shim_FreeEnvironmentStringsA(LPSTR block) {
+    if (block) free(block);
+    return TRUE;
+}
+
+static DWORD WINAPI shim_ExpandEnvironmentStringsA(LPCSTR lpSrc,
+    LPSTR lpDst, DWORD nSize)
+{
+    if (!lpSrc) return 0;
+
+    /* Expand %VAR% patterns (Win32 style, not $VAR) */
+    char result[1024];
+    char *out = result;
+    const char *p = lpSrc;
+
+    while (*p && (out - result) < 1020) {
+        if (*p == '%') {
+            p++;
+            char varname[128];
+            int vi = 0;
+            while (*p && *p != '%' && vi < 127)
+                varname[vi++] = *p++;
+            varname[vi] = '\0';
+            if (*p == '%') p++;
+
+            const char *val = env_get(varname);
+            if (val) {
+                int vl = strlen(val);
+                if ((out - result) + vl < 1020) {
+                    memcpy(out, val, vl);
+                    out += vl;
+                }
+            } else {
+                /* Unknown var: keep %VAR% as-is */
+                *out++ = '%';
+                for (int j = 0; varname[j] && (out - result) < 1020; j++)
+                    *out++ = varname[j];
+                if ((out - result) < 1020) *out++ = '%';
+            }
+        } else {
+            *out++ = *p++;
+        }
+    }
+    *out = '\0';
+
+    DWORD needed = (DWORD)(out - result) + 1;
+    if (lpDst && nSize >= needed)
+        memcpy(lpDst, result, needed);
+    return needed;
+}
+
 /* ── Stubs ───────────────────────────────────────────────────── */
 
 static DWORD WINAPI shim_stub_zero(void) { return 0; }
@@ -3632,6 +3865,21 @@ static const win32_export_entry_t kernel32_exports[] = {
     /* Startup info */
     { "GetStartupInfoA",            (void *)shim_GetStartupInfoA_real },
     { "GetStartupInfoW",            (void *)shim_GetStartupInfoW_real },
+
+    /* Console API */
+    { "ReadConsoleA",               (void *)shim_ReadConsoleA },
+    { "WriteConsoleA",              (void *)shim_WriteConsoleA },
+    { "GetConsoleMode",             (void *)shim_GetConsoleMode },
+    { "SetConsoleMode",             (void *)shim_SetConsoleMode },
+    { "SetConsoleTitleA",           (void *)shim_SetConsoleTitleA },
+    { "GetConsoleScreenBufferInfo", (void *)shim_GetConsoleScreenBufferInfo },
+    { "SetConsoleTextAttribute",    (void *)shim_SetConsoleTextAttribute },
+
+    /* Environment strings */
+    { "GetEnvironmentStrings",      (void *)shim_GetEnvironmentStringsA },
+    { "GetEnvironmentStringsA",     (void *)shim_GetEnvironmentStringsA },
+    { "FreeEnvironmentStringsA",    (void *)shim_FreeEnvironmentStringsA },
+    { "ExpandEnvironmentStringsA",  (void *)shim_ExpandEnvironmentStringsA },
 
     /* Stubs */
     { "IsDebuggerPresent",          (void *)shim_stub_zero },

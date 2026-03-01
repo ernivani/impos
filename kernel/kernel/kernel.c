@@ -28,6 +28,8 @@
 #include <kernel/io.h>
 #include <kernel/drm.h>
 #include <kernel/virtio_input.h>
+#include <kernel/test.h>
+#include <kernel/user.h>
 
 /* Routes putchar/getchar through serial COM1 instead of VGA/PS2 */
 int g_serial_console = 0;
@@ -398,36 +400,62 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* FIRST: Copy multiboot modules before any malloc overwrites them.
        GRUB places modules after the kernel in physical memory, which overlaps
-       with our linear heap. Copy to malloc'd buffers immediately. */
+       with our linear heap.  Snapshot ALL metadata first (the module table
+       itself lives in the same region and gets clobbered by the first malloc),
+       then copy payloads. */
+    #define MAX_BOOT_MODULES 4
     if ((mbi->flags & (1 << 3)) && mbi->mods_count > 0) {
         multiboot_module_t *mods = (multiboot_module_t *)mbi->mods_addr;
-        for (uint32_t m = 0; m < mbi->mods_count; m++) {
-            uint32_t mod_start = mods[m].mod_start;
-            uint32_t mod_len = mods[m].mod_end - mods[m].mod_start;
-            const char *cmdline = mods[m].cmdline ? (const char *)mods[m].cmdline : "";
+        uint32_t n = mbi->mods_count;
+        if (n > MAX_BOOT_MODULES) n = MAX_BOOT_MODULES;
 
-            if (mod_len == 0 || mod_len >= 32 * 1024 * 1024) continue;
+        /* Snapshot metadata into stack arrays BEFORE any malloc */
+        uint32_t  mod_starts[MAX_BOOT_MODULES];
+        uint32_t  mod_lens[MAX_BOOT_MODULES];
+        char      mod_cmdlines[MAX_BOOT_MODULES][64];
+        uint8_t   mod_magic[MAX_BOOT_MODULES][4]; /* first 4 bytes for content ID */
 
-            uint8_t *copy = (uint8_t *)malloc(mod_len);
+        for (uint32_t m = 0; m < n; m++) {
+            mod_starts[m] = mods[m].mod_start;
+            mod_lens[m]   = mods[m].mod_end - mods[m].mod_start;
+            const char *cl = mods[m].cmdline ? (const char *)mods[m].cmdline : "";
+            size_t cl_len = 0;
+            while (cl[cl_len] && cl_len < 63) cl_len++;
+            memcpy(mod_cmdlines[m], cl, cl_len);
+            mod_cmdlines[m][cl_len] = '\0';
+            /* Save first 4 bytes of content for identification */
+            if (mod_lens[m] >= 4)
+                memcpy(mod_magic[m], (uint8_t *)mod_starts[m], 4);
+            else
+                memset(mod_magic[m], 0, 4);
+        }
+
+        /* Now safe to malloc — module table may be overwritten */
+        for (uint32_t m = 0; m < n; m++) {
+            uint32_t len = mod_lens[m];
+            if (len == 0 || len >= 32 * 1024 * 1024) continue;
+
+            uint8_t *copy = (uint8_t *)malloc(len);
             if (!copy) continue;
-            memcpy(copy, (uint8_t *)mod_start, mod_len);
+            memcpy(copy, (uint8_t *)mod_starts[m], len);
 
-            if (str_ends_with(cmdline, ".wad") || str_ends_with(cmdline, ".WAD")) {
+            if (str_ends_with(mod_cmdlines[m], ".wad") ||
+                str_ends_with(mod_cmdlines[m], ".WAD")) {
                 doom_wad_data = copy;
-                doom_wad_size = mod_len;
-            } else if (str_ends_with(cmdline, ".tar")) {
+                doom_wad_size = len;
+            } else if (str_ends_with(mod_cmdlines[m], ".tar")) {
                 initrd_data = copy;
-                initrd_size = mod_len;
+                initrd_size = len;
             } else {
                 /* Try to identify by content */
-                if (mod_len > 4 && copy[0] == 'I' && copy[1] == 'W' &&
-                    copy[2] == 'A' && copy[3] == 'D') {
+                if (len > 4 && mod_magic[m][0] == 'I' && mod_magic[m][1] == 'W' &&
+                    mod_magic[m][2] == 'A' && mod_magic[m][3] == 'D') {
                     doom_wad_data = copy;
-                    doom_wad_size = mod_len;
+                    doom_wad_size = len;
                 } else {
                     /* Default: treat as initrd */
                     initrd_data = copy;
-                    initrd_size = mod_len;
+                    initrd_size = len;
                 }
             }
         }
@@ -439,7 +467,9 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Check for terminal boot mode via kernel cmdline */
     int terminal_mode = strstr(saved_cmdline, "terminal") ? 1 : 0;
-    DBG("cmdline='%s' terminal_mode=%d", saved_cmdline, terminal_mode);
+    int autotest_mode = strstr(saved_cmdline, "autotest") ? 1 : 0;
+    if (autotest_mode) terminal_mode = 1;  /* autotest implies terminal */
+    DBG("cmdline='%s' terminal_mode=%d autotest=%d", saved_cmdline, terminal_mode, autotest_mode);
 
     if (!terminal_mode) gfx_init(mbi);
     terminal_initialize();
@@ -450,6 +480,10 @@ void kernel_main(multiboot_info_t* mbi) {
     /* Initialize physical and virtual memory management */
     pmm_init(mbi);
     vmm_init(mbi);
+
+    /* Initialize frame reference counting (after PMM, before any allocations) */
+    extern void frame_ref_init(void);
+    frame_ref_init();
 
     /* Print module info now that printf is safe */
     if (doom_wad_data && doom_wad_size > 0) {
@@ -491,7 +525,25 @@ void kernel_main(multiboot_info_t* mbi) {
     /* Initialize DRM subsystem (GPU ioctl interface) */
     drm_init();
 
-    if (gfx_is_active() && !terminal_mode) {
+    if (autotest_mode) {
+        /* Automated test mode: serial console, no login, run tests, shutdown */
+        g_serial_console = 1;
+        shell_initialize_subsystems();
+
+        /* Create root user if fresh disk (skip interactive setup wizard) */
+        if (!user_system_initialized()) {
+            user_create("root", "test", "/root", 0, 0);
+            user_create_home_dirs("/root");
+        }
+        user_set_current("root");
+
+        printf("\n[AUTOTEST] Starting ImposOS automated tests\n");
+        test_run_all();
+        printf("[AUTOTEST] Done\n");
+
+        acpi_shutdown();
+        while (1) asm volatile("hlt");
+    } else if (gfx_is_active() && !terminal_mode) {
         /* Graphical boot: init subsystems, then run state machine */
         shell_initialize_subsystems();
         DBG("state_run: starting GUI");

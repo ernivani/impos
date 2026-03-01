@@ -26,11 +26,22 @@
 #include <kernel/filemgr.h>
 #include <kernel/taskmgr.h>
 #include <kernel/monitor_app.h>
+#include <kernel/ui_widget.h>
 #include <kernel/idt.h>
 #include <kernel/mouse.h>
 #include <kernel/virtio_input.h>
 #include <string.h>
 #include <stdio.h>
+
+/* Forward declarations for widget-based apps */
+int calculator_tick(int mx, int my, int btn_down, int btn_up);
+int calculator_win_open(void);
+int notes_tick(int mx, int my, int btn_down, int btn_up);
+int notes_win_open(void);
+int about_tick(int mx, int my, int btn_down, int btn_up);
+int about_win_open(void);
+int minesweeper_tick(int mx, int my, int btn_down, int btn_up);
+int minesweeper_win_open(void);
 
 /* keyboard_getchar_nb lives in libc — not exposed in a public header */
 extern int keyboard_getchar_nb(void);
@@ -243,6 +254,16 @@ int ui_shell_run(void)
             if (!consumed && monitor_win_open())
                 consumed = monitor_tick(mx, my, btn_down, btn_up);
 
+            /* Priority 5f-5i: widget-based apps */
+            if (!consumed && calculator_win_open())
+                consumed = calculator_tick(mx, my, btn_down, btn_up);
+            if (!consumed && notes_win_open())
+                consumed = notes_tick(mx, my, btn_down, btn_up);
+            if (!consumed && about_win_open())
+                consumed = about_tick(mx, my, btn_down, btn_up);
+            if (!consumed && minesweeper_win_open())
+                consumed = minesweeper_tick(mx, my, btn_down, btn_up);
+
             /* Priority 6: window manager */
             if (!consumed)
                 ui_window_mouse_event(mx, my, cur_btn, prev_btn);
@@ -266,6 +287,8 @@ int ui_shell_run(void)
                 } else if (term_focused) {
                     /* Route to terminal shell */
                     terminal_app_handle_key(ch);
+                } else if (uw_route_key(ui_window_focused(), (int)ch)) {
+                    /* Consumed by a widget-based app */
                 } else {
                     if (ch == ' ') {
                         if (ctx_menu_visible()) ctx_menu_hide();
@@ -296,6 +319,14 @@ int ui_shell_run(void)
             taskmgr_tick(mouse_get_x(), mouse_get_y(), 0, 0);
         if (monitor_win_open())
             monitor_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (calculator_win_open())
+            calculator_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (notes_win_open())
+            notes_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (about_win_open())
+            about_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (minesweeper_win_open())
+            minesweeper_tick(mouse_get_x(), mouse_get_y(), 0, 0);
 
         /* ── Demo window lifecycle ───────────────────────────────── */
         if (demo_id >= 0 && ui_window_close_requested(demo_id)) {

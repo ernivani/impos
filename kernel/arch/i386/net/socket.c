@@ -1,13 +1,18 @@
 #include <kernel/socket.h>
 #include <kernel/tcp.h>
 #include <kernel/udp.h>
+#include <kernel/pipe.h>
 #include <string.h>
 
 typedef struct {
-    int type;       /* SOCK_STREAM or SOCK_DGRAM */
+    int type;           /* SOCK_STREAM or SOCK_DGRAM */
     int active;
-    int proto_idx;  /* TCP tcb index or UDP binding index */
-    uint16_t port;  /* bound port (for UDP sendto) */
+    int proto_idx;      /* TCP tcb index or UDP binding index */
+    uint16_t port;      /* bound port */
+    int nonblock;       /* O_NONBLOCK flag */
+    int listening;      /* 1 if listen() called */
+    uint8_t remote_ip[4];
+    uint16_t remote_port;
 } socket_t;
 
 static socket_t sockets[MAX_SOCKETS];
@@ -48,6 +53,7 @@ int socket_listen(int fd, int backlog) {
     int idx = tcp_open(s->port, 1);
     if (idx < 0) return -1;
     s->proto_idx = idx;
+    s->listening = 1;
     return 0;
 }
 
@@ -56,10 +62,28 @@ int socket_accept(int fd) {
     socket_t* s = &sockets[fd];
     if (s->type != SOCK_STREAM || s->proto_idx < 0) return -1;
 
-    int conn_idx = tcp_accept(s->proto_idx);
+    int conn_idx = tcp_accept(s->proto_idx, 0xFFFFFFFF);
     if (conn_idx < 0) return -1;
 
     /* Create a new socket for the accepted connection */
+    int new_fd = socket_create(SOCK_STREAM);
+    if (new_fd < 0) {
+        tcp_close(conn_idx);
+        return -1;
+    }
+    sockets[new_fd].proto_idx = conn_idx;
+    return new_fd;
+}
+
+int socket_accept_nb(int fd) {
+    if (fd < 0 || fd >= MAX_SOCKETS || !sockets[fd].active) return -1;
+    socket_t* s = &sockets[fd];
+    if (s->type != SOCK_STREAM || s->proto_idx < 0) return -1;
+
+    int conn_idx = tcp_accept(s->proto_idx, 0);
+    if (conn_idx == -2) return -2; /* EAGAIN */
+    if (conn_idx < 0) return -1;
+
     int new_fd = socket_create(SOCK_STREAM);
     if (new_fd < 0) {
         tcp_close(conn_idx);
@@ -77,6 +101,9 @@ int socket_connect(int fd, const uint8_t ip[4], uint16_t port) {
     int idx = tcp_open(s->port, 0);
     if (idx < 0) return -1;
     s->proto_idx = idx;
+
+    memcpy(s->remote_ip, ip, 4);
+    s->remote_port = port;
 
     return tcp_connect(idx, ip, port);
 }
@@ -119,5 +146,81 @@ void socket_close(int fd) {
         tcp_close(s->proto_idx);
     else if (s->type == SOCK_DGRAM && s->port > 0)
         udp_unbind(s->port);
-    s->active = 0;
+    memset(s, 0, sizeof(socket_t));
+}
+
+/* ── Accessors for syscall layer ──────────────────────────────────── */
+
+int socket_set_nonblock(int fd, int on) {
+    if (fd < 0 || fd >= MAX_SOCKETS || !sockets[fd].active) return -1;
+    sockets[fd].nonblock = on ? 1 : 0;
+    return 0;
+}
+
+int socket_get_nonblock(int fd) {
+    if (fd < 0 || fd >= MAX_SOCKETS || !sockets[fd].active) return 0;
+    return sockets[fd].nonblock;
+}
+
+int socket_is_listening(int fd) {
+    if (fd < 0 || fd >= MAX_SOCKETS || !sockets[fd].active) return 0;
+    return sockets[fd].listening;
+}
+
+int socket_get_type(int fd) {
+    if (fd < 0 || fd >= MAX_SOCKETS || !sockets[fd].active) return -1;
+    return sockets[fd].type;
+}
+
+int socket_get_proto_idx(int fd) {
+    if (fd < 0 || fd >= MAX_SOCKETS || !sockets[fd].active) return -1;
+    return sockets[fd].proto_idx;
+}
+
+int socket_get_remote(int fd, uint8_t ip[4], uint16_t *port) {
+    if (fd < 0 || fd >= MAX_SOCKETS || !sockets[fd].active) return -1;
+    if (ip) memcpy(ip, sockets[fd].remote_ip, 4);
+    if (port) *port = sockets[fd].remote_port;
+    return 0;
+}
+
+int socket_poll_query(int fd) {
+    if (fd < 0 || fd >= MAX_SOCKETS || !sockets[fd].active) return 0;
+    socket_t *s = &sockets[fd];
+    int events = 0;
+
+    if (s->type == SOCK_STREAM && s->proto_idx >= 0) {
+        tcp_state_t st = tcp_get_state(s->proto_idx);
+
+        if (s->listening) {
+            /* Listening socket: POLLIN means accept() ready */
+            if (tcp_has_backlog(s->proto_idx))
+                events |= PIPE_POLL_IN;
+        } else {
+            /* Connected socket */
+            if (st == TCP_ESTABLISHED || st == TCP_CLOSE_WAIT) {
+                if (tcp_rx_available(s->proto_idx) > 0)
+                    events |= PIPE_POLL_IN;
+                if (st == TCP_ESTABLISHED)
+                    events |= PIPE_POLL_OUT;
+            }
+            if (st == TCP_CLOSE_WAIT || st == TCP_CLOSED ||
+                st == TCP_TIME_WAIT)
+                events |= PIPE_POLL_HUP;
+        }
+    } else if (s->type == SOCK_DGRAM) {
+        extern int udp_rx_available(uint16_t port);
+        if (udp_rx_available(s->port) > 0)
+            events |= PIPE_POLL_IN;
+        events |= PIPE_POLL_OUT; /* UDP always writable */
+    }
+
+    return events;
+}
+
+int socket_recv_nb(int fd, void *buf, size_t len) {
+    if (fd < 0 || fd >= MAX_SOCKETS || !sockets[fd].active) return -1;
+    socket_t *s = &sockets[fd];
+    if (s->type != SOCK_STREAM || s->proto_idx < 0) return -1;
+    return tcp_recv_nb(s->proto_idx, (uint8_t *)buf, len);
 }

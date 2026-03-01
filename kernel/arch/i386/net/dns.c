@@ -24,8 +24,57 @@ typedef struct {
 /* QEMU SLIRP DNS server */
 static uint8_t dns_server[4] = {10, 0, 2, 3};
 
+/* ── DNS cache ──────────────────────────────────────────────────── */
+
+#define DNS_CACHE_SIZE 16
+#define DNS_CACHE_TTL  36000  /* 300s at 120 Hz PIT */
+
+typedef struct {
+    char hostname[64];
+    uint8_t ip[4];
+    uint32_t timestamp;
+    int valid;
+} dns_cache_entry_t;
+
+static dns_cache_entry_t dns_cache[DNS_CACHE_SIZE];
+static int dns_cache_next = 0;  /* round-robin insert index */
+
+extern uint32_t pit_get_ticks(void);
+
+static int dns_cache_lookup(const char *hostname, uint8_t ip_out[4]) {
+    uint32_t now = pit_get_ticks();
+    for (int i = 0; i < DNS_CACHE_SIZE; i++) {
+        if (dns_cache[i].valid &&
+            strcmp(dns_cache[i].hostname, hostname) == 0) {
+            if ((now - dns_cache[i].timestamp) < DNS_CACHE_TTL) {
+                memcpy(ip_out, dns_cache[i].ip, 4);
+                return 0;
+            }
+            /* Expired — invalidate */
+            dns_cache[i].valid = 0;
+            return -1;
+        }
+    }
+    return -1;
+}
+
+static void dns_cache_insert(const char *hostname, const uint8_t ip[4]) {
+    dns_cache_entry_t *e = &dns_cache[dns_cache_next];
+    strncpy(e->hostname, hostname, 63);
+    e->hostname[63] = '\0';
+    memcpy(e->ip, ip, 4);
+    e->timestamp = pit_get_ticks();
+    e->valid = 1;
+    dns_cache_next = (dns_cache_next + 1) % DNS_CACHE_SIZE;
+}
+
+void dns_cache_flush(void) {
+    memset(dns_cache, 0, sizeof(dns_cache));
+    dns_cache_next = 0;
+}
+
 void dns_initialize(void) {
-    /* nothing */
+    dns_cache_flush();
 }
 
 /* Encode hostname into DNS wire format (e.g. "www.google.com" -> 3www6google3com0) */
@@ -51,6 +100,10 @@ static int dns_encode_name(const char* name, uint8_t* buf, size_t bufsize) {
 }
 
 int dns_resolve(const char* hostname, uint8_t ip_out[4]) {
+    /* Check cache first */
+    if (dns_cache_lookup(hostname, ip_out) == 0)
+        return 0;
+
     uint8_t query[512];
     memset(query, 0, sizeof(query));
 
@@ -136,6 +189,7 @@ int dns_resolve(const char* hostname, uint8_t ip_out[4]) {
 
         if (rtype == DNS_TYPE_A && rdlength == 4) {
             memcpy(ip_out, resp + pos, 4);
+            dns_cache_insert(hostname, ip_out);
             return 0;
         }
         pos += rdlength;

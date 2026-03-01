@@ -112,9 +112,9 @@ static void mon_paint(void) {
 
     /* Disk */
     {
-        /* NUM_BLOCKS=8192, each 4KB = 32MB total */
+        /* FS v3: NUM_BLOCKS blocks, each 4KB */
         char buf[32];
-        snprintf(buf, sizeof(buf), "%d blocks x 4KB", NUM_BLOCKS);
+        snprintf(buf, sizeof(buf), "%d blks x 4KB", NUM_BLOCKS);
         draw_section(&gs, &y, "Disk", buf, 30, COL_ACCENT);
     }
 

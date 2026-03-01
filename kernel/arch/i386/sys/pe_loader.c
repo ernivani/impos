@@ -27,16 +27,26 @@ static uint32_t align_up(uint32_t val, uint32_t align) {
 
 /* Read an entire file into a malloc'd buffer. Caller must free(). */
 static uint8_t *read_file_to_buffer(const char *filename, size_t *out_size) {
-    uint8_t *buf = malloc(MAX_FILE_SIZE);
+    uint32_t parent;
+    char name[28];
+    int ino = fs_resolve_path(filename, &parent, name);
+    if (ino < 0) return NULL;
+
+    inode_t node;
+    fs_read_inode(ino, &node);
+    if (node.type != 1) return NULL;  /* not a regular file */
+    if (node.size == 0) return NULL;
+
+    uint8_t *buf = malloc(node.size);
     if (!buf) return NULL;
 
-    size_t sz = MAX_FILE_SIZE;
-    if (fs_read_file(filename, buf, &sz) < 0) {
-        free(buf);
-        return NULL;
+    uint32_t offset = 0;
+    while (offset < node.size) {
+        int n = fs_read_at(ino, buf + offset, offset, node.size - offset);
+        if (n <= 0) { free(buf); return NULL; }
+        offset += n;
     }
-
-    *out_size = sz;
+    *out_size = node.size;
     return buf;
 }
 
@@ -304,32 +314,40 @@ int pe_apply_relocations(pe_loaded_image_t *img) {
 
 /* ── PE Execution ────────────────────────────────────────────── */
 
-/* Thread entry wrapper for PE execution */
+/* Thread entry wrapper for PE execution — per-task context array */
 typedef struct {
     uint32_t entry_point;
     uint16_t subsystem;
+    char     cmd_line[128];   /* stored command line for GetCommandLineA */
 } pe_exec_ctx_t;
 
-static pe_exec_ctx_t exec_ctx;  /* single-instance for now */
+static pe_exec_ctx_t pe_ctxs[TASK_MAX];  /* indexed by tid — thread-safe */
+
+/* Accessor for GetCommandLineA */
+const char *pe_get_command_line(int tid) {
+    if (tid < 0 || tid >= TASK_MAX) return "";
+    return pe_ctxs[tid].cmd_line;
+}
 
 static void pe_thread_entry(void) {
     int ret;
+    int tid = task_get_current();
+    pe_exec_ctx_t *ctx = &pe_ctxs[tid];
 
     DBG("pe_thread_entry: subsystem=%u entry=0x%x tid=%d",
-        exec_ctx.subsystem, exec_ctx.entry_point, task_get_current());
+        ctx->subsystem, ctx->entry_point, tid);
 
-    if (exec_ctx.subsystem == PE_SUBSYSTEM_WINDOWS_GUI) {
+    if (ctx->subsystem == PE_SUBSYSTEM_WINDOWS_GUI) {
         typedef int (__attribute__((stdcall)) *pe_winmain_t)(
             uint32_t hInstance, uint32_t hPrevInstance,
             char *lpCmdLine, int nCmdShow);
-        pe_winmain_t entry = (pe_winmain_t)exec_ctx.entry_point;
-        static char empty_cmdline[] = "";
-        DBG("pe_thread_entry: calling WinMain at 0x%x", exec_ctx.entry_point);
-        ret = entry(0x00400000, 0, empty_cmdline, 5 /* SW_SHOW */);
+        pe_winmain_t entry = (pe_winmain_t)ctx->entry_point;
+        DBG("pe_thread_entry: calling WinMain at 0x%x", ctx->entry_point);
+        ret = entry(0x00400000, 0, ctx->cmd_line, 5 /* SW_SHOW */);
     } else {
         typedef int (*pe_main_t)(void);
-        pe_main_t entry = (pe_main_t)exec_ctx.entry_point;
-        DBG("pe_thread_entry: calling main at 0x%x", exec_ctx.entry_point);
+        pe_main_t entry = (pe_main_t)ctx->entry_point;
+        DBG("pe_thread_entry: calling main at 0x%x", ctx->entry_point);
         ret = entry();
     }
 
@@ -339,9 +357,6 @@ static void pe_thread_entry(void) {
 }
 
 int pe_execute(pe_loaded_image_t *img, const char *name) {
-    exec_ctx.entry_point = img->entry_point;
-    exec_ctx.subsystem = img->subsystem;
-
     char task_name[32];
     strncpy(task_name, name, 27);
     task_name[27] = '\0';
@@ -351,6 +366,12 @@ int pe_execute(pe_loaded_image_t *img, const char *name) {
         printf("pe: failed to create thread\n");
         return -1;
     }
+
+    /* Store context in per-task slot AFTER tid is known — no race */
+    pe_ctxs[tid].entry_point = img->entry_point;
+    pe_ctxs[tid].subsystem = img->subsystem;
+    strncpy(pe_ctxs[tid].cmd_line, name, sizeof(pe_ctxs[tid].cmd_line) - 1);
+    pe_ctxs[tid].cmd_line[sizeof(pe_ctxs[tid].cmd_line) - 1] = '\0';
 
     /* Allocate and initialize a WIN32_TEB for this PE task */
     task_info_t *t = task_get(tid);
@@ -381,7 +402,7 @@ int pe_execute(pe_loaded_image_t *img, const char *name) {
 /* ── Convenience: full load-and-run pipeline ─────────────────── */
 
 int pe_run(const char *filename) {
-    static pe_loaded_image_t img;
+    pe_loaded_image_t img;
 
     int ret = pe_load(filename, &img);
     if (ret < 0) return ret;
@@ -403,8 +424,30 @@ int pe_run(const char *filename) {
 
 /* ── Cleanup ─────────────────────────────────────────────────── */
 
+/* Simple free-list for address reclamation */
+#define PE_FREE_LIST_SIZE 4
+static struct { uint32_t addr; uint32_t size; } pe_free_list[PE_FREE_LIST_SIZE];
+
 void pe_unload(pe_loaded_image_t *img) {
-    /* For now, just zero the tracking.
-     * In a real OS we'd free the PMM frames. */
+    if (img->image_base == 0 || img->image_size == 0) {
+        memset(img, 0, sizeof(*img));
+        return;
+    }
+
+    /* If this was the last loaded image, reclaim the address space */
+    uint32_t img_end = align_up(img->image_base + img->image_size, 4096);
+    if (img_end == pe_next_load_addr) {
+        pe_next_load_addr = img->image_base;
+    } else {
+        /* Not the last — add to free list for reuse */
+        for (int i = 0; i < PE_FREE_LIST_SIZE; i++) {
+            if (pe_free_list[i].addr == 0) {
+                pe_free_list[i].addr = img->image_base;
+                pe_free_list[i].size = align_up(img->image_size, 4096);
+                break;
+            }
+        }
+    }
+
     memset(img, 0, sizeof(*img));
 }

@@ -343,11 +343,20 @@ Depends on Phase 6.3 (Unix domain sockets), Phase 2.3 (threads), Phase 3.5 (shar
 ---
 
 ## Phase 9 — Audio Subsystem
-
 **Current state:** PC speaker beep only.
 **Target state:** ~2003 era (basic sound output like ALSA or early PulseAudio).
 
 Depends on Phase 2.2 (kernel threads for audio mixing), Phase 1.4 (VFS for device nodes).
+
+### Step 9.05 — DOOM Windowed Mode
+
+- Wrap DOOM in a GUI window via `ui_window_create()` with a 640x400 canvas (320x200 scaled 2x)
+- Replace direct framebuffer writes (`I_FinishUpdate`) with rendering into the window canvas buffer
+- Replace raw keyboard/mouse grabs (`I_GetEvent`) with window-system event routing — only receive input when DOOM window is focused
+- Convert the blocking game loop into a cooperative `doom_tick()` that runs one frame per call, yielding between frames so other apps remain responsive
+- Register DOOM in the app registry with proper `doom_tick()` / `doom_win_open()` like other widget apps
+- Tie frame pacing to a ~35fps interval (matching original DOOM) via tick counting rather than busy-looping
+
 
 ### Step 9.1 — Sound Card Driver (AC'97 or Intel HDA)
 

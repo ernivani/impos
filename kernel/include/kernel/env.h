@@ -28,4 +28,8 @@ void env_list(void);
 /* Expand variables in a string ($VAR or ${VAR}) */
 int env_expand(const char* input, char* output, size_t output_size);
 
+/* Get environment variable at index (for enumeration).
+ * Returns 1 if entry is active and sets name and value ptrs, 0 otherwise. */
+int env_get_entry(int index, const char **name, const char **value);
+
 #endif

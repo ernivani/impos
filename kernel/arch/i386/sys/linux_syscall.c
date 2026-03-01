@@ -3,6 +3,8 @@
 #include <kernel/sched.h>
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
+#include <kernel/vma.h>
+#include <kernel/frame_ref.h>
 #include <kernel/idt.h>
 #include <kernel/pipe.h>
 #include <kernel/signal.h>
@@ -11,6 +13,13 @@
 #include <kernel/user.h>
 #include <kernel/hostname.h>
 #include <kernel/drm.h>
+#include <kernel/elf_loader.h>
+#include <kernel/rtc.h>
+#include <kernel/socket.h>
+#include <kernel/tcp.h>
+#include <kernel/udp.h>
+#include <kernel/net.h>
+#include <kernel/endian.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -139,6 +148,7 @@ static int32_t linux_sys_open(const char *path, uint32_t flags, uint32_t mode) {
     t->fds[fd].offset = 0;
     t->fds[fd].flags = flags;
     t->fds[fd].pipe_id = 0;
+    t->fds[fd].cloexec = (flags & LINUX_O_CLOEXEC) ? 1 : 0;
 
     return fd;
 }
@@ -148,7 +158,7 @@ static int32_t linux_sys_open(const char *path, uint32_t flags, uint32_t mode) {
 static int32_t linux_sys_close(uint32_t fd) {
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
-    if (!t || fd >= MAX_FDS) return -LINUX_EBADF;
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
 
     fd_entry_t *fde = &t->fds[fd];
     if (fde->type == FD_NONE) return -LINUX_EBADF;
@@ -159,12 +169,18 @@ static int32_t linux_sys_close(uint32_t fd) {
         return 0;
     }
 
-    /* For files/dirs/devs/tty: just clear */
+    /* For sockets: close the socket layer object */
+    if (fde->type == FD_SOCKET) {
+        socket_close(fde->pipe_id);
+    }
+
+    /* For files/dirs/devs/tty/sockets: clear */
     fde->type = FD_NONE;
     fde->inode = 0;
     fde->offset = 0;
     fde->flags = 0;
     fde->pipe_id = 0;
+    fde->cloexec = 0;
     return 0;
 }
 
@@ -173,7 +189,7 @@ static int32_t linux_sys_close(uint32_t fd) {
 static int32_t linux_sys_read(uint32_t fd, char *buf, uint32_t count) {
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
-    if (!t || fd >= MAX_FDS) return -LINUX_EBADF;
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
 
     fd_entry_t *fde = &t->fds[fd];
     if (fde->type == FD_NONE) return -LINUX_EBADF;
@@ -227,6 +243,17 @@ static int32_t linux_sys_read(uint32_t fd, char *buf, uint32_t count) {
                     return -LINUX_EIO;
             }
         }
+        case FD_SOCKET: {
+            int sock_id = fde->pipe_id;
+            int nb = socket_get_nonblock(sock_id) ||
+                     (fde->flags & LINUX_O_NONBLOCK);
+            if (nb) {
+                int rc = socket_recv_nb(sock_id, buf, count);
+                if (rc == -2) return -LINUX_EAGAIN;
+                return rc;
+            }
+            return socket_recv(sock_id, buf, count, 5000);
+        }
         case FD_DIR:
             return -LINUX_EISDIR;
         default:
@@ -239,7 +266,7 @@ static int32_t linux_sys_read(uint32_t fd, char *buf, uint32_t count) {
 static int32_t linux_sys_write(uint32_t fd, const char *buf, uint32_t count) {
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
-    if (!t || fd >= MAX_FDS) return -LINUX_EBADF;
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
 
     fd_entry_t *fde = &t->fds[fd];
     if (fde->type == FD_NONE) return -LINUX_EBADF;
@@ -276,9 +303,17 @@ static int32_t linux_sys_write(uint32_t fd, const char *buf, uint32_t count) {
             }
         }
 
-        case FD_FILE:
-            /* TODO: file write at offset — not needed for BusyBox read-only tools */
-            return -LINUX_ENOSYS;
+        case FD_FILE: {
+            int rc = fs_write_at(fde->inode, (const uint8_t *)buf, fde->offset, count);
+            if (rc > 0)
+                fde->offset += rc;
+            return rc;
+        }
+
+        case FD_SOCKET: {
+            int sock_id = fde->pipe_id;
+            return socket_send(sock_id, buf, count);
+        }
 
         case FD_DIR:
             return -LINUX_EISDIR;
@@ -305,12 +340,27 @@ static int32_t linux_sys_writev(uint32_t fd, const struct linux_iovec *iov,
     return total;
 }
 
+/* ── Linux ftruncate(fd, length) ────────────────────────────────── */
+
+static int32_t linux_sys_ftruncate(uint32_t fd, uint32_t length) {
+    int tid = task_get_current();
+    task_info_t *t = task_get(tid);
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
+
+    fd_entry_t *fde = &t->fds[fd];
+    if (fde->type != FD_FILE) return -LINUX_EINVAL;
+
+    if (fs_truncate_inode(fde->inode, length) < 0)
+        return -LINUX_EIO;
+    return 0;
+}
+
 /* ── Linux lseek(fd, offset, whence) ────────────────────────────── */
 
 static int32_t linux_sys_lseek(uint32_t fd, int32_t offset, uint32_t whence) {
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
-    if (!t || fd >= MAX_FDS) return -LINUX_EBADF;
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
 
     fd_entry_t *fde = &t->fds[fd];
     if (fde->type == FD_NONE) return -LINUX_EBADF;
@@ -407,7 +457,7 @@ static int32_t linux_sys_lstat64(const char *path, struct linux_stat64 *statbuf)
 static int32_t linux_sys_fstat64(uint32_t fd, struct linux_stat64 *statbuf) {
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
-    if (!t || fd >= MAX_FDS) return -LINUX_EBADF;
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
 
     fd_entry_t *fde = &t->fds[fd];
     if (fde->type == FD_NONE) return -LINUX_EBADF;
@@ -429,6 +479,14 @@ static int32_t linux_sys_fstat64(uint32_t fd, struct linux_stat64 *statbuf) {
         return 0;
     }
 
+    if (fde->type == FD_SOCKET) {
+        /* Synthesize a socket stat */
+        memset(statbuf, 0, sizeof(*statbuf));
+        statbuf->st_mode = 0140666;  /* S_IFSOCK | 0666 */
+        statbuf->st_blksize = 4096;
+        return 0;
+    }
+
     inode_t node;
     if (fs_read_inode(fde->inode, &node) < 0) return -LINUX_EIO;
     fill_stat64(statbuf, fde->inode, &node);
@@ -440,7 +498,7 @@ static int32_t linux_sys_fstat64(uint32_t fd, struct linux_stat64 *statbuf) {
 static int32_t linux_sys_getdents64(uint32_t fd, void *dirp, uint32_t count) {
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
-    if (!t || fd >= MAX_FDS) return -LINUX_EBADF;
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
 
     fd_entry_t *fde = &t->fds[fd];
     if (fde->type != FD_DIR) return -LINUX_ENOTDIR;
@@ -491,7 +549,7 @@ static int32_t linux_sys_getdents64(uint32_t fd, void *dirp, uint32_t count) {
 
             /* Look up child inode for type */
             uint8_t d_type = LINUX_DT_UNKNOWN;
-            if (entries[e].inode < 256) { /* NUM_INODES */
+            if (entries[e].inode < NUM_INODES) {
                 inode_t child;
                 if (fs_read_inode(entries[e].inode, &child) == 0)
                     d_type = inode_type_to_dtype(child.type);
@@ -523,19 +581,25 @@ static int32_t linux_sys_getdents64(uint32_t fd, void *dirp, uint32_t count) {
 static int32_t linux_sys_fcntl64(uint32_t fd, uint32_t cmd, uint32_t arg) {
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
-    if (!t || fd >= MAX_FDS) return -LINUX_EBADF;
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
 
     fd_entry_t *fde = &t->fds[fd];
     if (fde->type == FD_NONE) return -LINUX_EBADF;
 
     switch (cmd) {
-        case LINUX_F_GETFD: return 0;       /* no CLOEXEC tracking */
-        case LINUX_F_SETFD: return 0;       /* noop */
+        case LINUX_F_GETFD: return fde->cloexec ? FD_CLOEXEC : 0;
+        case LINUX_F_SETFD:
+            fde->cloexec = (arg & FD_CLOEXEC) ? 1 : 0;
+            return 0;
         case LINUX_F_GETFL: return (int32_t)fde->flags;
         case LINUX_F_SETFL:
             /* Only allow O_NONBLOCK and O_APPEND to be changed */
             fde->flags = (fde->flags & ~(LINUX_O_NONBLOCK | LINUX_O_APPEND))
                        | (arg & (LINUX_O_NONBLOCK | LINUX_O_APPEND));
+            /* Propagate O_NONBLOCK to socket layer */
+            if (fde->type == FD_SOCKET)
+                socket_set_nonblock(fde->pipe_id,
+                                    (arg & LINUX_O_NONBLOCK) ? 1 : 0);
             return 0;
         default:
             return -LINUX_EINVAL;
@@ -590,7 +654,7 @@ static int32_t linux_sys_access(const char *path, uint32_t mode) {
 static int32_t linux_sys_ioctl(uint32_t fd, uint32_t cmd, uint32_t arg) {
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
-    if (!t || fd >= MAX_FDS) return -LINUX_EBADF;
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
 
     fd_entry_t *fde = &t->fds[fd];
     if (fde->type == FD_NONE) return -LINUX_EBADF;
@@ -610,9 +674,28 @@ static int32_t linux_sys_ioctl(uint32_t fd, uint32_t cmd, uint32_t arg) {
                 memset(tio, 0, sizeof(*tio));
                 return 0;
             }
+            case LINUX_TCSETS:
+            case LINUX_TCSETSW:
+            case LINUX_TCSETSF:
+                return 0;  /* accept + ignore */
+            case LINUX_FIONREAD:
+                if (arg) *(int *)arg = 0;
+                return 0;
+            case LINUX_TIOCGPGRP: {
+                if (arg) *(int *)arg = t->pgid;
+                return 0;
+            }
+            case LINUX_TIOCSPGRP:
+                return 0;  /* accept + ignore */
             default:
                 return -LINUX_ENOSYS;
         }
+    }
+
+    /* Pipe FIONREAD support */
+    if (fde->type == FD_PIPE_R && cmd == LINUX_FIONREAD) {
+        if (arg) *(int *)arg = (int)pipe_get_count(fde->pipe_id);
+        return 0;
     }
 
     if (fde->type == FD_DRM)
@@ -655,67 +738,280 @@ static uint32_t linux_sys_brk(uint32_t new_brk) {
     task_info_t *t = task_get(tid);
     if (!t) return 0;
 
-    if (new_brk == 0 || new_brk <= t->brk_current)
+    /* Query: return current brk */
+    if (new_brk == 0)
         return t->brk_current;
 
-    uint32_t old_page = (t->brk_current + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    uint32_t new_page = (new_brk + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    /* Cannot shrink below brk_start */
+    if (new_brk < t->brk_start)
+        return t->brk_current;
 
-    for (uint32_t va = old_page; va < new_page; va += PAGE_SIZE) {
-        uint32_t frame = pmm_alloc_frame();
-        if (!frame)
-            return t->brk_current;
-        memset((void *)frame, 0, PAGE_SIZE);
+    if (new_brk > t->brk_current) {
+        /* ── Grow ── */
+        uint32_t old_page = (t->brk_current + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        uint32_t new_page = (new_brk + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
-        if (!vmm_map_user_page(t->page_dir, va, frame,
-                                PTE_PRESENT | PTE_WRITABLE | PTE_USER)) {
-            pmm_free_frame(frame);
-            return t->brk_current;
+        for (uint32_t va = old_page; va < new_page; va += PAGE_SIZE) {
+            uint32_t frame = pmm_alloc_frame();
+            if (!frame)
+                return t->brk_current;
+            memset((void *)frame, 0, PAGE_SIZE);
+
+            if (!vmm_map_user_page(t->page_dir, va, frame,
+                                    PTE_PRESENT | PTE_WRITABLE | PTE_USER)) {
+                pmm_free_frame(frame);
+                return t->brk_current;
+            }
+
+            if (t->num_elf_frames < 64)
+                t->elf_frames[t->num_elf_frames++] = frame;
         }
 
-        if (t->num_elf_frames < 64)
-            t->elf_frames[t->num_elf_frames++] = frame;
+        /* Update BRK VMA */
+        if (t->vma) {
+            for (int i = 0; i < VMA_MAX_PER_TASK; i++) {
+                vma_t *v = &t->vma->vmas[i];
+                if (v->active && v->vm_type == VMA_TYPE_BRK) {
+                    v->vm_end = new_page;
+                    break;
+                }
+            }
+            t->vma->brk_current = new_brk;
+        }
+    } else if (new_brk < t->brk_current) {
+        /* ── Shrink ── */
+        uint32_t new_page = (new_brk + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        uint32_t old_page = (t->brk_current + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+        /* Free pages from new_page to old_page */
+        if (t->page_dir && t->page_dir != vmm_get_kernel_pagedir()) {
+            for (uint32_t va = new_page; va < old_page; va += PAGE_SIZE) {
+                uint32_t pte = vmm_get_pte(t->page_dir, va);
+                if (pte & PTE_PRESENT) {
+                    uint32_t frame = pte & PAGE_MASK;
+                    vmm_unmap_user_page(t->page_dir, va);
+                    if (frame_ref_dec(frame) == 0)
+                        pmm_free_frame(frame);
+                }
+            }
+        }
+
+        /* Shrink BRK VMA */
+        if (t->vma) {
+            for (int i = 0; i < VMA_MAX_PER_TASK; i++) {
+                vma_t *v = &t->vma->vmas[i];
+                if (v->active && v->vm_type == VMA_TYPE_BRK) {
+                    v->vm_end = new_page;
+                    if (v->vm_end <= v->vm_start) {
+                        v->vm_end = v->vm_start;  /* zero-size is fine */
+                    }
+                    break;
+                }
+            }
+            t->vma->brk_current = new_brk;
+        }
     }
 
     t->brk_current = new_brk;
     return new_brk;
 }
 
+/* Forward declaration (needed by MAP_FIXED in mmap2) */
+static int32_t linux_sys_munmap(uint32_t addr, uint32_t len);
+
 /* ── Linux mmap2(addr, len, prot, flags, fd, pgoff) ──────────────── */
 
 static uint32_t linux_sys_mmap2(uint32_t addr, uint32_t len, uint32_t prot,
                                  uint32_t flags, uint32_t fd, uint32_t pgoff) {
-    (void)addr; (void)prot; (void)fd; (void)pgoff;
-
     int tid = task_get_current();
     task_info_t *t = task_get(tid);
     if (!t) return (uint32_t)-LINUX_ENOMEM;
 
-    if (!(flags & LINUX_MAP_ANONYMOUS))
-        return (uint32_t)-LINUX_ENOSYS;
-
     uint32_t num_pages = (len + PAGE_SIZE - 1) / PAGE_SIZE;
-    uint32_t va_start = t->mmap_next;
+    uint32_t alloc_len = num_pages * PAGE_SIZE;
+    uint32_t va_start;
 
-    for (uint32_t i = 0; i < num_pages; i++) {
-        uint32_t frame = pmm_alloc_frame();
-        if (!frame)
+    /* ── Address selection (shared by anonymous and file-backed) ── */
+    if (flags & LINUX_MAP_FIXED) {
+        if (addr & (PAGE_SIZE - 1))
+            return (uint32_t)-LINUX_EINVAL;
+        va_start = addr;
+        /* Unmap anything already at this range */
+        linux_sys_munmap(va_start, alloc_len);
+    } else if (t->vma) {
+        va_start = vma_find_free(t->vma, alloc_len);
+        if (!va_start)
             return (uint32_t)-LINUX_ENOMEM;
-        memset((void *)frame, 0, PAGE_SIZE);
-
-        uint32_t va = va_start + i * PAGE_SIZE;
-        if (!vmm_map_user_page(t->page_dir, va, frame,
-                                PTE_PRESENT | PTE_WRITABLE | PTE_USER)) {
-            pmm_free_frame(frame);
-            return (uint32_t)-LINUX_ENOMEM;
-        }
-
-        if (t->num_elf_frames < 64)
-            t->elf_frames[t->num_elf_frames++] = frame;
+    } else {
+        va_start = t->mmap_next;
+        t->mmap_next += alloc_len;
     }
 
-    t->mmap_next += num_pages * PAGE_SIZE;
+    /* Build VMA flags from prot */
+    uint32_t vflags = VMA_ANON;
+    if (prot & LINUX_PROT_READ)  vflags |= VMA_READ;
+    if (prot & LINUX_PROT_WRITE) vflags |= VMA_WRITE;
+    if (prot & LINUX_PROT_EXEC)  vflags |= VMA_EXEC;
+
+    /* ── File-backed mmap: "read-into-anon" ──────────────────────── */
+    if (!(flags & LINUX_MAP_ANONYMOUS)) {
+        if (!t->fds) return (uint32_t)-LINUX_EBADF;
+        int ifd = (int)fd;
+        if (ifd < 0 || ifd >= t->fd_count) return (uint32_t)-LINUX_EBADF;
+        fd_entry_t *fde = &t->fds[ifd];
+        if (fde->type != FD_FILE) return (uint32_t)-LINUX_EBADF;
+        uint32_t inode = fde->inode;
+
+        /* Create VMA (type ANON — we eagerly populate, no file tracking) */
+        if (t->vma)
+            vma_insert(t->vma, va_start, va_start + alloc_len, vflags, VMA_TYPE_ANON);
+
+        /* Eagerly allocate frames, read file data into them */
+        uint32_t file_offset = pgoff * PAGE_SIZE;  /* mmap2 offset is in pages */
+        for (uint32_t i = 0; i < num_pages; i++) {
+            uint32_t frame = pmm_alloc_frame();
+            if (!frame) return (uint32_t)-LINUX_ENOMEM;
+            memset((void *)frame, 0, PAGE_SIZE);
+
+            /* Read file data into this frame */
+            uint32_t off = file_offset + i * PAGE_SIZE;
+            fs_read_at(inode, (uint8_t *)frame, off, PAGE_SIZE);
+
+            uint32_t pte_flags = PTE_PRESENT | PTE_USER;
+            if (prot & LINUX_PROT_WRITE) pte_flags |= PTE_WRITABLE;
+            if (!vmm_map_user_page(t->page_dir, va_start + i * PAGE_SIZE,
+                                    frame, pte_flags)) {
+                pmm_free_frame(frame);
+                return (uint32_t)-LINUX_ENOMEM;
+            }
+        }
+        return va_start;
+    }
+
+    /* ── Anonymous mmap ──────────────────────────────────────────── */
+    if (t->vma) {
+        /* Demand paging path: only create VMA, ensure page tables exist.
+         * Physical frames will be allocated on first access via page fault. */
+        vma_insert(t->vma, va_start, va_start + alloc_len, vflags, VMA_TYPE_ANON);
+
+        /* Ensure page tables exist so we get proper page faults (not GPF) */
+        for (uint32_t i = 0; i < num_pages; i++) {
+            uint32_t va = va_start + i * PAGE_SIZE;
+            vmm_ensure_pt(t->page_dir, va);
+        }
+    } else {
+        /* Legacy path (no VMA table): eager allocation */
+        for (uint32_t i = 0; i < num_pages; i++) {
+            uint32_t frame = pmm_alloc_frame();
+            if (!frame)
+                return (uint32_t)-LINUX_ENOMEM;
+            memset((void *)frame, 0, PAGE_SIZE);
+
+            uint32_t va = va_start + i * PAGE_SIZE;
+            if (!vmm_map_user_page(t->page_dir, va, frame,
+                                    PTE_PRESENT | PTE_WRITABLE | PTE_USER)) {
+                pmm_free_frame(frame);
+                return (uint32_t)-LINUX_ENOMEM;
+            }
+
+            if (t->num_elf_frames < 64)
+                t->elf_frames[t->num_elf_frames++] = frame;
+        }
+    }
+
     return va_start;
+}
+
+/* ── Linux munmap(addr, len) ──────────────────────────────────────── */
+
+static int32_t linux_sys_munmap(uint32_t addr, uint32_t len) {
+    int tid = task_get_current();
+    task_info_t *t = task_get(tid);
+    if (!t) return -LINUX_EINVAL;
+
+    if (addr & (PAGE_SIZE - 1)) return -LINUX_EINVAL;
+    if (len == 0) return -LINUX_EINVAL;
+
+    uint32_t end = (addr + len + PAGE_SIZE - 1) & PAGE_MASK;
+
+    /* Walk the range and unmap any present pages */
+    if (t->page_dir && t->page_dir != vmm_get_kernel_pagedir()) {
+        for (uint32_t va = addr; va < end; va += PAGE_SIZE) {
+            uint32_t pte = vmm_get_pte(t->page_dir, va);
+            if (pte & PTE_PRESENT) {
+                uint32_t frame = pte & PAGE_MASK;
+                vmm_unmap_user_page(t->page_dir, va);
+                /* Use refcount if available, otherwise just free */
+                if (frame_ref_get(frame) > 0) {
+                    if (frame_ref_dec(frame) == 0)
+                        pmm_free_frame(frame);
+                } else {
+                    pmm_free_frame(frame);
+                }
+            }
+        }
+    }
+
+    /* Remove VMA entries */
+    if (t->vma)
+        vma_remove(t->vma, addr, end);
+
+    return 0;
+}
+
+/* ── Linux mprotect(addr, len, prot) ─────────────────────────────── */
+
+static int32_t linux_sys_mprotect(uint32_t addr, uint32_t len, uint32_t prot) {
+    int tid = task_get_current();
+    task_info_t *t = task_get(tid);
+    if (!t) return -LINUX_EINVAL;
+
+    if (addr & (PAGE_SIZE - 1)) return -LINUX_EINVAL;
+    if (len == 0) return 0;
+
+    uint32_t end = (addr + len + PAGE_SIZE - 1) & PAGE_MASK;
+
+    if (t->vma) {
+        /* Split VMAs at boundaries */
+        vma_split(t->vma, addr);
+        vma_split(t->vma, end);
+
+        /* Update VMA flags for all VMAs in range */
+        for (int i = 0; i < VMA_MAX_PER_TASK; i++) {
+            vma_t *v = &t->vma->vmas[i];
+            if (!v->active) continue;
+            if (v->vm_start >= end || v->vm_end <= addr) continue;
+
+            /* Update flags */
+            v->vm_flags &= ~(VMA_READ | VMA_WRITE | VMA_EXEC);
+            if (prot & LINUX_PROT_READ)  v->vm_flags |= VMA_READ;
+            if (prot & LINUX_PROT_WRITE) v->vm_flags |= VMA_WRITE;
+            if (prot & LINUX_PROT_EXEC)  v->vm_flags |= VMA_EXEC;
+        }
+    }
+
+    /* Update PTEs for already-mapped pages */
+    if (t->page_dir && t->page_dir != vmm_get_kernel_pagedir()) {
+        for (uint32_t va = addr; va < end; va += PAGE_SIZE) {
+            uint32_t pte = vmm_get_pte(t->page_dir, va);
+            if (!(pte & PTE_PRESENT)) continue;
+            /* Skip COW pages — they stay read-only until faulted */
+            if (pte & PTE_COW) continue;
+
+            uint32_t new_pte = pte;
+            if (prot & LINUX_PROT_WRITE)
+                new_pte |= PTE_WRITABLE;
+            else
+                new_pte &= ~PTE_WRITABLE;
+
+            if (new_pte != pte) {
+                uint32_t frame = pte & PAGE_MASK;
+                vmm_map_user_page(t->page_dir, va, frame, new_pte & 0xFFF);
+            }
+        }
+    }
+
+    return 0;
 }
 
 /* ── Linux set_thread_area(user_desc*) ───────────────────────────── */
@@ -732,6 +1028,511 @@ static int32_t linux_sys_set_thread_area(struct linux_user_desc *u_info) {
     return 0;
 }
 
+/* ── Linux unlink(path) ──────────────────────────────────────────── */
+
+static int32_t linux_sys_unlink(const char *path) {
+    if (!path) return -LINUX_EFAULT;
+    /* Check that target exists and is not a directory */
+    uint32_t parent;
+    char name[MAX_NAME_LEN];
+    int ino = fs_resolve_path(path, &parent, name);
+    if (ino < 0) return -LINUX_ENOENT;
+
+    inode_t node;
+    if (fs_read_inode((uint32_t)ino, &node) < 0) return -LINUX_EIO;
+    if (node.type == INODE_DIR) return -LINUX_EISDIR;
+
+    if (fs_delete_file(path) < 0) return -LINUX_EIO;
+    return 0;
+}
+
+/* ── Linux mkdir(path, mode) ─────────────────────────────────────── */
+
+static int32_t linux_sys_mkdir(const char *path, uint32_t mode) {
+    if (!path) return -LINUX_EFAULT;
+    (void)mode; /* mode applied via umask — TODO: integrate fully */
+    int rc = fs_create_file(path, 1);
+    if (rc < 0) return -LINUX_EEXIST;
+    return 0;
+}
+
+/* ── Linux rmdir(path) ───────────────────────────────────────────── */
+
+static int32_t linux_sys_rmdir(const char *path) {
+    if (!path) return -LINUX_EFAULT;
+    uint32_t parent;
+    char name[MAX_NAME_LEN];
+    int ino = fs_resolve_path(path, &parent, name);
+    if (ino < 0) return -LINUX_ENOENT;
+
+    inode_t node;
+    if (fs_read_inode((uint32_t)ino, &node) < 0) return -LINUX_EIO;
+    if (node.type != INODE_DIR) return -LINUX_ENOTDIR;
+
+    /* fs_delete_file() does its own thorough empty-directory check
+     * (walks all blocks, verifies only . and .. remain). If the dir
+     * is not empty it returns -1, which we map to ENOTEMPTY. */
+    int rc = fs_delete_file(path);
+    if (rc < 0) return -LINUX_ENOTEMPTY;
+    return 0;
+}
+
+/* ── Linux rename(old, new) ──────────────────────────────────────── */
+
+static int32_t linux_sys_rename(const char *oldpath, const char *newpath) {
+    if (!oldpath || !newpath) return -LINUX_EFAULT;
+    int rc = fs_rename(oldpath, newpath);
+    if (rc < 0) return -LINUX_ENOENT;
+    return 0;
+}
+
+/* ── Linux chdir(path) ───────────────────────────────────────────── */
+
+static int32_t linux_sys_chdir(const char *path) {
+    if (!path) return -LINUX_EFAULT;
+    int rc = fs_change_directory(path);
+    if (rc < 0) return -LINUX_ENOENT;
+    return 0;
+}
+
+/* ── Linux fchdir(fd) ────────────────────────────────────────────── */
+
+static int32_t linux_sys_fchdir(uint32_t fd) {
+    int tid = task_get_current();
+    task_info_t *t = task_get(tid);
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
+
+    fd_entry_t *fde = &t->fds[fd];
+    if (fde->type != FD_DIR && fde->type != FD_FILE) return -LINUX_EBADF;
+
+    inode_t node;
+    if (fs_read_inode(fde->inode, &node) < 0) return -LINUX_EIO;
+    if (node.type != INODE_DIR) return -LINUX_ENOTDIR;
+
+    if (fs_change_directory_by_inode(fde->inode) < 0) return -LINUX_EIO;
+    return 0;
+}
+
+/* ── Linux pipe(fds) ─────────────────────────────────────────────── */
+
+static int32_t linux_sys_pipe(int *fds) {
+    if (!fds) return -LINUX_EFAULT;
+    int tid = task_get_current();
+    int rfd, wfd;
+    if (pipe_create(&rfd, &wfd, tid) < 0) return -LINUX_EMFILE;
+    fds[0] = rfd;
+    fds[1] = wfd;
+    return 0;
+}
+
+/* ── Linux umask(mask) ───────────────────────────────────────────── */
+
+static int32_t linux_sys_umask(uint32_t mask) {
+    int tid = task_get_current();
+    task_info_t *t = task_get(tid);
+    if (!t) return 0;
+    uint32_t old = t->umask;
+    t->umask = mask & 0777;
+    return (int32_t)old;
+}
+
+/* ── Linux time(tloc) ────────────────────────────────────────────── */
+
+static int32_t linux_sys_time(uint32_t *tloc) {
+    uint32_t t = rtc_get_epoch() + IMPOS_EPOCH_OFFSET;
+    if (tloc) *tloc = t;
+    return (int32_t)t;
+}
+
+/* ── Linux gettimeofday(tv, tz) ──────────────────────────────────── */
+
+static int32_t linux_sys_gettimeofday(struct linux_timeval *tv,
+                                       struct linux_timezone *tz) {
+    uint32_t unix_time = rtc_get_epoch() + IMPOS_EPOCH_OFFSET;
+    if (tv) {
+        tv->tv_sec = (int32_t)unix_time;
+        tv->tv_usec = 0;
+    }
+    if (tz) {
+        tz->tz_minuteswest = 0;
+        tz->tz_dsttime = 0;
+    }
+    return 0;
+}
+
+/* ── Linux clock_gettime(clockid, tp) ────────────────────────────── */
+
+static int32_t linux_sys_clock_gettime(uint32_t clockid,
+                                        struct linux_clock_timespec *tp) {
+    if (!tp) return -LINUX_EFAULT;
+    extern volatile uint32_t pit_ticks;
+
+    switch (clockid) {
+        case LINUX_CLOCK_REALTIME: {
+            uint32_t unix_time = rtc_get_epoch() + IMPOS_EPOCH_OFFSET;
+            tp->tv_sec = (int32_t)unix_time;
+            tp->tv_nsec = 0;
+            return 0;
+        }
+        case LINUX_CLOCK_MONOTONIC: {
+            /* PIT at 120 Hz. Use 64-bit intermediate to avoid both
+             * overflow and truncation drift. */
+            uint32_t ticks = pit_ticks;
+            tp->tv_sec = (int32_t)(ticks / 120);
+            tp->tv_nsec = (int32_t)(((uint64_t)(ticks % 120) * 1000000000ULL) / 120);
+            return 0;
+        }
+        default:
+            return -LINUX_EINVAL;
+    }
+}
+
+/* ── Linux readv(fd, iov, iovcnt) ────────────────────────────────── */
+
+static int32_t linux_sys_readv(uint32_t fd, const struct linux_iovec *iov,
+                                uint32_t iovcnt) {
+    int32_t total = 0;
+    for (uint32_t i = 0; i < iovcnt; i++) {
+        if (iov[i].iov_len == 0)
+            continue;
+        int32_t ret = linux_sys_read(fd, (char *)iov[i].iov_base,
+                                      iov[i].iov_len);
+        if (ret < 0)
+            return (total > 0) ? total : ret;
+        total += ret;
+        if ((uint32_t)ret < iov[i].iov_len)
+            break;  /* short read — don't continue to next iovec */
+    }
+    return total;
+}
+
+/* ── Linux statfs64(path, sz, buf) ───────────────────────────────── */
+
+static int32_t linux_sys_statfs64(const char *path, uint32_t sz, void *buf) {
+    (void)path;
+    if (!buf || sz < sizeof(struct linux_statfs64)) return -LINUX_EINVAL;
+    struct linux_statfs64 *st = (struct linux_statfs64 *)buf;
+    memset(st, 0, sizeof(*st));
+    st->f_type = 0x696D706F;  /* "impo" */
+    st->f_bsize = BLOCK_SIZE;
+    st->f_frsize = BLOCK_SIZE;
+    st->f_blocks = NUM_BLOCKS;
+    st->f_bfree = fs_count_free_blocks();
+    st->f_bavail = st->f_bfree;
+    st->f_files = NUM_INODES;
+    st->f_ffree = fs_count_free_inodes();
+    st->f_namelen = MAX_NAME_LEN;
+    return 0;
+}
+
+/* ── Linux fstatfs64(fd, sz, buf) ────────────────────────────────── */
+
+static int32_t linux_sys_fstatfs64(uint32_t fd, uint32_t sz, void *buf) {
+    int tid = task_get_current();
+    task_info_t *t = task_get(tid);
+    if (!t || fd >= (uint32_t)t->fd_count) return -LINUX_EBADF;
+    if (t->fds[fd].type == FD_NONE) return -LINUX_EBADF;
+    return linux_sys_statfs64(NULL, sz, buf);
+}
+
+/* ── Linux poll helper: check readiness of all fds ───────────────── */
+
+static int poll_check_fds(struct linux_pollfd *fds, uint32_t nfds, int tid) {
+    task_info_t *t = task_get(tid);
+    if (!t) return 0;
+
+    int ready = 0;
+    for (uint32_t i = 0; i < nfds; i++) {
+        fds[i].revents = 0;
+        int fd = fds[i].fd;
+
+        if (fd < 0) continue;  /* negative fd → skip (POSIX) */
+
+        if (fd >= t->fd_count || t->fds[fd].type == FD_NONE) {
+            fds[i].revents = LINUX_POLLNVAL;
+            ready++;
+            continue;
+        }
+
+        fd_entry_t *fde = &t->fds[fd];
+        switch (fde->type) {
+            case FD_TTY:
+                /* TTY is always writable; reading always possible (blocking getchar) */
+                if (fds[i].events & LINUX_POLLIN)
+                    fds[i].revents |= LINUX_POLLIN;
+                if (fds[i].events & LINUX_POLLOUT)
+                    fds[i].revents |= LINUX_POLLOUT;
+                break;
+            case FD_PIPE_R: {
+                int r = pipe_poll_query(fde->pipe_id, 0);
+                if ((fds[i].events & LINUX_POLLIN) && (r & PIPE_POLL_IN))
+                    fds[i].revents |= LINUX_POLLIN;
+                if (r & PIPE_POLL_HUP)
+                    fds[i].revents |= LINUX_POLLHUP;
+                break;
+            }
+            case FD_PIPE_W: {
+                int r = pipe_poll_query(fde->pipe_id, 1);
+                if ((fds[i].events & LINUX_POLLOUT) && (r & PIPE_POLL_OUT))
+                    fds[i].revents |= LINUX_POLLOUT;
+                if (r & PIPE_POLL_ERR)
+                    fds[i].revents |= LINUX_POLLERR;
+                break;
+            }
+            case FD_SOCKET: {
+                int r = socket_poll_query(fde->pipe_id);
+                if ((fds[i].events & LINUX_POLLIN) && (r & PIPE_POLL_IN))
+                    fds[i].revents |= LINUX_POLLIN;
+                if ((fds[i].events & LINUX_POLLOUT) && (r & PIPE_POLL_OUT))
+                    fds[i].revents |= LINUX_POLLOUT;
+                if (r & PIPE_POLL_HUP)
+                    fds[i].revents |= LINUX_POLLHUP;
+                break;
+            }
+            case FD_FILE:
+            case FD_DEV:
+                /* Regular files are always ready */
+                if (fds[i].events & LINUX_POLLIN)
+                    fds[i].revents |= LINUX_POLLIN;
+                if (fds[i].events & LINUX_POLLOUT)
+                    fds[i].revents |= LINUX_POLLOUT;
+                break;
+            default:
+                break;
+        }
+
+        if (fds[i].revents) ready++;
+    }
+    return ready;
+}
+
+/* ── Linux socketcall(102) ────────────────────────────────────────── */
+
+static int32_t linux_sys_socketcall(uint32_t call, uint32_t *args, int tid) {
+    task_info_t *t = task_get(tid);
+    if (!t) return -LINUX_EINVAL;
+
+    switch (call) {
+    case SYS_SOCKET: {
+        /* args: domain, type, protocol */
+        uint32_t domain = args[0];
+        uint32_t type = args[1];
+        if (domain != AF_INET)
+            return -LINUX_EAFNOSUPPORT;
+        int stype;
+        if ((type & 0xFF) == SOCK_STREAM) stype = SOCK_STREAM;
+        else if ((type & 0xFF) == SOCK_DGRAM) stype = SOCK_DGRAM;
+        else return -LINUX_EPROTONOSUPPORT;
+
+        int sock_id = socket_create(stype);
+        if (sock_id < 0) return -LINUX_ENOMEM;
+
+        int fd = fd_alloc(tid);
+        if (fd < 0) { socket_close(sock_id); return -LINUX_EMFILE; }
+
+        t->fds[fd].type = FD_SOCKET;
+        t->fds[fd].pipe_id = sock_id;
+        t->fds[fd].flags = 0;
+        /* SOCK_NONBLOCK (0x800) and SOCK_CLOEXEC (0x80000) */
+        if (type & 0x800) {
+            t->fds[fd].flags |= LINUX_O_NONBLOCK;
+            socket_set_nonblock(sock_id, 1);
+        }
+        if (type & 0x80000)
+            t->fds[fd].cloexec = 1;
+        return fd;
+    }
+    case SYS_BIND: {
+        /* args: sockfd, addr*, addrlen */
+        int fd = (int)args[0];
+        if (fd < 0 || fd >= t->fd_count || t->fds[fd].type != FD_SOCKET)
+            return -LINUX_ENOTSOCK;
+        struct linux_sockaddr_in *sa = (struct linux_sockaddr_in *)args[1];
+        if (!sa || sa->sin_family != AF_INET)
+            return -LINUX_EAFNOSUPPORT;
+        uint16_t port = ntohs(sa->sin_port);
+        int rc = socket_bind(t->fds[fd].pipe_id, port);
+        return (rc < 0) ? -LINUX_EADDRINUSE : 0;
+    }
+    case SYS_LISTEN: {
+        /* args: sockfd, backlog */
+        int fd = (int)args[0];
+        if (fd < 0 || fd >= t->fd_count || t->fds[fd].type != FD_SOCKET)
+            return -LINUX_ENOTSOCK;
+        int rc = socket_listen(t->fds[fd].pipe_id, (int)args[1]);
+        return (rc < 0) ? -LINUX_EADDRINUSE : 0;
+    }
+    case SYS_ACCEPT: {
+        /* args: sockfd, addr*, addrlen*
+         * Non-blocking path — the blocking sleep-loop is in the dispatcher */
+        int fd = (int)args[0];
+        if (fd < 0 || fd >= t->fd_count || t->fds[fd].type != FD_SOCKET)
+            return -LINUX_ENOTSOCK;
+        int sock_id = t->fds[fd].pipe_id;
+
+        net_process_packets();
+        int new_sock = socket_accept_nb(sock_id);
+        if (new_sock == -2)
+            return -LINUX_EAGAIN;
+        if (new_sock < 0)
+            return -LINUX_EINVAL;
+
+        int new_fd = fd_alloc(tid);
+        if (new_fd < 0) { socket_close(new_sock); return -LINUX_EMFILE; }
+
+        t->fds[new_fd].type = FD_SOCKET;
+        t->fds[new_fd].pipe_id = new_sock;
+        t->fds[new_fd].flags = 0;
+
+        /* Fill in client address if requested */
+        if (args[1] && args[2]) {
+            struct linux_sockaddr_in *sa = (struct linux_sockaddr_in *)args[1];
+            uint8_t rip[4]; uint16_t rport;
+            socket_get_remote(new_sock, rip, &rport);
+            sa->sin_family = AF_INET;
+            sa->sin_port = htons(rport);
+            memcpy(&sa->sin_addr, rip, 4);
+            memset(sa->sin_zero, 0, 8);
+            uint32_t *lenp = (uint32_t *)args[2];
+            *lenp = sizeof(struct linux_sockaddr_in);
+        }
+        return new_fd;
+    }
+    case SYS_CONNECT: {
+        /* args: sockfd, addr*, addrlen */
+        int fd = (int)args[0];
+        if (fd < 0 || fd >= t->fd_count || t->fds[fd].type != FD_SOCKET)
+            return -LINUX_ENOTSOCK;
+        struct linux_sockaddr_in *sa = (struct linux_sockaddr_in *)args[1];
+        if (!sa || sa->sin_family != AF_INET)
+            return -LINUX_EAFNOSUPPORT;
+        uint8_t ip[4];
+        memcpy(ip, &sa->sin_addr, 4);
+        uint16_t port = ntohs(sa->sin_port);
+        int rc = socket_connect(t->fds[fd].pipe_id, ip, port);
+        if (rc < 0) return -LINUX_ECONNREFUSED;
+        return 0;
+    }
+    case SYS_SEND: {
+        /* args: sockfd, buf, len, flags */
+        int fd = (int)args[0];
+        if (fd < 0 || fd >= t->fd_count || t->fds[fd].type != FD_SOCKET)
+            return -LINUX_ENOTSOCK;
+        int rc = socket_send(t->fds[fd].pipe_id, (void *)args[1], args[2]);
+        return (rc < 0) ? -LINUX_ENOTCONN : rc;
+    }
+    case SYS_RECV: {
+        /* args: sockfd, buf, len, flags */
+        int fd = (int)args[0];
+        if (fd < 0 || fd >= t->fd_count || t->fds[fd].type != FD_SOCKET)
+            return -LINUX_ENOTSOCK;
+        int sock_id = t->fds[fd].pipe_id;
+        int nb = socket_get_nonblock(sock_id) ||
+                 (t->fds[fd].flags & LINUX_O_NONBLOCK);
+        if (nb) {
+            int rc = socket_recv_nb(sock_id, (void *)args[1], args[2]);
+            if (rc == -2) return -LINUX_EAGAIN;
+            return (rc < 0) ? -LINUX_ENOTCONN : rc;
+        }
+        int rc = socket_recv(sock_id, (void *)args[1], args[2], 5000);
+        return (rc < 0) ? -LINUX_ENOTCONN : rc;
+    }
+    case SYS_SENDTO: {
+        /* args: sockfd, buf, len, flags, dest_addr, addrlen */
+        int fd = (int)args[0];
+        if (fd < 0 || fd >= t->fd_count || t->fds[fd].type != FD_SOCKET)
+            return -LINUX_ENOTSOCK;
+        struct linux_sockaddr_in *sa = (struct linux_sockaddr_in *)args[4];
+        if (!sa) {
+            /* No address = connected socket, use send */
+            int rc = socket_send(t->fds[fd].pipe_id, (void *)args[1], args[2]);
+            return (rc < 0) ? -LINUX_ENOTCONN : rc;
+        }
+        uint8_t ip[4];
+        memcpy(ip, &sa->sin_addr, 4);
+        uint16_t port = ntohs(sa->sin_port);
+        int rc = socket_sendto(t->fds[fd].pipe_id, (void *)args[1], args[2],
+                               ip, port);
+        return (rc < 0) ? -LINUX_ENETUNREACH : rc;
+    }
+    case SYS_RECVFROM: {
+        /* args: sockfd, buf, len, flags, src_addr, addrlen* */
+        int fd = (int)args[0];
+        if (fd < 0 || fd >= t->fd_count || t->fds[fd].type != FD_SOCKET)
+            return -LINUX_ENOTSOCK;
+        uint8_t src_ip[4]; uint16_t src_port;
+        size_t recv_len = args[2];
+        int rc = socket_recvfrom(t->fds[fd].pipe_id, (void *)args[1],
+                                 &recv_len, src_ip, &src_port, 5000);
+        if (rc < 0) return -LINUX_ENOTCONN;
+        if (args[4]) {
+            struct linux_sockaddr_in *sa = (struct linux_sockaddr_in *)args[4];
+            sa->sin_family = AF_INET;
+            sa->sin_port = htons(src_port);
+            memcpy(&sa->sin_addr, src_ip, 4);
+            memset(sa->sin_zero, 0, 8);
+            if (args[5]) {
+                uint32_t *lenp = (uint32_t *)args[5];
+                *lenp = sizeof(struct linux_sockaddr_in);
+            }
+        }
+        return (int32_t)recv_len;
+    }
+    case SYS_SHUTDOWN:
+    case SYS_SETSOCKOPT:
+    case SYS_GETSOCKOPT:
+    case SYS_GETSOCKNAME:
+    case SYS_GETPEERNAME:
+        return 0; /* stub: success */
+    default:
+        return -LINUX_EINVAL;
+    }
+}
+
+/* ── Linux nanosleep / clock_nanosleep ────────────────────────────── */
+
+struct linux_timespec {
+    int32_t tv_sec;
+    int32_t tv_nsec;
+};
+
+extern volatile uint32_t pit_ticks;
+
+/* Set up nanosleep state.  Returns 1 if the task was put to sleep (caller
+ * must invoke schedule()), 0 if zero-sleep (nothing to do), or a negative
+ * errno on validation failure.  Does NOT call task_yield() — that would
+ * go through int $0x80 which, for ELF tasks, is re-routed to the Linux
+ * syscall table where SYS_YIELD (1) == LINUX_SYS_exit.  Instead, the
+ * dispatch site must call schedule(regs) directly. */
+static int32_t linux_sys_nanosleep_setup(const struct linux_timespec *req,
+                                          struct linux_timespec *rem) {
+    if (!req) return -LINUX_EINVAL;
+    if (req->tv_sec < 0 || req->tv_nsec < 0 || req->tv_nsec >= 1000000000)
+        return -LINUX_EINVAL;
+
+    /* Convert to PIT ticks: PIT runs at 120 Hz */
+    uint32_t ms = (uint32_t)req->tv_sec * 1000 + (uint32_t)req->tv_nsec / 1000000;
+    uint32_t ticks = (ms * 120 + 999) / 1000;  /* ceiling */
+    if (ticks == 0 && ms > 0) ticks = 1;
+
+    /* Zero sleep — just return */
+    if (ticks == 0 && req->tv_sec == 0 && req->tv_nsec == 0) {
+        if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
+        return 0;
+    }
+
+    int tid = task_get_current();
+    task_info_t *t = task_get(tid);
+    if (!t) return -LINUX_EINVAL;
+
+    /* Set sleep target — caller will schedule() */
+    t->sleep_until = pit_ticks + ticks;
+    t->state = TASK_STATE_SLEEPING;
+
+    if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
+    return 1;  /* 1 = task is sleeping, caller must schedule() */
+}
+
 /* ── Dispatcher ──────────────────────────────────────────────────── */
 
 registers_t* linux_syscall_handler(registers_t* regs) {
@@ -745,10 +1546,29 @@ registers_t* linux_syscall_handler(registers_t* regs) {
             if (t) {
                 pipe_cleanup_task(tid);
                 shm_cleanup_task(tid);
+                t->exit_code = (int)regs->ebx;
                 t->state = TASK_STATE_ZOMBIE;
                 t->active = 0;
+                task_reparent_children(tid);
+                /* Wake parent if blocked in waitpid */
+                int ptid = t->parent_tid;
+                if (ptid >= 0 && ptid < TASK_MAX) {
+                    task_info_t *parent = task_get(ptid);
+                    if (parent && parent->state == TASK_STATE_BLOCKED && parent->wait_tid != -1) {
+                        if (parent->wait_tid == 0 || parent->wait_tid == tid)
+                            parent->state = TASK_STATE_READY;
+                    }
+                }
             }
             return schedule(regs);
+        }
+
+        case LINUX_SYS_waitpid: {
+            int pid = (int)regs->ebx;
+            int *wstatus = (int *)regs->ecx;
+            int options = (int)regs->edx;
+            regs->eax = (uint32_t)sys_waitpid(pid, wstatus, options);
+            return regs;
         }
 
         case LINUX_SYS_read:
@@ -785,6 +1605,48 @@ registers_t* linux_syscall_handler(registers_t* regs) {
             return regs;
         }
 
+        case LINUX_SYS_alarm: {
+            int tid = task_get_current();
+            task_info_t *t = task_get(tid);
+            if (!t) { regs->eax = 0; return regs; }
+            /* alarm(seconds) — set SIGALRM timer, return previous remaining */
+            uint32_t old_remaining = 0;
+            if (t->sig.alarm_ticks > 0)
+                old_remaining = t->sig.alarm_ticks / 120 + 1;  /* approx seconds */
+            uint32_t seconds = regs->ebx;
+            t->sig.alarm_ticks = seconds * 120;  /* 120 Hz PIT */
+            regs->eax = old_remaining;
+            return regs;
+        }
+
+        case LINUX_SYS_kill: {
+            int pid = (int)regs->ebx;
+            int signum = (int)regs->ecx;
+            if (signum <= 0 || signum >= NSIG) { regs->eax = (uint32_t)-LINUX_EINVAL; return regs; }
+            int rc;
+            if (pid < -1) {
+                /* kill(-pgid, sig) → send to process group */
+                rc = sig_send_group(-pid, signum);
+            } else if (pid == -1) {
+                /* kill(-1, sig) → send to all killable tasks */
+                rc = -1;
+                for (int i = 4; i < TASK_MAX; i++) {
+                    task_info_t *t = task_get(i);
+                    if (t && t->killable)
+                        if (sig_send(i, signum) == 0) rc = 0;
+                }
+            } else if (pid == 0) {
+                /* kill(0, sig) → send to own process group */
+                int tid = task_get_current();
+                task_info_t *t = task_get(tid);
+                rc = t ? sig_send_group(t->pgid, signum) : -1;
+            } else {
+                rc = sig_send_pid(pid, signum);
+            }
+            regs->eax = (rc < 0) ? (uint32_t)-LINUX_EINVAL : 0;
+            return regs;
+        }
+
         case LINUX_SYS_access:
             regs->eax = (uint32_t)linux_sys_access((const char *)regs->ebx,
                                                      regs->ecx);
@@ -805,8 +1667,77 @@ registers_t* linux_syscall_handler(registers_t* regs) {
                                                        regs->edx);
             return regs;
 
+        case LINUX_SYS_getppid: {
+            int tid = task_get_current();
+            task_info_t *t = task_get(tid);
+            if (!t || t->parent_tid < 0) { regs->eax = 1; return regs; }
+            regs->eax = (uint32_t)task_get_pid(t->parent_tid);
+            return regs;
+        }
+
+        case LINUX_SYS_setpgid: {
+            int pid = (int)regs->ebx;
+            int pgid = (int)regs->ecx;
+            int rc = task_setpgid(pid, pgid);
+            regs->eax = (rc < 0) ? (uint32_t)-LINUX_EINVAL : 0;
+            return regs;
+        }
+
+        case LINUX_SYS_setsid: {
+            int tid = task_get_current();
+            int rc = task_setsid(tid);
+            regs->eax = (rc < 0) ? (uint32_t)-LINUX_EINVAL : (uint32_t)rc;
+            return regs;
+        }
+
+        case LINUX_SYS_getpgid: {
+            int pid = (int)regs->ebx;
+            int rc = task_getpgid(pid);
+            regs->eax = (rc < 0) ? (uint32_t)-LINUX_EINVAL : (uint32_t)rc;
+            return regs;
+        }
+
+        case LINUX_SYS_sigaction: {
+            int tid = task_get_current();
+            int signum = (int)regs->ebx;
+            sig_handler_t handler = (sig_handler_t)regs->ecx;
+            /* Simple: treat ECX as the handler address (compat with native) */
+            sig_handler_t old = sig_set_handler(tid, signum, handler);
+            regs->eax = (uint32_t)old;
+            return regs;
+        }
+
+        case LINUX_SYS_sigprocmask: {
+            int tid = task_get_current();
+            int how = (int)regs->ebx;
+            uint32_t *setp = (uint32_t *)regs->ecx;
+            uint32_t *oldsetp = (uint32_t *)regs->edx;
+            uint32_t set_val = setp ? *setp : 0;
+            uint32_t old_val = 0;
+            int rc = sig_sigprocmask(tid, how, set_val, &old_val);
+            if (oldsetp) *oldsetp = old_val;
+            regs->eax = (rc < 0) ? (uint32_t)-LINUX_EINVAL : 0;
+            return regs;
+        }
+
+        case LINUX_SYS_wait4: {
+            int pid = (int)regs->ebx;
+            int *wstatus = (int *)regs->ecx;
+            int options = (int)regs->edx;
+            regs->eax = (uint32_t)sys_waitpid(pid, wstatus, options);
+            return regs;
+        }
+
         case LINUX_SYS_munmap:
-            regs->eax = 0;  /* stub — cleanup on task exit */
+            regs->eax = (uint32_t)linux_sys_munmap(regs->ebx, regs->ecx);
+            return regs;
+
+        case LINUX_SYS_mprotect:
+            regs->eax = (uint32_t)linux_sys_mprotect(regs->ebx, regs->ecx, regs->edx);
+            return regs;
+
+        case LINUX_SYS_ftruncate:
+            regs->eax = (uint32_t)linux_sys_ftruncate(regs->ebx, regs->ecx);
             return regs;
 
         case LINUX_SYS_uname:
@@ -883,6 +1814,50 @@ registers_t* linux_syscall_handler(registers_t* regs) {
                                                       regs->edx);
             return regs;
 
+        case LINUX_SYS_fork: {
+            int rc = sys_clone(LINUX_SIGCHLD, 0, regs);
+            regs->eax = (uint32_t)rc;
+            return regs;
+        }
+
+        case LINUX_SYS_vfork: {
+            /* vfork is fork with shared address space (CLONE_VM) */
+            int rc = sys_clone(LINUX_CLONE_VM | LINUX_SIGCHLD, 0, regs);
+            regs->eax = (uint32_t)rc;
+            return regs;
+        }
+
+        case LINUX_SYS_clone: {
+            /* Linux i386 clone: EBX=flags, ECX=child_stack, EDX=ptid, ESI=ctid, EDI=tls */
+            uint32_t flags = regs->ebx;
+            uint32_t child_stack = regs->ecx;
+            int rc = sys_clone(flags, child_stack, regs);
+            regs->eax = (uint32_t)rc;
+            return regs;
+        }
+
+        case LINUX_SYS_dup: {
+            int tid = task_get_current();
+            int rc = fd_dup(tid, (int)regs->ebx);
+            regs->eax = (rc < 0) ? (uint32_t)-LINUX_EBADF : (uint32_t)rc;
+            return regs;
+        }
+
+        case LINUX_SYS_dup2: {
+            int tid = task_get_current();
+            int rc = fd_dup2(tid, (int)regs->ebx, (int)regs->ecx);
+            regs->eax = (rc < 0) ? (uint32_t)-LINUX_EBADF : (uint32_t)rc;
+            return regs;
+        }
+
+        case LINUX_SYS_futex: {
+            uint32_t *uaddr = (uint32_t *)regs->ebx;
+            int op = (int)regs->ecx & 0x7f;  /* strip FUTEX_PRIVATE_FLAG */
+            uint32_t val = regs->edx;
+            regs->eax = (uint32_t)sys_futex(uaddr, op, val);
+            return regs;
+        }
+
         case LINUX_SYS_set_thread_area:
             regs->eax = (uint32_t)linux_sys_set_thread_area(
                 (struct linux_user_desc *)regs->ebx);
@@ -892,6 +1867,226 @@ registers_t* linux_syscall_handler(registers_t* regs) {
             /* musl startup calls this — just return the current tid */
             int tid = task_get_current();
             regs->eax = (uint32_t)task_get_pid(tid);
+            return regs;
+        }
+
+        case LINUX_SYS_execve: {
+            const char *fn = (const char *)regs->ebx;
+            const char **uargv = (const char **)regs->ecx;
+            /* const char **envp = (const char **)regs->edx; */
+            /* TODO: pass envp to new process — currently ignored.
+             * Programs relying on PATH/HOME/TERM after exec get nothing. */
+
+            int ex_argc = 0;
+            if (uargv) {
+                while (uargv[ex_argc] != NULL && ex_argc < 32) ex_argc++;
+            }
+
+            int cur_tid = task_get_current();
+            int rc = elf_exec(cur_tid, fn, ex_argc, uargv);
+            if (rc < 0) {
+                regs->eax = (uint32_t)rc;
+                return regs;
+            }
+
+            /* Success: task image replaced — return new kernel stack frame.
+             * The old user code is gone; isr_common will iret into the new ELF. */
+            task_info_t *t = task_get(cur_tid);
+            return (registers_t *)t->esp;
+        }
+
+        case LINUX_SYS_nanosleep: {
+            int32_t rc = linux_sys_nanosleep_setup(
+                (const struct linux_timespec *)regs->ebx,
+                (struct linux_timespec *)regs->ecx);
+            if (rc == 1) {
+                /* Task is sleeping — invoke scheduler directly */
+                regs->eax = 0;
+                return schedule(regs);
+            }
+            regs->eax = (rc < 0) ? (uint32_t)rc : 0;
+            return regs;
+        }
+
+        case LINUX_SYS_clock_nanosleep: {
+            /* clock_nanosleep(clockid, flags, req, rem)
+             * EBX=clockid, ECX=flags, EDX=req, ESI=rem
+             * TODO: handle TIMER_ABSTIME flag (ECX & 1) — currently treats
+             * all times as relative, which is wrong for absolute timestamps. */
+            int32_t rc = linux_sys_nanosleep_setup(
+                (const struct linux_timespec *)regs->edx,
+                (struct linux_timespec *)regs->esi);
+            if (rc == 1) {
+                regs->eax = 0;
+                return schedule(regs);
+            }
+            regs->eax = (rc < 0) ? (uint32_t)rc : 0;
+            return regs;
+        }
+
+        /* ── Phase 4 syscalls ─────────────────────────────────────── */
+
+        case LINUX_SYS_unlink:
+            regs->eax = (uint32_t)linux_sys_unlink((const char *)regs->ebx);
+            return regs;
+
+        case LINUX_SYS_chdir:
+            regs->eax = (uint32_t)linux_sys_chdir((const char *)regs->ebx);
+            return regs;
+
+        case LINUX_SYS_time:
+            regs->eax = (uint32_t)linux_sys_time((uint32_t *)regs->ebx);
+            return regs;
+
+        case LINUX_SYS_rename:
+            regs->eax = (uint32_t)linux_sys_rename((const char *)regs->ebx,
+                                                     (const char *)regs->ecx);
+            return regs;
+
+        case LINUX_SYS_mkdir:
+            regs->eax = (uint32_t)linux_sys_mkdir((const char *)regs->ebx,
+                                                    regs->ecx);
+            return regs;
+
+        case LINUX_SYS_rmdir:
+            regs->eax = (uint32_t)linux_sys_rmdir((const char *)regs->ebx);
+            return regs;
+
+        case LINUX_SYS_pipe:
+            regs->eax = (uint32_t)linux_sys_pipe((int *)regs->ebx);
+            return regs;
+
+        case LINUX_SYS_umask:
+            regs->eax = (uint32_t)linux_sys_umask(regs->ebx);
+            return regs;
+
+        case LINUX_SYS_getpgrp: {
+            int tid = task_get_current();
+            task_info_t *t = task_get(tid);
+            regs->eax = t ? (uint32_t)t->pgid : 0;
+            return regs;
+        }
+
+        case LINUX_SYS_gettimeofday:
+            regs->eax = (uint32_t)linux_sys_gettimeofday(
+                (struct linux_timeval *)regs->ebx,
+                (struct linux_timezone *)regs->ecx);
+            return regs;
+
+        case LINUX_SYS_fchdir:
+            regs->eax = (uint32_t)linux_sys_fchdir(regs->ebx);
+            return regs;
+
+        case LINUX_SYS_readv:
+            regs->eax = (uint32_t)linux_sys_readv(
+                regs->ebx,
+                (const struct linux_iovec *)regs->ecx,
+                regs->edx);
+            return regs;
+
+        case LINUX_SYS_poll: {
+            struct linux_pollfd *fds = (struct linux_pollfd *)regs->ebx;
+            uint32_t nfds = regs->ecx;
+            int timeout_ms = (int)regs->edx;
+            int tid = task_get_current();
+
+            /* Compute deadline in PIT ticks */
+            uint32_t deadline = 0;
+            if (timeout_ms > 0)
+                deadline = pit_ticks + (uint32_t)((timeout_ms * 120 + 999) / 1000);
+
+            while (1) {
+                int ready = poll_check_fds(fds, nfds, tid);
+                if (ready > 0 || timeout_ms == 0) {
+                    regs->eax = (uint32_t)ready;
+                    return regs;
+                }
+                if (timeout_ms > 0 && (int32_t)(pit_ticks - deadline) >= 0) {
+                    regs->eax = 0;  /* timeout */
+                    return regs;
+                }
+                /* Check for pending signals — break with EINTR */
+                task_info_t *pt = task_get(tid);
+                if (!pt) { regs->eax = (uint32_t)-LINUX_EINVAL; return regs; }
+                if (pt->sig.pending & ~pt->sig.blocked) {
+                    regs->eax = (uint32_t)-LINUX_EINTR;
+                    return regs;
+                }
+                /* Sleep for ~16ms then re-check */
+                pt->sleep_until = pit_ticks + 2;
+                pt->state = TASK_STATE_SLEEPING;
+                regs = schedule(regs);
+            }
+        }
+
+        case LINUX_SYS_setuid32:
+            regs->eax = 0;  /* always root — accept + ignore */
+            return regs;
+
+        case LINUX_SYS_setgid32:
+            regs->eax = 0;  /* always root — accept + ignore */
+            return regs;
+
+        case LINUX_SYS_clock_gettime:
+            regs->eax = (uint32_t)linux_sys_clock_gettime(
+                regs->ebx,
+                (struct linux_clock_timespec *)regs->ecx);
+            return regs;
+
+        case LINUX_SYS_statfs64:
+            regs->eax = (uint32_t)linux_sys_statfs64(
+                (const char *)regs->ebx, regs->ecx,
+                (void *)regs->edx);
+            return regs;
+
+        case LINUX_SYS_fstatfs64:
+            regs->eax = (uint32_t)linux_sys_fstatfs64(
+                regs->ebx, regs->ecx,
+                (void *)regs->edx);
+            return regs;
+
+        /* ── Phase 6: socketcall ──────────────────────────────────── */
+
+        case LINUX_SYS_socketcall: {
+            uint32_t scall = regs->ebx;
+            uint32_t *sargs = (uint32_t *)regs->ecx;
+            int tid = task_get_current();
+
+            /* Blocking accept: sleep-loop with schedule(regs) */
+            if (scall == SYS_ACCEPT) {
+                task_info_t *t = task_get(tid);
+                if (!t) { regs->eax = (uint32_t)-LINUX_EINVAL; return regs; }
+                int afd = (int)sargs[0];
+                if (afd < 0 || afd >= t->fd_count ||
+                    t->fds[afd].type != FD_SOCKET) {
+                    regs->eax = (uint32_t)-LINUX_ENOTSOCK;
+                    return regs;
+                }
+
+                int nb = socket_get_nonblock(t->fds[afd].pipe_id) ||
+                         (t->fds[afd].flags & LINUX_O_NONBLOCK);
+
+                while (1) {
+                    int32_t rc = linux_sys_socketcall(scall, sargs, tid);
+                    if (rc != -LINUX_EAGAIN || nb) {
+                        regs->eax = (uint32_t)rc;
+                        return regs;
+                    }
+                    /* Check for signals */
+                    t = task_get(tid);
+                    if (!t) { regs->eax = (uint32_t)-LINUX_EINVAL; return regs; }
+                    if (t->sig.pending & ~t->sig.blocked) {
+                        regs->eax = (uint32_t)-LINUX_EINTR;
+                        return regs;
+                    }
+                    /* Sleep ~16ms then re-check */
+                    t->sleep_until = pit_ticks + 2;
+                    t->state = TASK_STATE_SLEEPING;
+                    regs = schedule(regs);
+                }
+            }
+
+            regs->eax = (uint32_t)linux_sys_socketcall(scall, sargs, tid);
             return regs;
         }
 

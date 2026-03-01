@@ -7,18 +7,35 @@
 /* ── Linux i386 syscall numbers ─────────────────────────────────── */
 
 #define LINUX_SYS_exit            1
+#define LINUX_SYS_fork            2
+#define LINUX_SYS_execve          11
 #define LINUX_SYS_read            3
 #define LINUX_SYS_write           4
 #define LINUX_SYS_open            5
 #define LINUX_SYS_close           6
+#define LINUX_SYS_waitpid         7
 #define LINUX_SYS_lseek           19
 #define LINUX_SYS_getpid          20
+#define LINUX_SYS_alarm           27
 #define LINUX_SYS_access          33
+#define LINUX_SYS_kill            37
+#define LINUX_SYS_dup             41
+#define LINUX_SYS_dup2            63
+#define LINUX_SYS_setsid          66
+#define LINUX_SYS_sigaction       67
+#define LINUX_SYS_setpgid         57
+#define LINUX_SYS_getppid         64
 #define LINUX_SYS_brk             45
 #define LINUX_SYS_ioctl           54
 #define LINUX_SYS_readlink        85
 #define LINUX_SYS_munmap          91
+#define LINUX_SYS_ftruncate       93
+#define LINUX_SYS_wait4           114
+#define LINUX_SYS_clone           120
+#define LINUX_SYS_vfork           190
 #define LINUX_SYS_uname           122
+#define LINUX_SYS_sigprocmask     126
+#define LINUX_SYS_getpgid         132
 #define LINUX_SYS__llseek         140
 #define LINUX_SYS_writev          146
 #define LINUX_SYS_getcwd          183
@@ -32,16 +49,42 @@
 #define LINUX_SYS_getegid32       202
 #define LINUX_SYS_getdents64      220
 #define LINUX_SYS_fcntl64         221
+#define LINUX_SYS_futex           240
 #define LINUX_SYS_set_thread_area 243
 #define LINUX_SYS_exit_group      252
+#define LINUX_SYS_unlink          10
+#define LINUX_SYS_chdir           12
+#define LINUX_SYS_time            13
+#define LINUX_SYS_rename          38
+#define LINUX_SYS_mkdir           39
+#define LINUX_SYS_rmdir           40
+#define LINUX_SYS_pipe            42
+#define LINUX_SYS_umask           60
+#define LINUX_SYS_getpgrp         65
+#define LINUX_SYS_gettimeofday    78
+#define LINUX_SYS_fchdir          133
+#define LINUX_SYS_readv           145
+#define LINUX_SYS_nanosleep       162
+#define LINUX_SYS_poll            168
+#define LINUX_SYS_setuid32        213
+#define LINUX_SYS_setgid32        214
 #define LINUX_SYS_set_tid_address  258
+#define LINUX_SYS_clock_gettime   265
+#define LINUX_SYS_clock_nanosleep 267
+#define LINUX_SYS_socketcall      102
+#define LINUX_SYS_statfs64        268
+#define LINUX_SYS_fstatfs64       269
 
 /* ── Linux errno values ─────────────────────────────────────────── */
 
 #define LINUX_ENOENT   2
+#define LINUX_EINTR    4
 #define LINUX_EIO      5
+#define LINUX_ENOEXEC  8
 #define LINUX_EBADF    9
+#define LINUX_ECHILD  10
 #define LINUX_ENOMEM  12
+#define LINUX_EFAULT  14
 #define LINUX_EACCES  13
 #define LINUX_EEXIST  17
 #define LINUX_ENOTDIR 20
@@ -51,7 +94,9 @@
 #define LINUX_ENOSPC  28
 #define LINUX_ESPIPE  29
 #define LINUX_ERANGE  34
-#define LINUX_ENOSYS  38
+#define LINUX_ENOSYS     38
+#define LINUX_ENOTEMPTY  39
+#define LINUX_EPERM       1
 
 /* ── Linux fcntl commands ───────────────────────────────────────── */
 
@@ -76,7 +121,13 @@
 /* ── Linux ioctl commands ───────────────────────────────────────── */
 
 #define LINUX_TCGETS        0x5401
+#define LINUX_TCSETS        0x5402
+#define LINUX_TCSETSW       0x5403
+#define LINUX_TCSETSF       0x5404
+#define LINUX_TIOCGPGRP     0x540F
+#define LINUX_TIOCSPGRP     0x5410
 #define LINUX_TIOCGWINSZ    0x5413
+#define LINUX_FIONREAD      0x541B
 
 /* ── Linux d_type constants ─────────────────────────────────────── */
 
@@ -93,9 +144,62 @@
 #define LINUX_S_IFREG   0100000
 #define LINUX_S_IFLNK   0120000
 
-/* ── Linux mmap flags ───────────────────────────────────────────── */
+/* ── Linux clone flags ─────────────────────────────────────────── */
 
+#define LINUX_CLONE_VM        0x00000100
+#define LINUX_CLONE_FS        0x00000200
+#define LINUX_CLONE_FILES     0x00000400
+#define LINUX_CLONE_SIGHAND   0x00000800
+#define LINUX_CLONE_THREAD    0x00010000
+#define LINUX_CLONE_CHILD_SETTID   0x01000000
+#define LINUX_CLONE_CHILD_CLEARTID 0x00200000
+#define LINUX_CLONE_PARENT_SETTID  0x00100000
+#define LINUX_SIGCHLD         17
+
+/* ── socketcall sub-functions (i386 ABI) ───────────────────────── */
+
+#define SYS_SOCKET      1
+#define SYS_BIND        2
+#define SYS_CONNECT     3
+#define SYS_LISTEN      4
+#define SYS_ACCEPT      5
+#define SYS_GETSOCKNAME 6
+#define SYS_GETPEERNAME 7
+#define SYS_SEND        9
+#define SYS_RECV        10
+#define SYS_SENDTO      11
+#define SYS_RECVFROM    12
+#define SYS_SHUTDOWN    13
+#define SYS_SETSOCKOPT  14
+#define SYS_GETSOCKOPT  15
+
+/* ── Linux errno: additional ───────────────────────────────────── */
+
+#define LINUX_EAGAIN  11
+#define LINUX_ENOTSOCK       88
+#define LINUX_EPROTONOSUPPORT 93
+#define LINUX_EAFNOSUPPORT   97
+#define LINUX_EADDRINUSE     98
+#define LINUX_ENETUNREACH   101
+#define LINUX_ECONNRESET    104
+#define LINUX_ENOTCONN      107
+#define LINUX_ETIMEDOUT     110
+#define LINUX_ECONNREFUSED  111
+#define LINUX_EINPROGRESS   115
+
+/* ── Linux mmap/mprotect flags ──────────────────────────────────── */
+
+#define LINUX_PROT_NONE      0x0
+#define LINUX_PROT_READ      0x1
+#define LINUX_PROT_WRITE     0x2
+#define LINUX_PROT_EXEC      0x4
+
+#define LINUX_MAP_SHARED     0x01
+#define LINUX_MAP_PRIVATE    0x02
+#define LINUX_MAP_FIXED      0x10
 #define LINUX_MAP_ANONYMOUS  0x20
+
+#define LINUX_SYS_mprotect   125
 
 /* ── Epoch offset: ImposOS epoch (2000-01-01) to Unix (1970-01-01) ─ */
 
@@ -181,6 +285,59 @@ struct linux_termios {
     uint8_t  c_line;
     uint8_t  c_cc[19];
 };
+
+/* struct timeval for gettimeofday */
+struct linux_timeval {
+    int32_t  tv_sec;
+    int32_t  tv_usec;
+};
+
+/* struct timezone for gettimeofday */
+struct linux_timezone {
+    int32_t  tz_minuteswest;
+    int32_t  tz_dsttime;
+};
+
+/* struct pollfd for poll */
+struct linux_pollfd {
+    int32_t  fd;
+    int16_t  events;
+    int16_t  revents;
+};
+
+/* poll event flags */
+#define LINUX_POLLIN     0x0001
+#define LINUX_POLLPRI    0x0002
+#define LINUX_POLLOUT    0x0004
+#define LINUX_POLLERR    0x0008
+#define LINUX_POLLHUP    0x0010
+#define LINUX_POLLNVAL   0x0020
+
+/* struct statfs64 (Linux i386 ABI — 84 bytes) */
+struct linux_statfs64 {
+    uint32_t f_type;
+    uint32_t f_bsize;
+    uint64_t f_blocks;
+    uint64_t f_bfree;
+    uint64_t f_bavail;
+    uint64_t f_files;
+    uint64_t f_ffree;
+    uint32_t f_fsid[2];
+    uint32_t f_namelen;
+    uint32_t f_frsize;
+    uint32_t f_flags;
+    uint32_t f_spare[4];
+} __attribute__((packed));
+
+/* struct timespec for clock_gettime */
+struct linux_clock_timespec {
+    int32_t  tv_sec;
+    int32_t  tv_nsec;
+};
+
+/* clock IDs */
+#define LINUX_CLOCK_REALTIME   0
+#define LINUX_CLOCK_MONOTONIC  1
 
 /* ── API ────────────────────────────────────────────────────────── */
 

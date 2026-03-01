@@ -1,5 +1,6 @@
 #include <kernel/pmm.h>
 #include <kernel/multiboot.h>
+#include <kernel/frame_ref.h>
 #include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
@@ -97,6 +98,7 @@ uint32_t pmm_alloc_frame(void) {
                 if (frame >= total_frames)
                     return 0;
                 frame_set(frame);
+                frame_ref_set1(frame * FRAME_SIZE);
                 return frame * FRAME_SIZE;
             }
         }

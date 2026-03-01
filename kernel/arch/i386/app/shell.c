@@ -2103,20 +2103,37 @@ static void cmd_cat(int argc, char* argv[]) {
         return;
     }
 
-    uint8_t* buffer = (uint8_t*)malloc(MAX_FILE_SIZE);
+    uint32_t parent;
+    char name_buf[28];
+    int ino = fs_resolve_path(argv[1], &parent, name_buf);
+    if (ino < 0) {
+        printf("cat: %s: No such file\n", argv[1]);
+        return;
+    }
+    inode_t node;
+    fs_read_inode(ino, &node);
+    if (node.type != 1) {
+        printf("cat: %s: Not a regular file\n", argv[1]);
+        return;
+    }
+    if (node.size == 0) {
+        return;
+    }
+    uint8_t* buffer = (uint8_t*)malloc(node.size);
     if (!buffer) {
         printf("cat: out of memory\n");
         return;
     }
-    size_t size = MAX_FILE_SIZE;
-    if (fs_read_file(argv[1], buffer, &size) == 0) {
-        for (size_t i = 0; i < size; i++) {
-            putchar(buffer[i]);
-        }
-        printf("\n");
-    } else {
-        printf("cat: %s: No such file\n", argv[1]);
+    uint32_t offset = 0;
+    while (offset < node.size) {
+        int n = fs_read_at(ino, buffer + offset, offset, node.size - offset);
+        if (n <= 0) break;
+        offset += n;
     }
+    for (uint32_t i = 0; i < offset; i++) {
+        putchar(buffer[i]);
+    }
+    printf("\n");
     free(buffer);
 }
 

@@ -100,6 +100,14 @@ void env_list(void) {
     }
 }
 
+int env_get_entry(int index, const char **name, const char **value) {
+    if (index < 0 || index >= MAX_ENV_VARS) return 0;
+    if (!env_vars[index].active) return 0;
+    if (name)  *name  = env_vars[index].name;
+    if (value) *value = env_vars[index].value;
+    return 1;
+}
+
 int env_expand(const char* input, char* output, size_t output_size) {
     if (!input || !output || output_size == 0) {
         return -1;

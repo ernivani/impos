@@ -21,25 +21,39 @@ __asm__(
     "    int $0x80\n"
 );
 
-/* Default action table: 1 = kill, 0 = ignore */
-static const int sig_default_kill[NSIG] = {
-    [SIGINT]  = 1,
-    [SIGILL]  = 1,
-    [SIGBUS]  = 1,
-    [SIGFPE]  = 1,
-    [SIGKILL] = 1,
-    [SIGSEGV] = 1,
-    [SIGUSR1] = 0,
-    [SIGUSR2] = 0,
-    [SIGPIPE] = 1,
-    [SIGTERM] = 1,
+/* Default action table: 1 = kill, 2 = stop, 3 = continue, 0 = ignore */
+#define ACT_IGNORE   0
+#define ACT_KILL     1
+#define ACT_STOP     2
+#define ACT_CONTINUE 3
+
+static const int sig_default_action[NSIG] = {
+    [SIGINT]  = ACT_KILL,
+    [SIGILL]  = ACT_KILL,
+    [SIGBUS]  = ACT_KILL,
+    [SIGFPE]  = ACT_KILL,
+    [SIGKILL] = ACT_KILL,
+    [SIGUSR1] = ACT_IGNORE,
+    [SIGSEGV] = ACT_KILL,
+    [SIGUSR2] = ACT_IGNORE,
+    [SIGPIPE] = ACT_KILL,
+    [SIGALRM] = ACT_KILL,
+    [SIGTERM] = ACT_KILL,
+    [SIGCHLD] = ACT_IGNORE,
+    [SIGCONT] = ACT_CONTINUE,
+    [SIGSTOP] = ACT_STOP,
+    [SIGTSTP] = ACT_STOP,
+    [SIGTTIN] = ACT_STOP,
+    [SIGTTOU] = ACT_STOP,
 };
 
 void sig_init(sig_state_t *ss) {
     for (int i = 0; i < NSIG; i++)
         ss->handlers[i] = SIG_DFL;
     ss->pending = 0;
+    ss->blocked = 0;
     ss->in_handler = 0;
+    ss->alarm_ticks = 0;
 }
 
 /* Kill a task immediately: clean up pipes, free stacks/pages, mark zombie */
@@ -54,6 +68,17 @@ static void sig_kill_task(int tid) {
         t->wm_id = -1;
     }
     t->killed = 1;
+
+    /* Reparent children and wake parent */
+    task_reparent_children(tid);
+    int ptid = t->parent_tid;
+    if (ptid >= 0 && ptid < TASK_MAX) {
+        task_info_t *parent = task_get(ptid);
+        if (parent && parent->state == TASK_STATE_BLOCKED && parent->wait_tid != -1) {
+            if (parent->wait_tid == 0 || parent->wait_tid == tid)
+                parent->state = TASK_STATE_READY;
+        }
+    }
 
     if (t->is_user) {
         t->state = TASK_STATE_ZOMBIE;
@@ -86,14 +111,55 @@ int sig_send(int tid, int signum) {
     if (signum < 0 || signum >= NSIG) return -1;
 
     task_info_t *t = task_get(tid);
-    if (!t) return -1;
+    if (!t) {
+        /* Also check zombies for SIGCHLD parent wakeup scenarios */
+        t = task_get_raw(tid);
+        if (!t || t->state == TASK_STATE_UNUSED) return -1;
+        /* Zombie — can't send signals to it */
+        return -1;
+    }
     if (!t->killable) return -2;
 
     uint32_t flags = irq_save();
 
-    /* SIGKILL: immediate kill, uncatchable */
+    /* SIGKILL: immediate kill, uncatchable, unblockable */
     if (signum == SIGKILL) {
         sig_kill_task(tid);
+        irq_restore(flags);
+        return 0;
+    }
+
+    /* SIGSTOP: immediate stop, uncatchable, unblockable */
+    if (signum == SIGSTOP) {
+        t->state = TASK_STATE_STOPPED;
+        /* Send SIGCHLD to parent */
+        if (t->parent_tid >= 0 && t->parent_tid < TASK_MAX) {
+            task_info_t *parent = task_get(t->parent_tid);
+            if (parent && parent->killable)
+                parent->sig.pending |= (1 << SIGCHLD);
+        }
+        irq_restore(flags);
+        return 0;
+    }
+
+    /* SIGCONT: always delivered, resumes stopped tasks */
+    if (signum == SIGCONT) {
+        if (t->state == TASK_STATE_STOPPED)
+            t->state = TASK_STATE_READY;
+        /* Clear any pending stop signals */
+        t->sig.pending &= ~((1 << SIGSTOP) | (1 << SIGTSTP) |
+                            (1 << SIGTTIN) | (1 << SIGTTOU));
+        /* Still deliver SIGCONT to handler if one is set */
+        if (t->sig.handlers[SIGCONT] != SIG_DFL &&
+            t->sig.handlers[SIGCONT] != SIG_IGN && t->is_user) {
+            t->sig.pending |= (1 << SIGCONT);
+        }
+        /* Send SIGCHLD to parent */
+        if (t->parent_tid >= 0 && t->parent_tid < TASK_MAX) {
+            task_info_t *parent = task_get(t->parent_tid);
+            if (parent && parent->killable)
+                parent->sig.pending |= (1 << SIGCHLD);
+        }
         irq_restore(flags);
         return 0;
     }
@@ -106,13 +172,24 @@ int sig_send(int tid, int signum) {
             return 0;
         }
         /* Non-user threads can't run user handlers; apply default */
-        if (sig_default_kill[signum])
+        int action = sig_default_action[signum];
+        if (action == ACT_KILL)
             sig_kill_task(tid);
+        else if (action == ACT_STOP)
+            t->state = TASK_STATE_STOPPED;
         irq_restore(flags);
         return 0;
     }
 
-    /* User thread: set pending, wake if blocked/sleeping */
+    /* Check blocked mask (SIGKILL and SIGSTOP already handled above) */
+    if (t->sig.blocked & (1 << signum)) {
+        /* Signal is blocked — queue as pending, don't wake */
+        t->sig.pending |= (1 << signum);
+        irq_restore(flags);
+        return 0;
+    }
+
+    /* User thread: set pending, wake if blocked/sleeping/stopped */
     t->sig.pending |= (1 << signum);
     if (t->state == TASK_STATE_BLOCKED || t->state == TASK_STATE_SLEEPING)
         t->state = TASK_STATE_READY;
@@ -129,7 +206,7 @@ int sig_send_pid(int pid, int signum) {
 
 sig_handler_t sig_set_handler(int tid, int signum, sig_handler_t handler) {
     if (signum < 0 || signum >= NSIG) return SIG_DFL;
-    if (signum == SIGKILL) return SIG_DFL;  /* SIGKILL uncatchable */
+    if (signum == SIGKILL || signum == SIGSTOP) return SIG_DFL;  /* uncatchable */
 
     task_info_t *t = task_get(tid);
     if (!t) return SIG_DFL;
@@ -137,6 +214,59 @@ sig_handler_t sig_set_handler(int tid, int signum, sig_handler_t handler) {
     sig_handler_t old = t->sig.handlers[signum];
     t->sig.handlers[signum] = handler;
     return old;
+}
+
+int sig_sigprocmask(int tid, int how, uint32_t set, uint32_t *oldset) {
+    task_info_t *t = task_get(tid);
+    if (!t) return -1;
+
+    uint32_t flags = irq_save();
+
+    if (oldset)
+        *oldset = t->sig.blocked;
+
+    /* Never allow blocking SIGKILL or SIGSTOP */
+    set &= ~((1 << SIGKILL) | (1 << SIGSTOP));
+
+    switch (how) {
+        case SIG_BLOCK:
+            t->sig.blocked |= set;
+            break;
+        case SIG_UNBLOCK:
+            t->sig.blocked &= ~set;
+            break;
+        case SIG_SETMASK:
+            t->sig.blocked = set;
+            break;
+        default:
+            irq_restore(flags);
+            return -1;
+    }
+
+    /* Check if unblocking caused any pending signals to become deliverable */
+    uint32_t deliverable = t->sig.pending & ~t->sig.blocked;
+    if (deliverable && (t->state == TASK_STATE_BLOCKED || t->state == TASK_STATE_SLEEPING))
+        t->state = TASK_STATE_READY;
+
+    irq_restore(flags);
+    return 0;
+}
+
+/*
+ * Check and fire SIGALRM timers. Called from PIT handler each tick.
+ */
+void sig_check_alarms(void) {
+    for (int i = 0; i < TASK_MAX; i++) {
+        task_info_t *t = task_get(i);
+        if (!t) continue;
+        if (t->sig.alarm_ticks == 0) continue;
+
+        t->sig.alarm_ticks--;
+        if (t->sig.alarm_ticks == 0) {
+            /* Timer expired — send SIGALRM */
+            sig_send(i, SIGALRM);
+        }
+    }
 }
 
 /*
@@ -147,12 +277,15 @@ int sig_deliver(int tid, registers_t *regs) {
     task_info_t *t = task_get(tid);
     if (!t || !t->is_user) return 0;
     if (t->sig.in_handler) return 0;
-    if (t->sig.pending == 0) return 0;
 
-    /* Find lowest pending signal */
+    /* Only consider unblocked pending signals */
+    uint32_t deliverable = t->sig.pending & ~t->sig.blocked;
+    if (deliverable == 0) return 0;
+
+    /* Find lowest pending unblocked signal */
     int signum = -1;
     for (int i = 1; i < NSIG; i++) {
-        if (t->sig.pending & (1 << i)) {
+        if (deliverable & (1 << i)) {
             signum = i;
             break;
         }
@@ -169,13 +302,18 @@ int sig_deliver(int tid, registers_t *regs) {
 
     /* SIG_DFL: apply default action */
     if (handler == SIG_DFL) {
-        if (sig_default_kill[signum]) {
+        int action = sig_default_action[signum];
+        if (action == ACT_KILL) {
             uint32_t flags = irq_save();
             sig_kill_task(tid);
             irq_restore(flags);
             return 1;  /* task killed */
         }
-        return 0;  /* default = ignore */
+        if (action == ACT_STOP) {
+            t->state = TASK_STATE_STOPPED;
+            return 0;
+        }
+        return 0;  /* default = ignore or continue */
     }
 
     /* User handler: manipulate user stack for signal delivery */

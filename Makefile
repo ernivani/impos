@@ -2,7 +2,7 @@ SHELL := /bin/bash
 export PATH := $(HOME)/opt/cross/bin:$(PATH)
 
 DISK_IMAGE := impos_disk.img
-DISK_SIZE  := 40M
+DISK_SIZE  := 280M
 
 # Platform display backend (cocoa on macOS, gtk on Linux)
 UNAME_S := $(shell uname -s)
@@ -18,7 +18,7 @@ KVM_FLAG := $(shell [ -w /dev/kvm ] 2>/dev/null && echo "-enable-kvm -cpu host")
 
 INITRD_MODS := $(shell [ -f doom1.wad ] && echo "-initrd doom1.wad,initrd.tar" || echo "-initrd initrd.tar")
 
-.PHONY: all run run-gl terminal clean
+.PHONY: all run run-gl terminal test clean
 
 # ── Build ──────────────────────────────────────────────────────────
 all: initrd.tar
@@ -33,6 +33,22 @@ initrd.tar:
 		for cmd in ls cat echo pwd uname id wc head tail; do \
 			ln -sf busybox initrd_staging/bin/$$cmd; \
 		done; \
+	fi
+	@if [ -f test_programs/sleep_test ]; then \
+		cp test_programs/sleep_test initrd_staging/bin/sleep_test; \
+	fi
+	@if [ -f test_programs/exec_test ]; then \
+		cp test_programs/exec_test initrd_staging/bin/exec_test; \
+	fi
+	@if [ -f test_programs/exec_target ]; then \
+		cp test_programs/exec_target initrd_staging/bin/exec_target; \
+	fi
+	@if [ -d test_programs/lib ]; then \
+		mkdir -p initrd_staging/lib; \
+		cp test_programs/lib/* initrd_staging/lib/; \
+	fi
+	@if [ -f test_programs/hello_dyn ]; then \
+		cp test_programs/hello_dyn initrd_staging/bin/hello_dyn; \
 	fi
 	@cd initrd_staging && tar cf ../initrd.tar --format=ustar .
 	@rm -rf initrd_staging
@@ -146,6 +162,10 @@ terminal: all $(DISK_IMAGE)
 		-display $(QEMU_DISPLAY) \
 		-serial stdio \
 		$(KVM_FLAG)
+
+# ── Automated Tests ───────────────────────────────────────────────
+test: all
+	./test_auto.sh --no-build
 
 # ── Clean ──────────────────────────────────────────────────────────
 clean:

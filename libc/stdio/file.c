@@ -40,10 +40,18 @@ FILE* fopen(const char* path, const char* mode) {
 
     if (strcmp(mode, "r") == 0 || strcmp(mode, "rb") == 0) {
         f->mode = 0;
-        /* Read entire file into buffer */
-        f->buf = (uint8_t*)malloc(MAX_FILE_SIZE);
+        /* Resolve inode to get actual file size (avoid malloc(MAX_FILE_SIZE) crash) */
+        uint32_t parent;
+        char fname[MAX_NAME_LEN];
+        int ino = fs_resolve_path(path, &parent, fname);
+        if (ino < 0) { free(f); return NULL; }
+        inode_t inode;
+        if (fs_read_inode((uint32_t)ino, &inode) != 0) { free(f); return NULL; }
+        size_t alloc_size = (inode.type == INODE_CHARDEV) ? 4096 : (inode.size + 1);
+        if (alloc_size < 1) alloc_size = 1;
+        f->buf = (uint8_t*)malloc(alloc_size);
         if (!f->buf) { free(f); return NULL; }
-        f->buf_size = MAX_FILE_SIZE;
+        f->buf_size = alloc_size;
         size_t size;
         if (fs_read_file(path, f->buf, &size) != 0) {
             free(f->buf);
@@ -61,10 +69,19 @@ FILE* fopen(const char* path, const char* mode) {
         f->buf_pos = 0;
     } else if (strcmp(mode, "a") == 0 || strcmp(mode, "ab") == 0) {
         f->mode = 2;
-        /* Read existing content first */
-        f->buf = (uint8_t*)malloc(MAX_FILE_SIZE);
+        /* Resolve inode to get actual file size */
+        uint32_t parent;
+        char fname[MAX_NAME_LEN];
+        int ino = fs_resolve_path(path, &parent, fname);
+        size_t alloc_size = FILE_BUF_SIZE;
+        if (ino >= 0) {
+            inode_t inode;
+            if (fs_read_inode((uint32_t)ino, &inode) == 0 && inode.size > 0)
+                alloc_size = inode.size + FILE_BUF_SIZE; /* room to append */
+        }
+        f->buf = (uint8_t*)malloc(alloc_size);
         if (!f->buf) { free(f); return NULL; }
-        f->buf_size = MAX_FILE_SIZE;
+        f->buf_size = alloc_size;
         size_t size;
         if (fs_read_file(path, f->buf, &size) == 0) {
             f->buf_len = size;

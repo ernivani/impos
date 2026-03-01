@@ -23,5 +23,6 @@ int udp_send(const uint8_t dst_ip[4], uint16_t dst_port, uint16_t src_port,
 int udp_recv(uint16_t port, uint8_t* buf, size_t* len,
              uint8_t src_ip[4], uint16_t* src_port, uint32_t timeout_ms);
 void udp_handle_packet(const uint8_t* data, size_t len, const uint8_t src_ip[4]);
+int  udp_rx_available(uint16_t port);
 
 #endif

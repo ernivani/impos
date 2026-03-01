@@ -220,4 +220,7 @@ int pe_run(const char *filename);
 /* Free all memory allocated for a loaded PE image. */
 void pe_unload(pe_loaded_image_t *img);
 
+/* Get the command line string for a PE task (stored during pe_execute). */
+const char *pe_get_command_line(int tid);
+
 #endif

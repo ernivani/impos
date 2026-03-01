@@ -9,6 +9,11 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* Default time slices indexed by priority level */
+static const uint8_t default_slices[PRIO_LEVELS] = {
+    SLICE_IDLE, SLICE_BACKGROUND, SLICE_NORMAL, SLICE_REALTIME
+};
+
 static task_info_t tasks[TASK_MAX];
 static volatile int current_task = TASK_IDLE;
 static int next_pid = 1;
@@ -25,6 +30,14 @@ void task_init(void) {
     tasks[TASK_IDLE].wm_id = -1;
     tasks[TASK_IDLE].pid = next_pid++;
     tasks[TASK_IDLE].page_dir = kpd;
+    tasks[TASK_IDLE].priority = PRIO_IDLE;
+    tasks[TASK_IDLE].time_slice = SLICE_IDLE;
+    tasks[TASK_IDLE].slice_remaining = SLICE_IDLE;
+    tasks[TASK_IDLE].parent_tid = -1;
+    tasks[TASK_IDLE].wait_tid = -1;
+    tasks[TASK_IDLE].pgid = tasks[TASK_IDLE].pid;
+    tasks[TASK_IDLE].sid = tasks[TASK_IDLE].pid;
+    fd_table_init(TASK_IDLE);
 
     tasks[TASK_KERNEL].active = 1;
     strcpy(tasks[TASK_KERNEL].name, "kernel");
@@ -32,6 +45,14 @@ void task_init(void) {
     tasks[TASK_KERNEL].wm_id = -1;
     tasks[TASK_KERNEL].pid = next_pid++;
     tasks[TASK_KERNEL].page_dir = kpd;
+    tasks[TASK_KERNEL].priority = PRIO_NORMAL;
+    tasks[TASK_KERNEL].time_slice = SLICE_NORMAL;
+    tasks[TASK_KERNEL].slice_remaining = SLICE_NORMAL;
+    tasks[TASK_KERNEL].parent_tid = -1;
+    tasks[TASK_KERNEL].wait_tid = -1;
+    tasks[TASK_KERNEL].pgid = tasks[TASK_KERNEL].pid;
+    tasks[TASK_KERNEL].sid = tasks[TASK_KERNEL].pid;
+    fd_table_init(TASK_KERNEL);
 
     tasks[TASK_WM].active = 1;
     strcpy(tasks[TASK_WM].name, "wm");
@@ -39,6 +60,14 @@ void task_init(void) {
     tasks[TASK_WM].wm_id = -1;
     tasks[TASK_WM].pid = next_pid++;
     tasks[TASK_WM].page_dir = kpd;
+    tasks[TASK_WM].priority = PRIO_NORMAL;
+    tasks[TASK_WM].time_slice = SLICE_NORMAL;
+    tasks[TASK_WM].slice_remaining = SLICE_NORMAL;
+    tasks[TASK_WM].parent_tid = -1;
+    tasks[TASK_WM].wait_tid = -1;
+    tasks[TASK_WM].pgid = tasks[TASK_WM].pid;
+    tasks[TASK_WM].sid = tasks[TASK_WM].pid;
+    fd_table_init(TASK_WM);
 
     tasks[TASK_SHELL].active = 1;
     strcpy(tasks[TASK_SHELL].name, "shell");
@@ -46,6 +75,14 @@ void task_init(void) {
     tasks[TASK_SHELL].wm_id = -1;
     tasks[TASK_SHELL].pid = next_pid++;
     tasks[TASK_SHELL].page_dir = kpd;
+    tasks[TASK_SHELL].priority = PRIO_NORMAL;
+    tasks[TASK_SHELL].time_slice = SLICE_NORMAL;
+    tasks[TASK_SHELL].slice_remaining = SLICE_NORMAL;
+    tasks[TASK_SHELL].parent_tid = -1;
+    tasks[TASK_SHELL].wait_tid = -1;
+    tasks[TASK_SHELL].pgid = tasks[TASK_SHELL].pid;
+    tasks[TASK_SHELL].sid = tasks[TASK_SHELL].pid;
+    fd_table_init(TASK_SHELL);
 }
 
 int task_register(const char *name, int killable, int wm_id) {
@@ -60,6 +97,20 @@ int task_register(const char *name, int killable, int wm_id) {
             tasks[i].wm_id = wm_id;
             tasks[i].pid = next_pid++;
             tasks[i].state = TASK_STATE_READY;
+            tasks[i].priority = PRIO_NORMAL;
+            tasks[i].time_slice = SLICE_NORMAL;
+            tasks[i].slice_remaining = SLICE_NORMAL;
+            tasks[i].parent_tid = current_task;
+            tasks[i].wait_tid = -1;
+            /* Inherit process group and session from parent */
+            if (current_task >= 0 && current_task < TASK_MAX && tasks[current_task].active) {
+                tasks[i].pgid = tasks[current_task].pgid;
+                tasks[i].sid = tasks[current_task].sid;
+            } else {
+                tasks[i].pgid = tasks[i].pid;
+                tasks[i].sid = tasks[i].pid;
+            }
+            fd_table_init(i);
             irq_restore(flags);
             return i;
         }
@@ -306,7 +357,21 @@ int task_create_thread(const char *name, void (*entry)(void), int killable) {
 
     tasks[tid].esp = (uint32_t)sp;
     tasks[tid].page_dir = vmm_get_kernel_pagedir();
+    tasks[tid].priority = PRIO_NORMAL;
+    tasks[tid].time_slice = SLICE_NORMAL;
+    tasks[tid].slice_remaining = SLICE_NORMAL;
+    tasks[tid].parent_tid = current_task;
+    tasks[tid].wait_tid = -1;
+    /* Inherit process group and session from parent */
+    if (current_task >= 0 && current_task < TASK_MAX && tasks[current_task].active) {
+        tasks[tid].pgid = tasks[current_task].pgid;
+        tasks[tid].sid = tasks[current_task].sid;
+    } else {
+        tasks[tid].pgid = tasks[tid].pid;
+        tasks[tid].sid = tasks[tid].pid;
+    }
     sig_init(&tasks[tid].sig);
+    fd_table_init(tid);
     tasks[tid].state = TASK_STATE_READY;
 
     irq_restore(flags);
@@ -319,12 +384,32 @@ void task_yield(void) {
 }
 
 void task_exit(void) {
+    task_exit_code(0);
+}
+
+void task_exit_code(int code) {
     uint32_t flags = irq_save();
 
     int tid = current_task;
     if (tid >= 0 && tid < TASK_MAX) {
+        tasks[tid].exit_code = code;
         tasks[tid].state = TASK_STATE_ZOMBIE;
         tasks[tid].active = 0;
+
+        /* Reparent children to TASK_KERNEL (init) */
+        task_reparent_children(tid);
+
+        /* Wake parent if blocked in waitpid */
+        int ptid = tasks[tid].parent_tid;
+        if (ptid >= 0 && ptid < TASK_MAX) {
+            task_info_t *parent = task_get(ptid);
+            if (parent && parent->state == TASK_STATE_BLOCKED && parent->wait_tid != -1) {
+                /* Parent is waiting — check if it's waiting for us */
+                if (parent->wait_tid == 0 || parent->wait_tid == tid) {
+                    parent->state = TASK_STATE_READY;
+                }
+            }
+        }
     }
 
     irq_restore(flags);
@@ -334,6 +419,78 @@ void task_exit(void) {
 
     /* Should never reach here */
     while (1) __asm__ volatile("hlt");
+}
+
+void task_reparent_children(int dying_tid) {
+    for (int i = 0; i < TASK_MAX; i++) {
+        task_info_t *t = task_get_raw(i);
+        if (t && t->parent_tid == dying_tid) {
+            t->parent_tid = TASK_KERNEL;
+        }
+    }
+}
+
+/* ═══ Process Groups & Sessions ═════════════════════════════════ */
+
+int task_setpgid(int pid, int pgid) {
+    int tid;
+    if (pid == 0) {
+        tid = current_task;
+    } else {
+        tid = task_find_by_pid(pid);
+        if (tid < 0) return -1;
+    }
+
+    task_info_t *t = task_get(tid);
+    if (!t) return -1;
+
+    if (pgid == 0)
+        pgid = t->pid;  /* set to own PID (become group leader) */
+
+    uint32_t flags = irq_save();
+    t->pgid = pgid;
+    irq_restore(flags);
+    return 0;
+}
+
+int task_getpgid(int pid) {
+    int tid;
+    if (pid == 0) {
+        tid = current_task;
+    } else {
+        tid = task_find_by_pid(pid);
+        if (tid < 0) return -1;
+    }
+
+    task_info_t *t = task_get(tid);
+    if (!t) return -1;
+    return t->pgid;
+}
+
+int task_setsid(int tid) {
+    task_info_t *t = task_get(tid);
+    if (!t) return -1;
+
+    /* Cannot call setsid if already a group leader */
+    if (t->pid == t->pgid) return -1;
+
+    uint32_t flags = irq_save();
+    t->sid = t->pid;
+    t->pgid = t->pid;
+    irq_restore(flags);
+    return t->sid;
+}
+
+int sig_send_group(int pgid, int signum) {
+    int sent = 0;
+    for (int i = 0; i < TASK_MAX; i++) {
+        task_info_t *t = task_get(i);
+        if (t && t->pgid == pgid) {
+            if (sig_send(i, signum) == 0)
+                sent++;
+        }
+    }
+    return sent > 0 ? 0 : -1;
 }
 
 void task_block(int tid) {
@@ -487,7 +644,21 @@ int task_create_user_thread(const char *name, void (*entry)(void), int killable)
     tasks[tid].esp = (uint32_t)ksp;
     tasks[tid].page_dir = pd;
     tasks[tid].user_page_table = pt;
+    tasks[tid].priority = PRIO_NORMAL;
+    tasks[tid].time_slice = SLICE_NORMAL;
+    tasks[tid].slice_remaining = SLICE_NORMAL;
+    tasks[tid].parent_tid = current_task;
+    tasks[tid].wait_tid = -1;
+    /* Inherit process group and session from parent */
+    if (current_task >= 0 && current_task < TASK_MAX && tasks[current_task].active) {
+        tasks[tid].pgid = tasks[current_task].pgid;
+        tasks[tid].sid = tasks[current_task].sid;
+    } else {
+        tasks[tid].pgid = tasks[tid].pid;
+        tasks[tid].sid = tasks[tid].pid;
+    }
     sig_init(&tasks[tid].sig);
+    fd_table_init(tid);
     tasks[tid].state = TASK_STATE_READY;
 
     irq_restore(flags);
