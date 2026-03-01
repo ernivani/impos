@@ -32,3 +32,9 @@ gl_intercept.so
 
 # Downloaded BusyBox binary (use 'make download-busybox' to fetch)
 test_programs/busybox
+
+# Compiled test program binaries (rebuild from .c sources)
+test_programs/exec_target
+test_programs/exec_test
+test_programs/hello_dyn
+test_programs/sleep_test
