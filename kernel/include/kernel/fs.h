@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ── FS v3 Geometry ─────────────────────────────────────────────── */
+/* ── FS v4 Geometry ─────────────────────────────────────────────── */
 
 #define BLOCK_SIZE      4096
 #define NUM_BLOCKS      65536       /* 256MB total */
@@ -17,7 +17,7 @@
 /* Theoretical max: 32KB + 4MB + 4GB; capped by uint32_t size field */
 #define MAX_FILE_SIZE   0xFFFFFFFFU
 
-#define FS_VERSION      3
+#define FS_VERSION      4
 
 #define INODE_FREE      0
 #define INODE_FILE      1
@@ -42,7 +42,7 @@
 #define DEV_MAJOR_URANDOM 4
 #define DEV_MAJOR_DRM     5   /* /dev/dri/card0 — GPU DRM device */
 
-/* ── Disk Layout (block-based, FS v3) ───────────────────────────── *
+/* ── Disk Layout (block-based, FS v4) ───────────────────────────── *
  *
  *   Block 0:        Superblock (4KB)
  *   Block 1:        Inode bitmap (4KB — covers 32768 bits, room for 4096 inodes)
@@ -83,7 +83,8 @@ typedef struct __attribute__((packed)) {
     uint32_t double_indirect;   /* double-indirect block pointer, 0 = none */
     uint32_t created_at;        /* epoch: seconds since 2000-01-01 */
     uint32_t modified_at;
-    uint32_t accessed_at;
+    uint16_t nlink;             /* hard link count */
+    uint16_t accessed_hi;       /* high 16 bits of access time (reserved) */
 } inode_t;  /* 64 bytes packed */
 
 typedef struct {
@@ -118,6 +119,9 @@ int fs_load(void);
 /* Permissions */
 int fs_chmod(const char* path, uint16_t mode);
 int fs_chown(const char* path, uint16_t uid, uint16_t gid);
+
+/* Hardlinks */
+int fs_link(const char* oldpath, const char* newpath);
 
 /* Symlinks */
 int fs_create_symlink(const char* target, const char* linkname);

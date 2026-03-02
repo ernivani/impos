@@ -120,8 +120,10 @@ uint32_t pmm_alloc_contiguous(uint32_t n_frames) {
         } else {
             count++;
             if (count >= n_frames) {
-                for (uint32_t i = start; i < start + n_frames; i++)
+                for (uint32_t i = start; i < start + n_frames; i++) {
                     frame_set(i);
+                    frame_ref_set1(i * FRAME_SIZE);
+                }
                 return start * FRAME_SIZE;
             }
         }

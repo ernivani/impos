@@ -1343,7 +1343,7 @@ static int shim__stat(const char *path, msvcrt_stat_t *buf) {
     buf->st_mode = (node.type == 2) ? 0040755 : 0100644;
     buf->st_nlink = 1;
     buf->st_mtime = node.modified_at;
-    buf->st_atime = node.accessed_at;
+    buf->st_atime = (uint32_t)node.accessed_hi << 16;
     buf->st_ctime = node.created_at;
     return 0;
 }

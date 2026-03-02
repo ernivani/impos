@@ -23,7 +23,7 @@ static uint8_t *data_blocks = NULL;
 
 static int fs_dirty = 0;
 
-/* Bitmaps are standalone arrays (too large for superblock in FS v3) */
+/* Bitmaps are standalone arrays (too large for superblock in FS v4) */
 static uint8_t inode_bitmap[NUM_INODES / 8];     /* 512 bytes */
 static uint8_t block_bitmap[NUM_BLOCKS / 8];     /* 8192 bytes */
 static uint8_t dirty_bitmap[NUM_BLOCKS / 8];     /* 8192 bytes */
@@ -516,7 +516,7 @@ int fs_read_at(uint32_t inode_num, uint8_t *buffer, uint32_t offset, uint32_t co
         bytes_read += chunk;
     }
 
-    node->accessed_at = rtc_get_epoch();
+    node->accessed_hi = (uint16_t)(rtc_get_epoch() >> 16);
     fs_rd_ops++;
     fs_rd_bytes += bytes_read;
     return (int)bytes_read;
@@ -929,7 +929,8 @@ int fs_create_file(const char* filename, uint8_t is_directory) {
     uint32_t now = rtc_get_epoch();
     inodes[idx].created_at = now;
     inodes[idx].modified_at = now;
-    inodes[idx].accessed_at = now;
+    inodes[idx].nlink = is_directory ? 2 : 1;
+    inodes[idx].accessed_hi = (uint16_t)(now >> 16);
 
     journal_log_inode_update(idx);
 
@@ -981,7 +982,8 @@ int fs_create_device(const char* path, uint8_t major, uint8_t minor) {
     uint32_t now = rtc_get_epoch();
     inodes[idx].created_at = now;
     inodes[idx].modified_at = now;
-    inodes[idx].accessed_at = now;
+    inodes[idx].nlink = 1;
+    inodes[idx].accessed_hi = (uint16_t)(now >> 16);
 
     if (dir_add_entry(parent, name, idx) < 0) {
         free_inode(idx);
@@ -1110,7 +1112,7 @@ int fs_read_file(const char* filename, uint8_t* buffer, size_t* size) {
     }
 
     *size = inode->size;
-    inode->accessed_at = rtc_get_epoch();
+    inode->accessed_hi = (uint16_t)(rtc_get_epoch() >> 16);
     fs_rd_ops++;
     fs_rd_bytes += (uint32_t)(*size);
     return 0;
@@ -1153,19 +1155,26 @@ int fs_delete_file(const char* filename) {
 
     journal_begin();
 
-    /* Device nodes have no data blocks to free */
-    if (inode->type != INODE_CHARDEV) {
-        free_inode_blocks(inode);
-    }
-
-    free_inode(inode_idx);
-    journal_log_inode_free(inode_idx);
-
-    /* remove from parent */
+    /* Remove directory entry regardless of nlink */
     dir_remove_entry(parent, name);
     journal_log_dir_remove(parent, inode_idx, name);
     journal_log_inode_update(parent);
-    journal_commit();
+
+    /* Decrement link count; only free inode+blocks when nlink reaches 0 */
+    if (inode->nlink > 1) {
+        inode->nlink--;
+        inode->modified_at = rtc_get_epoch();
+        journal_log_inode_update(inode_idx);
+        journal_commit();
+    } else {
+        /* Last link — free everything */
+        if (inode->type != INODE_CHARDEV) {
+            free_inode_blocks(inode);
+        }
+        free_inode(inode_idx);
+        journal_log_inode_free(inode_idx);
+        journal_commit();
+    }
 
     /* Auto-sync if disk available */
     if (ata_is_available()) {
@@ -1562,6 +1571,13 @@ const char* fs_get_cwd(void) {
     return path;
 }
 
+/* Return a pointer to an inode in the in-memory table (for fchmod/fchown) */
+inode_t *fs_get_inode_ptr(uint32_t ino) {
+    if (ino >= NUM_INODES) return NULL;
+    if (inodes[ino].type == INODE_FREE) return NULL;
+    return &inodes[ino];
+}
+
 int fs_chmod(const char* path, uint16_t mode) {
     /* VFS dispatch */
     const char *rel;
@@ -1612,6 +1628,38 @@ int fs_chown(const char* path, uint16_t uid, uint16_t gid) {
     return 0;
 }
 
+int fs_link(const char* oldpath, const char* newpath) {
+    uint32_t old_parent;
+    char old_name[MAX_NAME_LEN];
+    int old_inode = resolve_path(oldpath, &old_parent, old_name);
+    if (old_inode < 0) return -1;
+
+    /* Only regular files can be hardlinked (POSIX restriction) */
+    if (inodes[old_inode].type != INODE_FILE) return -1;
+
+    uint32_t new_parent;
+    char new_name[MAX_NAME_LEN];
+    resolve_path(newpath, &new_parent, new_name);
+    if (new_name[0] == '\0') return -1;
+
+    /* Check if destination already exists */
+    if (dir_lookup(new_parent, new_name) >= 0) return -1;
+
+    /* Check write permission on destination directory */
+    if (!check_permission(&inodes[new_parent], PERM_W)) return -1;
+
+    /* Add new directory entry pointing to the same inode */
+    if (dir_add_entry(new_parent, new_name, (uint32_t)old_inode) < 0) return -1;
+
+    /* Increment link count */
+    inodes[old_inode].nlink++;
+    inodes[old_inode].modified_at = rtc_get_epoch();
+    fs_dirty = 1;
+
+    if (ata_is_available()) fs_sync();
+    return 0;
+}
+
 int fs_create_symlink(const char* target, const char* linkname) {
     /* VFS dispatch (on the linkname, not target) */
     const char *rel;
@@ -1634,6 +1682,7 @@ int fs_create_symlink(const char* target, const char* linkname) {
 
     inodes[idx].type = INODE_SYMLINK;
     inodes[idx].mode = 0777;
+    inodes[idx].nlink = 1;
     inodes[idx].indirect_block = 0;
     inodes[idx].double_indirect = 0;
     inodes[idx].owner_uid = user_get_current_uid();

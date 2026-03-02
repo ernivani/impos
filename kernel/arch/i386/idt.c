@@ -433,6 +433,23 @@ registers_t* isr_handler(registers_t* regs) {
                 /* Not-present fault (bit 0 = 0): demand page */
                 if (!(err & 1)) {
                     vma_t *vma = vma_find(t->vma, cr2);
+
+                    /* VMA_GROWSDOWN: expand stack VMA if fault is within
+                     * one page below its current start */
+                    if (!vma) {
+                        for (int vi = 0; vi < t->vma->count; vi++) {
+                            vma_t *sv = &t->vma->vmas[vi];
+                            if (!sv->active) continue;
+                            if (!(sv->vm_flags & VMA_GROWSDOWN)) continue;
+                            if (page_va >= sv->vm_start - PAGE_SIZE &&
+                                page_va < sv->vm_start) {
+                                sv->vm_start -= PAGE_SIZE;
+                                vma = sv;
+                                break;
+                            }
+                        }
+                    }
+
                     if (vma) {
                         uint32_t frame = pmm_alloc_frame();
                         if (frame) {

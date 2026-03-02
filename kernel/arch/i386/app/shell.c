@@ -35,6 +35,7 @@
 #include <kernel/io.h>
 #include <kernel/multiboot.h>
 #include <kernel/drm.h>
+#include <kernel/http.h>
 #include <kernel/libdrm.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
@@ -145,6 +146,8 @@ static void cmd_memtest(int argc, char* argv[]);
 static void cmd_fstest(int argc, char* argv[]);
 static void cmd_proctest(int argc, char* argv[]);
 static void cmd_doom(int argc, char* argv[]);
+static void cmd_wget(int argc, char* argv[]);
+static void cmd_lsusb(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -1185,6 +1188,24 @@ static command_t commands[] = {
         "    select Quit Game to return to the shell.\n",
         0
     },
+    {
+        "wget", cmd_wget,
+        "Download a file via HTTP",
+        "wget: wget [-O FILE] URL\n"
+        "    Download a file from the given HTTP URL.\n"
+        "    -O FILE: save response body to FILE.\n"
+        "    Without -O, prints the response to stdout.\n",
+        NULL,
+        0
+    },
+    {
+        "lsusb", cmd_lsusb,
+        "List USB devices",
+        "lsusb: lsusb\n"
+        "    List all detected USB devices.\n",
+        NULL,
+        0
+    },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -1844,6 +1865,95 @@ static void pipe_cmd_wc(const char *buf, int len) {
 /* ═══ DOOM ═════════════════════════════════════════════════════════ */
 
 extern void doom_app_open(void);
+
+static void cmd_wget(int argc, char* argv[]) {
+    http_response_t resp;
+
+    const char *url = NULL;
+    const char *outfile = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-O") == 0 && i + 1 < argc) {
+            outfile = argv[++i];
+        } else {
+            url = argv[i];
+        }
+    }
+
+    if (!url) {
+        printf("Usage: wget [-O FILE] URL\n");
+        return;
+    }
+
+    printf("Connecting to %s...\n", url);
+    int rc = http_get(url, &resp);
+    if (rc < 0) {
+        printf("wget: failed (error %d)\n", rc);
+        return;
+    }
+
+    printf("HTTP %d, %u bytes", resp.status_code, resp.body_len);
+    if (resp.content_type[0])
+        printf(" (%s)", resp.content_type);
+    printf("\n");
+
+    if (outfile) {
+        /* Write to file */
+        if (fs_create_file(outfile, 0) < 0 && resp.body_len > 0) {
+            /* File might already exist, try writing anyway */
+        }
+        if (resp.body_len > 0) {
+            uint32_t parent;
+            char name[28];
+            int ino = fs_resolve_path(outfile, &parent, name);
+            if (ino >= 0) {
+                int w = fs_write_at((uint32_t)ino, (const uint8_t *)resp.body, 0, resp.body_len);
+                if (w > 0)
+                    printf("Saved %d bytes to '%s'\n", w, outfile);
+                else
+                    printf("wget: write failed\n");
+            } else {
+                printf("wget: cannot create '%s'\n", outfile);
+            }
+        }
+    } else {
+        /* Print body to stdout */
+        for (uint32_t i = 0; i < resp.body_len; i++)
+            putchar(resp.body[i]);
+        if (resp.body_len > 0 && resp.body[resp.body_len - 1] != '\n')
+            putchar('\n');
+    }
+
+    http_response_free(&resp);
+}
+
+static void cmd_lsusb(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    extern int uhci_get_device_count(void);
+    extern int uhci_get_device_info(int idx, uint16_t *vendor, uint16_t *product,
+                                    uint8_t *class, uint8_t *subclass);
+
+    int count = uhci_get_device_count();
+    if (count == 0) {
+        printf("No USB devices found.\n");
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        uint16_t vendor, product;
+        uint8_t cls, subcls;
+        if (uhci_get_device_info(i, &vendor, &product, &cls, &subcls) == 0) {
+            printf("Bus 000 Device %03d: ID %04x:%04x", i + 1, vendor, product);
+            /* Common class names */
+            if (cls == 0x03) printf(" (HID");
+            else if (cls == 0x08) printf(" (Mass Storage");
+            else if (cls == 0x09) printf(" (Hub");
+            else printf(" (Class %02x", cls);
+            if (cls == 0x03 && subcls == 0x01) printf(" - Keyboard/Mouse");
+            printf(")\n");
+        }
+    }
+}
 
 static void cmd_doom(int argc, char* argv[]) {
     (void)argc; (void)argv;
@@ -2656,13 +2766,16 @@ static void cmd_chown(int argc, char* argv[]) {
 }
 
 static void cmd_ln(int argc, char* argv[]) {
-    if (argc < 4 || strcmp(argv[1], "-s") != 0) {
-        printf("Usage: ln -s TARGET LINKNAME\n");
-        return;
-    }
-
-    if (fs_create_symlink(argv[2], argv[3]) != 0) {
-        printf("ln: cannot create symbolic link '%s'\n", argv[3]);
+    if (argc >= 4 && strcmp(argv[1], "-s") == 0) {
+        /* Symbolic link: ln -s TARGET LINKNAME */
+        if (fs_create_symlink(argv[2], argv[3]) != 0)
+            printf("ln: cannot create symbolic link '%s'\n", argv[3]);
+    } else if (argc >= 3 && argv[1][0] != '-') {
+        /* Hard link: ln TARGET LINKNAME */
+        if (fs_link(argv[1], argv[2]) != 0)
+            printf("ln: cannot create hard link '%s'\n", argv[2]);
+    } else {
+        printf("Usage: ln [-s] TARGET LINKNAME\n");
     }
 }
 

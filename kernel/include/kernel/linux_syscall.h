@@ -72,6 +72,13 @@
 #define LINUX_SYS_clock_gettime   265
 #define LINUX_SYS_clock_nanosleep 267
 #define LINUX_SYS_socketcall      102
+#define LINUX_SYS_link            9
+#define LINUX_SYS_chmod           15
+#define LINUX_SYS_chown           16
+#define LINUX_SYS_symlink         83
+#define LINUX_SYS_fchmod          94
+#define LINUX_SYS_fchown          95
+#define LINUX_SYS_lchown          198
 #define LINUX_SYS_statfs64        268
 #define LINUX_SYS_fstatfs64       269
 

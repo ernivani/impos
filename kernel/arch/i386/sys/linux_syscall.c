@@ -33,7 +33,7 @@ static void fill_stat64(struct linux_stat64 *st, uint32_t ino, inode_t *node) {
     st->st_dev = 1;
     st->__st_ino = ino;
     st->st_ino = ino;
-    st->st_nlink = 1;
+    st->st_nlink = node->nlink ? node->nlink : 1;
     st->st_uid = node->owner_uid;
     st->st_gid = node->owner_gid;
     st->st_blksize = 4096;
@@ -47,7 +47,6 @@ static void fill_stat64(struct linux_stat64 *st, uint32_t ino, inode_t *node) {
         case INODE_DIR:
             st->st_mode = LINUX_S_IFDIR | (node->mode & 0777);
             st->st_size = node->size;
-            st->st_nlink = 2;
             break;
         case INODE_SYMLINK:
             st->st_mode = LINUX_S_IFLNK | 0777;
@@ -63,7 +62,7 @@ static void fill_stat64(struct linux_stat64 *st, uint32_t ino, inode_t *node) {
     }
 
     /* Convert ImposOS epoch (2000-01-01) to Unix epoch (1970-01-01) */
-    st->st_atime = node->accessed_at + IMPOS_EPOCH_OFFSET;
+    st->st_atime = ((uint32_t)node->accessed_hi << 16) + IMPOS_EPOCH_OFFSET;
     st->st_mtime = node->modified_at + IMPOS_EPOCH_OFFSET;
     st->st_ctime = node->created_at + IMPOS_EPOCH_OFFSET;
 }
@@ -1928,6 +1927,92 @@ registers_t* linux_syscall_handler(registers_t* regs) {
 
         case LINUX_SYS_unlink:
             regs->eax = (uint32_t)linux_sys_unlink((const char *)regs->ebx);
+            return regs;
+
+        case LINUX_SYS_link:
+            regs->eax = (uint32_t)(fs_link((const char *)regs->ebx,
+                                            (const char *)regs->ecx) < 0
+                                    ? -LINUX_EIO : 0);
+            return regs;
+
+        case LINUX_SYS_symlink:
+            regs->eax = (uint32_t)(fs_create_symlink((const char *)regs->ebx,
+                                                      (const char *)regs->ecx) < 0
+                                    ? -LINUX_EIO : 0);
+            return regs;
+
+        case LINUX_SYS_chmod:
+            regs->eax = (uint32_t)(fs_chmod((const char *)regs->ebx,
+                                             (uint16_t)(regs->ecx & 0777)) < 0
+                                    ? -LINUX_EPERM : 0);
+            return regs;
+
+        case LINUX_SYS_fchmod: {
+            int tid = task_get_current();
+            task_info_t *t = task_get(tid);
+            if (!t || regs->ebx >= (uint32_t)t->fd_count ||
+                t->fds[regs->ebx].type == FD_NONE) {
+                regs->eax = (uint32_t)-LINUX_EBADF;
+            } else {
+                /* Resolve inode path and chmod */
+                uint32_t ino = t->fds[regs->ebx].inode;
+                inode_t node;
+                if (fs_read_inode(ino, &node) < 0) {
+                    regs->eax = (uint32_t)-LINUX_EIO;
+                } else {
+                    uint16_t uid = user_get_current_uid();
+                    if (uid != 0 && uid != node.owner_uid)
+                        regs->eax = (uint32_t)-LINUX_EPERM;
+                    else {
+                        /* Write mode directly via inode array */
+                        extern inode_t *fs_get_inode_ptr(uint32_t ino);
+                        inode_t *np = fs_get_inode_ptr(ino);
+                        if (np) { np->mode = (uint16_t)(regs->ecx & 0777); regs->eax = 0; }
+                        else regs->eax = (uint32_t)-LINUX_EIO;
+                    }
+                }
+            }
+            return regs;
+        }
+
+        case LINUX_SYS_chown:
+            regs->eax = (uint32_t)(fs_chown((const char *)regs->ebx,
+                                             (uint16_t)regs->ecx,
+                                             (uint16_t)regs->edx) < 0
+                                    ? -LINUX_EPERM : 0);
+            return regs;
+
+        case LINUX_SYS_fchown: {
+            int tid = task_get_current();
+            task_info_t *t = task_get(tid);
+            if (!t || regs->ebx >= (uint32_t)t->fd_count ||
+                t->fds[regs->ebx].type == FD_NONE) {
+                regs->eax = (uint32_t)-LINUX_EBADF;
+            } else {
+                if (user_get_current_uid() != 0)
+                    regs->eax = (uint32_t)-LINUX_EPERM;
+                else {
+                    extern inode_t *fs_get_inode_ptr(uint32_t ino);
+                    inode_t *np = fs_get_inode_ptr(t->fds[regs->ebx].inode);
+                    if (np) {
+                        np->owner_uid = (uint16_t)regs->ecx;
+                        np->owner_gid = (uint16_t)regs->edx;
+                        regs->eax = 0;
+                    } else regs->eax = (uint32_t)-LINUX_EIO;
+                }
+            }
+            return regs;
+        }
+
+        case LINUX_SYS_lchown:
+            /* Like chown but don't follow symlinks — our chown already
+             * resolves to the inode at the path, so for symlinks it sets
+             * ownership on the symlink inode itself (resolve_path doesn't
+             * follow final symlinks). Same as chown for our FS. */
+            regs->eax = (uint32_t)(fs_chown((const char *)regs->ebx,
+                                             (uint16_t)regs->ecx,
+                                             (uint16_t)regs->edx) < 0
+                                    ? -LINUX_EPERM : 0);
             return regs;
 
         case LINUX_SYS_chdir:

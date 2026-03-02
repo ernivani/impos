@@ -546,6 +546,10 @@ void kernel_main(multiboot_info_t* mbi) {
     /* Initialize AC'97 audio (silent if no device present) */
     ac97_initialize();
 
+    /* Initialize USB (UHCI) — silent if no controller present */
+    extern void uhci_initialize(void);
+    uhci_initialize();
+
     if (autotest_mode) {
         /* Automated test mode: serial console, no login, run tests, shutdown */
         g_serial_console = 1;

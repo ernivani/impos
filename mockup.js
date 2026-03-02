@@ -520,6 +520,8 @@ let menuOpenTime = 0;
 let launchIdx = -1;
 let launchTime = 0;
 let drawerOpen = false;
+let overviewOpen = false;
+let overviewSelectedIdx = -1;
 
 let ringItems = [];
 
@@ -628,7 +630,27 @@ function populateRingPinned() {
   APP_CATALOG.forEach(a => {
     if (a.pinned && !ordered.includes(a)) ordered.push(a);
   });
+
+  // Add open-but-not-pinned apps to the ring
+  const pinnedIds = new Set(ordered.map(a => a.id));
+  openWindows.forEach(w => {
+    if (!pinnedIds.has(w.appId) && ordered.length < MAX_RING) {
+      const app = APP_CATALOG.find(a => a.id === w.appId);
+      if (app) {
+        ordered.push(app);
+        pinnedIds.add(w.appId);
+      }
+    }
+  });
+
   ringItems = ordered.slice(0, MAX_RING);
+
+  // Tag each ring item with open/pinned state for visual indicators
+  ringItems.forEach(item => {
+    item._isOpen = openWindows.some(w => w.appId === item.id);
+    item._isPinned = item.pinned;
+  });
+
   hoverIdx = -1;
   menuOpenTime = Date.now();
 }
@@ -671,46 +693,53 @@ function drawRadial() {
   const now = Date.now();
   const n = ringItems.length;
 
-  // Background + border handled by liquid glass CSS layers (lg-blur/lg-overlay/lg-specular)
-
+  // Slice dividers — subtle, soft
   if (n > 1) {
     for (let i = 0; i < n; i++) {
       const a = sliceAngle(i) - PI2 / (n * 2);
+      const innerR = CR * 2 + 8;
+      const outerR = R * 2 - 4;
       rctx.beginPath();
-      rctx.moveTo(cx + Math.cos(a) * CR * 2, cy + Math.sin(a) * CR * 2);
-      rctx.lineTo(cx + Math.cos(a) * R * 2, cy + Math.sin(a) * R * 2);
-      rctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      rctx.moveTo(cx + Math.cos(a) * innerR, cy + Math.sin(a) * innerR);
+      rctx.lineTo(cx + Math.cos(a) * outerR, cy + Math.sin(a) * outerR);
+      rctx.strokeStyle = 'rgba(255,255,255,0.07)';
       rctx.lineWidth = 1;
       rctx.stroke();
     }
   }
 
+  // Hover/launch highlight
   const highlightIdx = launchIdx >= 0 ? launchIdx : hoverIdx;
   if (highlightIdx >= 0 && highlightIdx < n) {
     const a1 = sliceAngle(highlightIdx) - PI2 / (n * 2);
     const a2 = sliceAngle(highlightIdx) + PI2 / (n * 2);
-    // White glass tint layer
-    rctx.beginPath();
-    rctx.arc(cx, cy, CR * 2, a1, a2);
-    rctx.arc(cx, cy, R * 2, a2, a1, true);
-    rctx.closePath();
-    rctx.fillStyle = 'rgba(255,255,255,0.12)';
-    rctx.fill();
-    // Colored highlight layer
-    rctx.beginPath();
-    rctx.arc(cx, cy, CR * 2, a1, a2);
-    rctx.arc(cx, cy, R * 2, a2, a1, true);
-    rctx.closePath();
     const rgb = hexToRgb(ringItems[highlightIdx].color);
+
+    // Soft colored glow
+    rctx.beginPath();
+    rctx.arc(cx, cy, CR * 2, a1, a2);
+    rctx.arc(cx, cy, R * 2, a2, a1, true);
+    rctx.closePath();
     if (launchIdx >= 0) {
       const lt = Math.min(1, (now - launchTime) / 220);
-      rctx.fillStyle = `rgba(${rgb},${0.55 * (1 - lt)})`;
+      rctx.fillStyle = `rgba(${rgb},${0.4 * (1 - lt)})`;
     } else {
-      rctx.fillStyle = `rgba(${rgb},0.32)`;
+      rctx.fillStyle = `rgba(${rgb},0.18)`;
     }
     rctx.fill();
+
+    // Inner edge glow
+    const midA = (a1 + a2) / 2;
+    const gx = cx + Math.cos(midA) * IR * 2;
+    const gy = cy + Math.sin(midA) * IR * 2;
+    const glow = rctx.createRadialGradient(gx, gy, 0, gx, gy, 80);
+    glow.addColorStop(0, `rgba(${rgb},0.15)`);
+    glow.addColorStop(1, `rgba(${rgb},0)`);
+    rctx.fillStyle = glow;
+    rctx.fillRect(0, 0, 720, 720);
   }
 
+  // Icons — stagger in
   const openElapsed = now - menuOpenTime;
   for (let i = 0; i < n; i++) {
     const a = sliceAngle(i);
@@ -729,50 +758,94 @@ function drawRadial() {
     drawIcon(ix, iy, ringItems[i], staggerScale * launchScale, staggerT);
   }
 
+  // Labels under icons — only show on hover for cleanliness
   rctx.textAlign = 'center';
   rctx.textBaseline = 'top';
-  rctx.font = '500 16px Sora, sans-serif';
   for (let i = 0; i < n; i++) {
     const a = sliceAngle(i);
     const lx = cx + Math.cos(a) * IR * 2;
     const ly = cy + Math.sin(a) * IR * 2 + ICON + 6;
-    const isHov = (i === (launchIdx >= 0 ? launchIdx : hoverIdx));
-    rctx.fillStyle = isHov ? 'rgba(255,255,255,1)' : 'rgba(255,255,255,0.55)';
+    const isHov = (i === highlightIdx);
+    rctx.font = (isHov ? '500' : '400') + ' 15px Sora, sans-serif';
+    rctx.fillStyle = isHov ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.4)';
     let label = ringItems[i].label;
     if (label.length > 9) label = label.slice(0, 8) + '\u2026';
     rctx.fillText(label, lx, ly);
+
+    // Running dot — small filled circle below label for open apps
+    const item = ringItems[i];
+    if (item._isOpen) {
+      const dotY = ly + 16;
+      rctx.beginPath();
+      rctx.arc(lx, dotY, 3, 0, PI2);
+      rctx.fillStyle = item.color;
+      rctx.fill();
+    }
+
+    // Dashed border for open-but-not-pinned (transient) items
+    if (item._isOpen && !item._isPinned) {
+      const ix = cx + Math.cos(a) * IR * 2;
+      const iy = cy + Math.sin(a) * IR * 2;
+      const s = ICON * 2;
+      const r = ROUND * 2 + 4;
+      rctx.save();
+      rctx.setLineDash([4, 4]);
+      rctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      rctx.lineWidth = 1.5;
+      roundedRect(rctx, ix - s / 2 - 4, iy - s / 2 - 4, s + 8, s + 8, r);
+      rctx.stroke();
+      rctx.setLineDash([]);
+      rctx.restore();
+    }
   }
 
+  // Center button
   rctx.beginPath();
   rctx.arc(cx, cy, CR * 2, 0, PI2);
-  rctx.fillStyle = centerHover ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)';
+  const cFill = centerHover ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.05)';
+  rctx.fillStyle = cFill;
   rctx.fill();
-  rctx.strokeStyle = centerHover ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.15)';
-  rctx.lineWidth = centerHover ? 1.5 : 1;
+  rctx.strokeStyle = centerHover ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.1)';
+  rctx.lineWidth = 1;
   rctx.stroke();
 
   rctx.textAlign = 'center';
   rctx.textBaseline = 'middle';
 
   if (highlightIdx >= 0 && highlightIdx < n) {
-    rctx.font = '600 20px Sora, sans-serif';
-    rctx.fillStyle = 'rgba(255,255,255,0.95)';
+    // Show hovered app name in center
+    rctx.font = '600 19px Sora, sans-serif';
+    rctx.fillStyle = 'rgba(255,255,255,0.92)';
     rctx.fillText(ringItems[highlightIdx].label, cx, cy);
-  } else {
+  } else if (openWindows.length > 0) {
+    // Window count + "Overview" — center becomes overview trigger
     const ch = centerHover;
-    const dotR = ch ? 4 : 3.5;
-    const dotGap = 13;
-    rctx.fillStyle = ch ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.3)';
-    for (let row = 0; row < 2; row++) {
-      for (let col = 0; col < 2; col++) {
+    rctx.font = (ch ? '700' : '600') + ' 26px Sora, sans-serif';
+    rctx.fillStyle = ch ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.35)';
+    rctx.fillText(openWindows.length, cx, cy - 6);
+    rctx.font = (ch ? '500' : '400') + ' 10px Sora, sans-serif';
+    rctx.fillStyle = ch ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.18)';
+    rctx.fillText('Overview', cx, cy + 18);
+  } else {
+    // 3x3 grid icon — universal "all apps" affordance
+    const ch = centerHover;
+    const dotR = ch ? 3 : 2.5;
+    const dotGap = 14;
+    rctx.fillStyle = ch ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.25)';
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 3; col++) {
         rctx.beginPath();
-        rctx.arc(cx + (col - 0.5) * dotGap, cy - 8 + (row - 0.5) * dotGap, dotR, 0, PI2);
+        rctx.arc(
+          cx + (col - 1) * dotGap,
+          cy - 6 + (row - 1) * dotGap,
+          dotR, 0, PI2
+        );
         rctx.fill();
       }
     }
-    rctx.font = (ch ? '500' : '400') + ' 11px Sora, sans-serif';
-    rctx.fillStyle = ch ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.2)';
-    rctx.fillText('All apps', cx, cy + 20);
+    rctx.font = (ch ? '500' : '400') + ' 10px Sora, sans-serif';
+    rctx.fillStyle = ch ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.18)';
+    rctx.fillText('All Apps', cx, cy + 28);
   }
 
   if (launchIdx >= 0 && (now - launchTime) > 220) {
@@ -1156,7 +1229,11 @@ rc.addEventListener('click', (e) => {
   }
   if (dist < CR) {
     closeMenu();
-    openDrawer('');
+    if (openWindows.length > 0) {
+      openOverview();
+    } else {
+      openDrawer('');
+    }
     return;
   }
 
@@ -1244,21 +1321,7 @@ let dragState = null;
 let resizeState = null;
 
 function updateMenubarWindows() {
-  const container = document.getElementById('menubar-windows');
-  container.innerHTML = '';
-  openWindows.forEach(w => {
-    const pill = document.createElement('div');
-    pill.className = 'menubar-win-pill';
-    pill.dataset.appId = w.appId;
-    if (w.minimized) pill.classList.add('minimized-pill');
-    pill.textContent = w.title;
-    pill.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (w.minimized) restoreAppWindow(w);
-      else bringToFront(w.el);
-    });
-    container.appendChild(pill);
-  });
+  // No-op — window management now via Radial Hub + Orbital Overview
 }
 
 function bringToFront(win) {
@@ -1386,13 +1449,13 @@ function minimizeAppWindow(win) {
   if (!entry || entry.minimized) return;
   entry.minimized = true;
   updateMenubarWindows();
-  const pill = document.querySelector(`.menubar-win-pill[data-app-id="${entry.appId}"]`);
-  if (pill) {
-    const pillRect = pill.getBoundingClientRect();
+  const mbBtn = document.querySelector(`.menubar-win-btn[data-app-id="${entry.appId}"]`);
+  if (mbBtn) {
+    const btnRect = mbBtn.getBoundingClientRect();
     const winRect = win.getBoundingClientRect();
-    const targetX = pillRect.left + pillRect.width / 2 - winRect.width / 2;
-    const targetY = pillRect.top;
-    win.style.transform = `translate(${targetX - winRect.left}px, ${targetY - winRect.top}px) scale(0.08)`;
+    const targetX = btnRect.left + btnRect.width / 2 - winRect.width / 2;
+    const targetY = btnRect.top;
+    win.style.transform = `translate(${targetX - winRect.left}px, ${targetY - winRect.top}px) scale(0.05)`;
   }
   win.classList.add('minimized');
 }
@@ -1955,3 +2018,173 @@ function buildAboutSettings(container) {
     Window manager with liquid glass compositing &bull; 42+ shell commands`;
   container.appendChild(credits);
 }
+
+// ===== ORBITAL OVERVIEW =====
+function layoutOverviewThumbs(count) {
+  const positions = [];
+  if (count === 0) return positions;
+
+  let rings;
+  if (count <= 4) {
+    rings = [{ count: count, radius: 200 }];
+  } else if (count <= 8) {
+    const inner = Math.min(4, Math.ceil(count / 2));
+    const outer = count - inner;
+    rings = [
+      { count: inner, radius: 180 },
+      { count: outer, radius: 320 },
+    ];
+  } else {
+    const innerCount = Math.min(4, Math.ceil(count / 3));
+    const midCount = Math.min(6, Math.ceil((count - innerCount) / 2));
+    const outerCount = count - innerCount - midCount;
+    rings = [
+      { count: innerCount, radius: 160 },
+      { count: midCount, radius: 280 },
+      { count: outerCount, radius: 400 },
+    ];
+  }
+
+  let idx = 0;
+  rings.forEach(ring => {
+    for (let i = 0; i < ring.count; i++) {
+      const angle = (i / ring.count) * Math.PI * 2 - Math.PI / 2;
+      positions.push({
+        x: Math.cos(angle) * ring.radius,
+        y: Math.sin(angle) * ring.radius,
+        idx: idx++,
+      });
+    }
+  });
+  return positions;
+}
+
+function openOverview() {
+  if (overviewOpen) return;
+  if (openWindows.length === 0) return;
+  overviewOpen = true;
+  overviewSelectedIdx = -1;
+
+  const ovOverlay = document.getElementById('overview-overlay');
+  const ovContainer = document.getElementById('overview');
+  ovContainer.innerHTML = '';
+
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight / 2;
+
+  // Center label
+  const centerEl = document.createElement('div');
+  centerEl.className = 'overview-center';
+  centerEl.innerHTML = `
+    <div class="overview-center-count">${openWindows.length}</div>
+    <div class="overview-center-label">Esc to close</div>
+  `;
+  ovContainer.appendChild(centerEl);
+
+  const visibleWindows = openWindows.filter(w => true); // all including minimized
+  const positions = layoutOverviewThumbs(visibleWindows.length);
+  const thumbEls = [];
+
+  visibleWindows.forEach((win, i) => {
+    const pos = positions[i];
+    if (!pos) return;
+
+    const thumb = document.createElement('div');
+    thumb.className = 'overview-thumb';
+    thumb.style.left = (cx + pos.x - 120) + 'px';
+    thumb.style.top = (cy + pos.y - 80) + 'px';
+
+    // Preview — clone the window body content scaled down
+    const preview = document.createElement('div');
+    preview.className = 'overview-thumb-preview';
+    const body = win.el.querySelector('.app-window-body');
+    if (body) {
+      const clone = body.cloneNode(true);
+      const winW = win.el.offsetWidth || 600;
+      const winH = (win.el.offsetHeight || 400) - 40; // minus titlebar
+      const scaleX = 240 / winW;
+      const scaleY = 120 / winH;
+      const scale = Math.min(scaleX, scaleY);
+      clone.style.transform = `scale(${scale})`;
+      clone.style.width = winW + 'px';
+      clone.style.height = winH + 'px';
+      clone.style.position = 'absolute';
+      clone.style.top = '0';
+      clone.style.left = '0';
+      clone.style.pointerEvents = 'none';
+      preview.appendChild(clone);
+    }
+    thumb.appendChild(preview);
+
+    // Close button
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'overview-thumb-close';
+    closeBtn.textContent = '\u00d7';
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeAppWindow(win.el);
+      thumb.style.opacity = '0';
+      thumb.style.transform = 'scale(0.5)';
+      setTimeout(() => {
+        if (openWindows.length === 0) closeOverview();
+        else { closeOverview(); openOverview(); } // re-layout
+      }, 200);
+    });
+    thumb.appendChild(closeBtn);
+
+    // Title bar
+    const titleBar = document.createElement('div');
+    titleBar.className = 'overview-thumb-title';
+    const app = APP_CATALOG.find(a => a.id === win.appId);
+    const dotColor = app ? app.color : '#888';
+    titleBar.innerHTML = `<span class="overview-app-dot" style="background:${dotColor}"></span>${win.title}`;
+    thumb.appendChild(titleBar);
+
+    // Click → bring to front
+    thumb.addEventListener('click', () => {
+      if (win.minimized) restoreAppWindow(win);
+      else bringToFront(win.el);
+      closeOverview();
+    });
+
+    ovContainer.appendChild(thumb);
+    thumbEls.push(thumb);
+
+    // Stagger animation
+    setTimeout(() => thumb.classList.add('visible'), 40 * i);
+  });
+
+  ovOverlay.classList.add('open');
+  ovContainer.classList.add('open');
+
+  // Store thumb refs for keyboard navigation
+  ovContainer._thumbEls = thumbEls;
+  ovContainer._wins = visibleWindows;
+}
+
+function closeOverview() {
+  if (!overviewOpen) return;
+  overviewOpen = false;
+  overviewSelectedIdx = -1;
+
+  const ovOverlay = document.getElementById('overview-overlay');
+  const ovContainer = document.getElementById('overview');
+
+  // Fade out thumbs
+  ovContainer.querySelectorAll('.overview-thumb').forEach(t => {
+    t.style.opacity = '0';
+    t.style.transform = 'scale(0.85)';
+  });
+
+  ovOverlay.classList.remove('open');
+  ovContainer.classList.remove('open');
+
+  setTimeout(() => {
+    ovContainer.innerHTML = '';
+  }, 250);
+}
+
+// Overview overlay click to close
+document.getElementById('overview-overlay').addEventListener('click', () => {
+  if (overviewOpen) closeOverview();
+});
