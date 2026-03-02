@@ -189,6 +189,8 @@ int filemgr_tick(int mx, int my, int btn_down, int btn_up) {
     }
 
     if (btn_down) {
+        if (ui_window_topmost_at(mx, my) != fm_win_id)
+            return 0;
         ui_window_focus(fm_win_id);
         ui_window_raise(fm_win_id);
         return 1;

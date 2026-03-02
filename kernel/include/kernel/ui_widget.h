@@ -202,6 +202,15 @@ void uw_redraw(ui_window_t *win);
 /* Check for canvas resize and adapt widget layout */
 void ui_window_check_resize(ui_window_t *win);
 
+/* Generic per-frame tick: dispatches mouse/key events, redraws if dirty.
+   Returns 1 if a mouse click was consumed inside the window. */
+int uw_tick(ui_window_t *win, int mx, int my, int btn_down, int btn_up,
+            int key);
+
+/* Route a keypress to whichever pool window matches focused_wm_id.
+   Returns 1 if key was consumed. */
+int uw_route_key(int focused_wm_id, int key);
+
 /* Standard app loop: returns dock action or 0 on close */
 int ui_app_run(ui_window_t *win, void (*on_event)(ui_window_t *win, ui_event_t *ev));
 

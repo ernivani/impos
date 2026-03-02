@@ -210,3 +210,67 @@ int vmm_check_guard_page(uint32_t virt) {
     }
     return 0;
 }
+
+/* ── New helpers for demand paging / COW ─────────────────────── */
+
+uint32_t vmm_ensure_pt(uint32_t pd_phys, uint32_t virt) {
+    uint32_t *pd = (uint32_t *)pd_phys;
+    uint32_t pde_idx = virt >> 22;
+
+    if (!(pd[pde_idx] & PTE_PRESENT) || (pd[pde_idx] & PTE_4MB)) {
+        /* No page table — allocate one */
+        uint32_t pt_phys = pmm_alloc_frame();
+        if (!pt_phys) return 0;
+        memset((void *)pt_phys, 0, 4096);
+        pd[pde_idx] = pt_phys | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+        return pt_phys;
+    }
+
+    uint32_t pt_phys = pd[pde_idx] & PAGE_MASK;
+    /* COW: if still pointing to a kernel page table, copy it */
+    if (is_kernel_pt(pt_phys)) {
+        uint32_t new_pt = pmm_alloc_frame();
+        if (!new_pt) return 0;
+        memcpy((void *)new_pt, (void *)pt_phys, 4096);
+        pd[pde_idx] = new_pt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+        return new_pt;
+    }
+
+    return pt_phys;
+}
+
+uint32_t vmm_get_pte(uint32_t pd_phys, uint32_t virt) {
+    uint32_t *pd = (uint32_t *)pd_phys;
+    uint32_t pde_idx = virt >> 22;
+    uint32_t pte_idx = (virt >> 12) & 0x3FF;
+
+    if (!(pd[pde_idx] & PTE_PRESENT) || (pd[pde_idx] & PTE_4MB))
+        return 0;
+
+    uint32_t *pt = (uint32_t *)(pd[pde_idx] & PAGE_MASK);
+    return pt[pte_idx];
+}
+
+void vmm_unmap_user_page(uint32_t pd_phys, uint32_t virt) {
+    uint32_t *pd = (uint32_t *)pd_phys;
+    uint32_t pde_idx = virt >> 22;
+    uint32_t pte_idx = (virt >> 12) & 0x3FF;
+
+    if (!(pd[pde_idx] & PTE_PRESENT) || (pd[pde_idx] & PTE_4MB))
+        return;
+
+    uint32_t pt_phys = pd[pde_idx] & PAGE_MASK;
+    /* Don't modify kernel page tables */
+    if (is_kernel_pt(pt_phys))
+        return;
+
+    uint32_t *pt = (uint32_t *)pt_phys;
+    pt[pte_idx] = 0;
+    vmm_invlpg(virt);
+}
+
+void vmm_flush_tlb(void) {
+    uint32_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
+}

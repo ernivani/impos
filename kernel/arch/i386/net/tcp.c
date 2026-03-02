@@ -2,6 +2,7 @@
 #include <kernel/ip.h>
 #include <kernel/net.h>
 #include <kernel/idt.h>
+#include <kernel/task.h>
 #include <kernel/endian.h>
 #include <string.h>
 #include <stdio.h>
@@ -28,6 +29,23 @@ static int ring_read(tcp_ring_t* r, uint8_t* buf, size_t len) {
         r->count--;
     }
     return nread;
+}
+
+/* Backlog queue helpers */
+static int backlog_push(tcb_t *ltcb, int conn_idx) {
+    if (ltcb->backlog_count >= TCP_BACKLOG_MAX) return -1;
+    ltcb->backlog_queue[ltcb->backlog_head] = conn_idx;
+    ltcb->backlog_head = (ltcb->backlog_head + 1) % TCP_BACKLOG_MAX;
+    ltcb->backlog_count++;
+    return 0;
+}
+
+static int backlog_pop(tcb_t *ltcb) {
+    if (ltcb->backlog_count <= 0) return -1;
+    int idx = ltcb->backlog_queue[ltcb->backlog_tail];
+    ltcb->backlog_tail = (ltcb->backlog_tail + 1) % TCP_BACKLOG_MAX;
+    ltcb->backlog_count--;
+    return idx;
 }
 
 /* TCP checksum with pseudo-header */
@@ -95,7 +113,9 @@ void tcp_initialize(void) {
     memset(tcbs, 0, sizeof(tcbs));
     for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
         tcbs[i].state = TCP_CLOSED;
-        tcbs[i].backlog_conn = -1;
+        tcbs[i].backlog_head = 0;
+        tcbs[i].backlog_tail = 0;
+        tcbs[i].backlog_count = 0;
     }
 }
 
@@ -106,7 +126,9 @@ int tcp_open(uint16_t local_port, int listen) {
             tcbs[i].local_port = local_port;
             tcbs[i].state = listen ? TCP_LISTEN : TCP_CLOSED;
             tcbs[i].is_listen = listen;
-            tcbs[i].backlog_conn = -1;
+            tcbs[i].backlog_head = 0;
+            tcbs[i].backlog_tail = 0;
+            tcbs[i].backlog_count = 0;
             tcbs[i].rto_ticks = TCP_RTO_INIT;
             tcbs[i].rcv_wnd = TCP_BUFFER_SIZE;
             tcbs[i].snd_wnd = TCP_BUFFER_SIZE;
@@ -190,24 +212,39 @@ int tcp_recv(int idx, uint8_t* buf, size_t len, uint32_t timeout_ms) {
     }
 }
 
-int tcp_accept(int listen_idx) {
+int tcp_accept(int listen_idx, uint32_t timeout_ms) {
     if (listen_idx < 0 || listen_idx >= TCP_MAX_CONNECTIONS) return -1;
     tcb_t* ltcb = &tcbs[listen_idx];
     if (ltcb->state != TCP_LISTEN) return -1;
 
-    /* Poll until a connection arrives */
+    /* Non-blocking: check once and return */
+    if (timeout_ms == 0) {
+        net_process_packets();
+        int idx = backlog_pop(ltcb);
+        if (idx >= 0 && (tcbs[idx].state == TCP_ESTABLISHED ||
+                         tcbs[idx].state == TCP_SYN_RECEIVED))
+            return idx;
+        return -2; /* EAGAIN */
+    }
+
+    /* Blocking with cooperative yield */
+    uint32_t deadline = 0;
+    if (timeout_ms != 0xFFFFFFFF)
+        deadline = pit_get_ticks() + (timeout_ms * 120 + 999) / 1000;
+
     while (1) {
         net_process_packets();
 
-        if (ltcb->backlog_conn >= 0) {
-            int idx = ltcb->backlog_conn;
-            ltcb->backlog_conn = -1;
-            if (tcbs[idx].state == TCP_ESTABLISHED)
-                return idx;
-        }
+        int idx = backlog_pop(ltcb);
+        if (idx >= 0 && (tcbs[idx].state == TCP_ESTABLISHED ||
+                         tcbs[idx].state == TCP_SYN_RECEIVED))
+            return idx;
 
-        /* Don't busy-wait too hard */
-        __asm__ volatile ("hlt");
+        if (timeout_ms != 0xFFFFFFFF &&
+            (int32_t)(pit_get_ticks() - deadline) >= 0)
+            return -1; /* timeout */
+
+        task_yield();
     }
 }
 
@@ -244,6 +281,25 @@ void tcp_close(int idx) {
 tcp_state_t tcp_get_state(int idx) {
     if (idx < 0 || idx >= TCP_MAX_CONNECTIONS) return TCP_CLOSED;
     return tcbs[idx].state;
+}
+
+int tcp_has_backlog(int idx) {
+    if (idx < 0 || idx >= TCP_MAX_CONNECTIONS) return 0;
+    return tcbs[idx].backlog_count > 0;
+}
+
+int tcp_rx_available(int idx) {
+    if (idx < 0 || idx >= TCP_MAX_CONNECTIONS) return 0;
+    return tcbs[idx].rx_ring.count;
+}
+
+int tcp_recv_nb(int idx, uint8_t *buf, size_t len) {
+    if (idx < 0 || idx >= TCP_MAX_CONNECTIONS) return -1;
+    tcb_t *tcb = &tcbs[idx];
+    if (tcb->state != TCP_ESTABLISHED && tcb->state != TCP_CLOSE_WAIT)
+        return -1;
+    if (tcb->rx_ring.count == 0) return -2; /* EAGAIN */
+    return ring_read(&tcb->rx_ring, buf, len);
 }
 
 /* Handle incoming TCP packet */
@@ -300,14 +356,16 @@ void tcp_handle_packet(const uint8_t* data, size_t len, const uint8_t src_ip[4])
                 tcb->snd_wnd = window;
                 tcb->rcv_wnd = TCP_BUFFER_SIZE;
                 tcb->rto_ticks = TCP_RTO_INIT;
-                tcb->backlog_conn = -1;
+                tcb->backlog_head = 0;
+                tcb->backlog_tail = 0;
+                tcb->backlog_count = 0;
                 tcb->state = TCP_SYN_RECEIVED;
 
                 /* Send SYN-ACK */
                 tcp_send_segment(tcb, TCP_SYN | TCP_ACK, NULL, 0);
                 tcb->snd_nxt++;
 
-                listen_tcb->backlog_conn = tcb_idx;
+                backlog_push(listen_tcb, tcb_idx);
                 return;
             }
         }

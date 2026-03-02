@@ -44,6 +44,7 @@ typedef enum {
 #define TCP_MSS             1400
 #define TCP_MAX_RETRIES     5
 #define TCP_RTO_INIT        120  /* 1 second in ticks (120Hz) */
+#define TCP_BACKLOG_MAX     4
 
 typedef struct {
     uint8_t  buf[TCP_BUFFER_SIZE];
@@ -66,7 +67,8 @@ typedef struct {
     uint32_t last_send_tick;
     int      retries;
     int      is_listen;   /* passive open */
-    int      backlog_conn; /* TCB index of accepted connection, -1 = none */
+    int      backlog_queue[TCP_BACKLOG_MAX];
+    int      backlog_head, backlog_tail, backlog_count;
 } tcb_t;
 
 void tcp_initialize(void);
@@ -74,10 +76,15 @@ int  tcp_open(uint16_t local_port, int listen);
 int  tcp_connect(int tcb_idx, const uint8_t dst_ip[4], uint16_t dst_port);
 int  tcp_send(int tcb_idx, const uint8_t* data, size_t len);
 int  tcp_recv(int tcb_idx, uint8_t* buf, size_t len, uint32_t timeout_ms);
-int  tcp_accept(int listen_idx);
+int  tcp_accept(int listen_idx, uint32_t timeout_ms);
 void tcp_close(int tcb_idx);
 tcp_state_t tcp_get_state(int tcb_idx);
 void tcp_handle_packet(const uint8_t* data, size_t len, const uint8_t src_ip[4]);
 void tcp_timer_tick(void);
+
+/* Non-blocking helpers for syscall layer */
+int  tcp_has_backlog(int idx);     /* 1 if pending connections exist */
+int  tcp_rx_available(int idx);    /* bytes available in rx ring */
+int  tcp_recv_nb(int idx, uint8_t *buf, size_t len); /* non-blocking recv, -2=EAGAIN */
 
 #endif

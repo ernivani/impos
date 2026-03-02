@@ -7,7 +7,6 @@
 #include <kernel/task.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 #define HTTP_PORT 80
 #define HTTP_MAX_REQUEST 2048
@@ -110,23 +109,36 @@ static void handle_request(int client_fd) {
         return;
     }
 
-    /* Try to serve from filesystem */
-    uint8_t* fbuf = (uint8_t*)malloc(MAX_FILE_SIZE);
-    if (!fbuf) {
+    /* Try to serve from filesystem — stream in 4KB chunks */
+    uint32_t parent;
+    char name[28];
+    int ino = fs_resolve_path(path, &parent, name);
+    if (ino < 0) {
         socket_send(client_fd, http_404, strlen(http_404));
         socket_close(client_fd);
         return;
     }
 
-    size_t fsize;
-    if (fs_read_file(path, fbuf, &fsize) == 0) {
-        socket_send(client_fd, http_200, strlen(http_200));
-        socket_send(client_fd, fbuf, fsize);
-    } else {
+    inode_t node;
+    if (fs_read_inode(ino, &node) < 0 || node.type != INODE_FILE) {
         socket_send(client_fd, http_404, strlen(http_404));
+        socket_close(client_fd);
+        return;
     }
 
-    free(fbuf);
+    socket_send(client_fd, http_200, strlen(http_200));
+
+    static uint8_t chunk[4096];
+    uint32_t offset = 0;
+    while (offset < node.size) {
+        uint32_t to_read = node.size - offset;
+        if (to_read > sizeof(chunk)) to_read = sizeof(chunk);
+        int n = fs_read_at(ino, chunk, offset, to_read);
+        if (n <= 0) break;
+        socket_send(client_fd, chunk, n);
+        offset += n;
+    }
+
     socket_close(client_fd);
 }
 

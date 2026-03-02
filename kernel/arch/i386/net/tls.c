@@ -332,8 +332,18 @@ static int tls_send_client_hello(tls_conn_t *conn, const char *hostname) {
     size_t extensions_len = sni_ext_len + sizeof(sig_algs) +
                             sizeof(sup_groups) + sizeof(ec_formats);
 
-    /* Cipher suites: ECDHE first (preferred), then RSA fallback */
-    size_t cipher_len = 4; /* 2 cipher suites × 2 bytes */
+    /* Cipher suites: RSA-AES128-CBC-SHA256 only.
+     * ECDHE-RSA-AES128-CBC-SHA256 (0xC027) is disabled due to a bug in the
+     * EC shared secret computation — the server replies with decode_error
+     * (alert 50) after receiving our encrypted Finished message.  The ECDHE
+     * handshake completes up to key derivation, but the derived keys are
+     * wrong because ec_compute_shared() produces an incorrect shared secret.
+     * TODO: fix secp256r1 scalar multiplication in ec.c, then restore:
+     *   size_t cipher_len = 4;
+     *   put_be16(p, TLS_ECDHE_RSA_AES128_CBC_SHA256); p += 2;
+     *   put_be16(p, TLS_RSA_AES128_CBC_SHA256);       p += 2;
+     */
+    size_t cipher_len = 2; /* 1 cipher suite × 2 bytes */
     size_t body_len = 2 + 32 + 1 + 2 + cipher_len + 1 + 1 + 2 + extensions_len;
     uint8_t *body = malloc(body_len);
     if (!body) return -1;
@@ -348,9 +358,8 @@ static int tls_send_client_hello(tls_conn_t *conn, const char *hostname) {
     /* Session ID (empty) */
     *p++ = 0;
 
-    /* Cipher suites: ECDHE preferred, RSA fallback */
+    /* Cipher suites (see comment above) */
     put_be16(p, (uint16_t)cipher_len); p += 2;
-    put_be16(p, TLS_ECDHE_RSA_AES128_CBC_SHA256); p += 2;
     put_be16(p, TLS_RSA_AES128_CBC_SHA256); p += 2;
 
     /* Compression methods: null only */
@@ -721,16 +730,28 @@ int tls_connect(tls_conn_t *conn, int sock_fd, const char *hostname) {
     DBG("tls: starting handshake with %s", hostname);
 
     /* ClientHello */
-    if (tls_send_client_hello(conn, hostname) < 0) return -1;
+    if (tls_send_client_hello(conn, hostname) < 0) {
+        DBG("tls: FAILED at ClientHello send");
+        return -1;
+    }
 
     /* ServerHello + Certificate + ServerHelloDone */
-    if (tls_recv_server_hello(conn) < 0) return -1;
+    if (tls_recv_server_hello(conn) < 0) {
+        DBG("tls: FAILED at ServerHello/Certificate");
+        return -2;
+    }
 
     /* ClientKeyExchange + CCS + Finished */
-    if (tls_send_client_finish(conn) < 0) return -1;
+    if (tls_send_client_finish(conn) < 0) {
+        DBG("tls: FAILED at ClientFinish");
+        return -3;
+    }
 
     /* Server CCS + Finished */
-    if (tls_recv_server_finish(conn) < 0) return -1;
+    if (tls_recv_server_finish(conn) < 0) {
+        DBG("tls: FAILED at ServerFinish");
+        return -4;
+    }
 
     conn->established = 1;
     return 0;

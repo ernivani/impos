@@ -29,13 +29,13 @@
 #include <kernel/signal.h>
 #include <kernel/shm.h>
 #include <kernel/rtc.h>
-#include <kernel/beep.h>
 #include <kernel/pe_loader.h>
 #include <kernel/elf_loader.h>
 #include <kernel/tls.h>
 #include <kernel/io.h>
 #include <kernel/multiboot.h>
 #include <kernel/drm.h>
+#include <kernel/http.h>
 #include <kernel/libdrm.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
@@ -136,7 +136,6 @@ static void cmd_fps(int argc, char* argv[]);
 static void cmd_spawn(int argc, char* argv[]);
 static void cmd_shm(int argc, char* argv[]);
 static void cmd_ntpdate(int argc, char* argv[]);
-static void cmd_beep(int argc, char* argv[]);
 static void cmd_winget(int argc, char* argv[]);
 static void cmd_run(int argc, char* argv[]);
 static void cmd_petest(int argc, char* argv[]);
@@ -147,6 +146,8 @@ static void cmd_memtest(int argc, char* argv[]);
 static void cmd_fstest(int argc, char* argv[]);
 static void cmd_proctest(int argc, char* argv[]);
 static void cmd_doom(int argc, char* argv[]);
+static void cmd_wget(int argc, char* argv[]);
+static void cmd_lsusb(int argc, char* argv[]);
 
 static command_t commands[] = {
     {
@@ -1052,21 +1053,6 @@ static command_t commands[] = {
         CMD_FLAG_ROOT
     },
     {
-        "beep", cmd_beep,
-        "Play a tone on the PC speaker",
-        "beep: beep [FREQ MS | startup | error | ok | notify]\n"
-        "    Play a tone on the PC speaker.\n",
-        "NAME\n"
-        "    beep - PC speaker tone generator\n\n"
-        "SYNOPSIS\n"
-        "    beep [FREQ DURATION_MS]\n"
-        "    beep startup|error|ok|notify\n\n"
-        "DESCRIPTION\n"
-        "    Plays a tone using PIT channel 2 and the PC speaker.\n"
-        "    With no arguments, plays a default 880Hz beep.\n",
-        CMD_FLAG_ROOT
-    },
-    {
         "run", cmd_run,
         "Run a Windows .exe file",
         "run: run FILE.exe\n"
@@ -1200,6 +1186,26 @@ static command_t commands[] = {
         "    as a GRUB multiboot module. The game renders at 320x200\n"
         "    scaled to fill the screen. Press ESC for the menu and\n"
         "    select Quit Game to return to the shell.\n",
+        0
+    },
+    {
+        "wget", cmd_wget,
+        "Download a file via HTTP/HTTPS",
+        "wget: wget [-v] [-O FILE] URL\n"
+        "    Download a file from the given HTTP or HTTPS URL.\n"
+        "    Follows redirects (up to 5 hops).\n"
+        "    -v:      verbose output (DNS, TLS, headers).\n"
+        "    -O FILE: save response body to FILE.\n"
+        "    Without -O, prints the response to stdout.\n",
+        NULL,
+        0
+    },
+    {
+        "lsusb", cmd_lsusb,
+        "List USB devices",
+        "lsusb: lsusb\n"
+        "    List all detected USB devices.\n",
+        NULL,
         0
     },
 };
@@ -1860,19 +1866,101 @@ static void pipe_cmd_wc(const char *buf, int len) {
 
 /* ═══ DOOM ═════════════════════════════════════════════════════════ */
 
-extern void doomgeneric_Create(int argc, char **argv);
-extern void doomgeneric_Tick(void);
-extern uint8_t *doom_wad_data;
-extern uint32_t doom_wad_size;
+extern void doom_app_open(void);
 
-/* Doom calls exit() — we use setjmp/longjmp to return to shell */
-#include <setjmp.h>
-static jmp_buf doom_exit_jmp;
-static int doom_running = 0;
+static void cmd_wget(int argc, char* argv[]) {
+    http_response_t resp;
 
-void doom_exit_to_shell(void) {
-    if (doom_running)
-        longjmp(doom_exit_jmp, 1);
+    const char *url = NULL;
+    const char *outfile = NULL;
+    int verbose = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-O") == 0 && i + 1 < argc) {
+            outfile = argv[++i];
+        } else if (strcmp(argv[i], "-v") == 0) {
+            verbose = 1;
+        } else {
+            url = argv[i];
+        }
+    }
+
+    if (!url) {
+        printf("Usage: wget [-v] [-O FILE] URL\n");
+        return;
+    }
+
+    http_set_verbose(verbose);
+    if (!verbose)
+        printf("Connecting to %s...\n", url);
+    int rc = http_get(url, &resp);
+    http_set_verbose(0);
+    if (rc < 0) {
+        printf("wget: failed (error %d)\n", rc);
+        return;
+    }
+
+    printf("HTTP %d, %u bytes", resp.status_code, resp.body_len);
+    if (resp.content_type[0])
+        printf(" (%s)", resp.content_type);
+    printf("\n");
+
+    if (outfile) {
+        /* Write to file */
+        if (fs_create_file(outfile, 0) < 0 && resp.body_len > 0) {
+            /* File might already exist, try writing anyway */
+        }
+        if (resp.body_len > 0) {
+            uint32_t parent;
+            char name[28];
+            int ino = fs_resolve_path(outfile, &parent, name);
+            if (ino >= 0) {
+                int w = fs_write_at((uint32_t)ino, (const uint8_t *)resp.body, 0, resp.body_len);
+                if (w > 0)
+                    printf("Saved %d bytes to '%s'\n", w, outfile);
+                else
+                    printf("wget: write failed\n");
+            } else {
+                printf("wget: cannot create '%s'\n", outfile);
+            }
+        }
+    } else {
+        /* Print body to stdout */
+        for (uint32_t i = 0; i < resp.body_len; i++)
+            putchar(resp.body[i]);
+        if (resp.body_len > 0 && resp.body[resp.body_len - 1] != '\n')
+            putchar('\n');
+    }
+
+    http_response_free(&resp);
+}
+
+static void cmd_lsusb(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    extern int uhci_get_device_count(void);
+    extern int uhci_get_device_info(int idx, uint16_t *vendor, uint16_t *product,
+                                    uint8_t *class, uint8_t *subclass);
+
+    int count = uhci_get_device_count();
+    if (count == 0) {
+        printf("No USB devices found.\n");
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        uint16_t vendor, product;
+        uint8_t cls, subcls;
+        if (uhci_get_device_info(i, &vendor, &product, &cls, &subcls) == 0) {
+            printf("Bus 000 Device %03d: ID %04x:%04x", i + 1, vendor, product);
+            /* Common class names */
+            if (cls == 0x03) printf(" (HID");
+            else if (cls == 0x08) printf(" (Mass Storage");
+            else if (cls == 0x09) printf(" (Hub");
+            else printf(" (Class %02x", cls);
+            if (cls == 0x03 && subcls == 0x01) printf(" - Keyboard/Mouse");
+            printf(")\n");
+        }
+    }
 }
 
 static void cmd_doom(int argc, char* argv[]) {
@@ -1882,39 +1970,8 @@ static void cmd_doom(int argc, char* argv[]) {
         printf("doom: requires graphical mode\n");
         return;
     }
-    if (!doom_wad_data || doom_wad_size == 0) {
-        printf("doom: no WAD file loaded (add doom1.wad as GRUB module)\n");
-        return;
-    }
 
-    printf("Starting DOOM...\n");
-
-    /* Disable WM idle callback while doom runs */
-    keyboard_set_idle_callback(0);
-
-    /* Redirect exit() to doom's longjmp so any exit() call in doom
-       returns here instead of freezing the system */
-    exit_set_restart_point(&doom_exit_jmp);
-
-    doom_running = 1;
-    if (setjmp(doom_exit_jmp) == 0) {
-        char *doom_argv[] = { "doom", "-iwad", "doom1.wad", NULL };
-        doomgeneric_Create(3, doom_argv);
-
-        while (doom_running) {
-            doomgeneric_Tick();
-        }
-    }
-    doom_running = 0;
-
-    /* Clear exit() redirect so it doesn't jump back into stale doom state */
-    exit_set_restart_point(0);
-
-    /* Restore idle callback and redraw desktop */
-    keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
-    terminal_clear();
-    if (gfx_is_active())
-        wm_composite();
+    doom_app_open();
 }
 
 void shell_process_command(char* command) {
@@ -2103,20 +2160,37 @@ static void cmd_cat(int argc, char* argv[]) {
         return;
     }
 
-    uint8_t* buffer = (uint8_t*)malloc(MAX_FILE_SIZE);
+    uint32_t parent;
+    char name_buf[28];
+    int ino = fs_resolve_path(argv[1], &parent, name_buf);
+    if (ino < 0) {
+        printf("cat: %s: No such file\n", argv[1]);
+        return;
+    }
+    inode_t node;
+    fs_read_inode(ino, &node);
+    if (node.type != 1) {
+        printf("cat: %s: Not a regular file\n", argv[1]);
+        return;
+    }
+    if (node.size == 0) {
+        return;
+    }
+    uint8_t* buffer = (uint8_t*)malloc(node.size);
     if (!buffer) {
         printf("cat: out of memory\n");
         return;
     }
-    size_t size = MAX_FILE_SIZE;
-    if (fs_read_file(argv[1], buffer, &size) == 0) {
-        for (size_t i = 0; i < size; i++) {
-            putchar(buffer[i]);
-        }
-        printf("\n");
-    } else {
-        printf("cat: %s: No such file\n", argv[1]);
+    uint32_t offset = 0;
+    while (offset < node.size) {
+        int n = fs_read_at(ino, buffer + offset, offset, node.size - offset);
+        if (n <= 0) break;
+        offset += n;
     }
+    for (uint32_t i = 0; i < offset; i++) {
+        putchar(buffer[i]);
+    }
+    printf("\n");
     free(buffer);
 }
 
@@ -2700,13 +2774,16 @@ static void cmd_chown(int argc, char* argv[]) {
 }
 
 static void cmd_ln(int argc, char* argv[]) {
-    if (argc < 4 || strcmp(argv[1], "-s") != 0) {
-        printf("Usage: ln -s TARGET LINKNAME\n");
-        return;
-    }
-
-    if (fs_create_symlink(argv[2], argv[3]) != 0) {
-        printf("ln: cannot create symbolic link '%s'\n", argv[3]);
+    if (argc >= 4 && strcmp(argv[1], "-s") == 0) {
+        /* Symbolic link: ln -s TARGET LINKNAME */
+        if (fs_create_symlink(argv[2], argv[3]) != 0)
+            printf("ln: cannot create symbolic link '%s'\n", argv[3]);
+    } else if (argc >= 3 && argv[1][0] != '-') {
+        /* Hard link: ln TARGET LINKNAME */
+        if (fs_link(argv[1], argv[2]) != 0)
+            printf("ln: cannot create hard link '%s'\n", argv[2]);
+    } else {
+        printf("Usage: ln [-s] TARGET LINKNAME\n");
     }
 }
 
@@ -4681,24 +4758,6 @@ static void cmd_ntpdate(int argc, char* argv[]) {
     }
 }
 
-/* ═══ beep: PC speaker test ════════════════════════════════════ */
-
-static void cmd_beep(int argc, char* argv[]) {
-    if (argc >= 3) {
-        uint32_t freq = (uint32_t)atoi(argv[1]);
-        uint32_t dur  = (uint32_t)atoi(argv[2]);
-        if (freq > 0 && dur > 0) {
-            beep(freq, dur);
-            return;
-        }
-    }
-    if (argc == 2 && strcmp(argv[1], "startup") == 0) { beep_startup(); return; }
-    if (argc == 2 && strcmp(argv[1], "error") == 0)   { beep_error(); return; }
-    if (argc == 2 && strcmp(argv[1], "ok") == 0)      { beep_ok(); return; }
-    if (argc == 2 && strcmp(argv[1], "notify") == 0)   { beep_notify(); return; }
-    /* Default beep */
-    beep(880, 150);
-}
 
 static void cmd_run(int argc, char* argv[]) {
     if (argc < 2) {

@@ -143,6 +143,14 @@ int udp_recv(uint16_t port, uint8_t* buf, size_t* len,
     }
 }
 
+int udp_rx_available(uint16_t port) {
+    for (int i = 0; i < UDP_MAX_BINDINGS; i++) {
+        if (bindings[i].active && bindings[i].port == port)
+            return bindings[i].count;
+    }
+    return 0;
+}
+
 void udp_handle_packet(const uint8_t* data, size_t len, const uint8_t src_ip[4]) {
     if (len < sizeof(udp_header_t)) return;
 

@@ -112,9 +112,9 @@ static void mon_paint(void) {
 
     /* Disk */
     {
-        /* NUM_BLOCKS=8192, each 4KB = 32MB total */
+        /* FS v3: NUM_BLOCKS blocks, each 4KB */
         char buf[32];
-        snprintf(buf, sizeof(buf), "%d blocks x 4KB", NUM_BLOCKS);
+        snprintf(buf, sizeof(buf), "%d blks x 4KB", NUM_BLOCKS);
         draw_section(&gs, &y, "Disk", buf, 30, COL_ACCENT);
     }
 
@@ -190,6 +190,8 @@ int monitor_tick(int mx, int my, int btn_down, int btn_up) {
     int lx = mx - info.cx, ly = my - info.cy;
     if (lx >= 0 && ly >= 0 && lx < info.cw && ly < info.ch) {
         if (btn_down) {
+            if (ui_window_topmost_at(mx, my) != mon_win_id)
+                return 0;
             ui_window_focus(mon_win_id);
             ui_window_raise(mon_win_id);
             return 1;

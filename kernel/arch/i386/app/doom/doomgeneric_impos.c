@@ -4,8 +4,11 @@
 //   DG_Init(), DG_DrawFrame(), DG_SleepMs(), DG_GetTicksMs(), DG_GetKey()
 // Plus DG_SetWindowTitle() (no-op).
 //
+// Two rendering modes:
+//   Fullscreen: nearest-neighbor scales 320x200 to the framebuffer (legacy)
+//   Windowed:   scales 320x200 to a ui_window canvas buffer
+//
 // Input: reads raw PS/2 scancodes from the keyboard ring buffer.
-// Video: nearest-neighbor scales 320x200 to the framebuffer.
 // Timer: uses PIT at 120 Hz.
 
 #include "doomgeneric.h"
@@ -17,6 +20,14 @@
 
 #include <kernel/gfx.h>
 #include <kernel/idt.h>    /* pit_get_ticks(), pit_sleep_ms() */
+#include <kernel/io.h>     /* DBG() */
+
+/* ═══ Windowed mode state (set by doom_app.c) ═════════════════════ */
+
+extern int      doom_windowed_mode;
+extern uint32_t *doom_canvas_buf;
+extern int      doom_canvas_w, doom_canvas_h;
+extern int      doom_is_focused;
 
 /* ═══ Scaling state ════════════════════════════════════════════════ */
 
@@ -149,6 +160,8 @@ static void doom_poll_input(void)
     while ((sc = keyboard_get_raw_scancode()) >= 0) {
         uint8_t raw = (uint8_t)sc;
 
+        DBG("[doom-input] raw=0x%02x", raw);
+
         /* E0 prefix byte */
         if (raw == 0xE0) {
             e0_prefix = 1;
@@ -169,8 +182,12 @@ static void doom_poll_input(void)
         unsigned char dk = scancode_to_doom(make, e0_prefix);
         e0_prefix = 0;
 
-        if (dk != 0)
+        if (dk != 0) {
+            DBG("[doom-input] %s sc=0x%02x → dk=%d('%c')",
+                released ? "UP" : "DN", make, dk,
+                (dk >= 32 && dk < 127) ? dk : '?');
             addKeyToQueue(released ? 0 : 1, dk);
+        }
     }
 }
 
@@ -178,26 +195,33 @@ static void doom_poll_input(void)
 
 void DG_Init(void)
 {
+    e0_prefix = 0;
+    s_KeyQueueWriteIndex = 0;
+    s_KeyQueueReadIndex = 0;
+
+    if (doom_windowed_mode) {
+        /* Scale computed per-frame in DG_DrawFrame based on canvas size */
+        doom_scale = 3;
+        doom_offset_x = 0;
+        doom_offset_y = 0;
+        printf("DOOM: windowed mode (3x scale)\n");
+        return;
+    }
+
+    /* Fullscreen: scale to fill the framebuffer */
     int scr_w = (int)gfx_width();
     int scr_h = (int)gfx_height();
 
-    /* Calculate integer scale factor */
     int scale_x = scr_w / DOOMGENERIC_RESX;
     int scale_y = scr_h / DOOMGENERIC_RESY;
     doom_scale = (scale_x < scale_y) ? scale_x : scale_y;
     if (doom_scale < 1) doom_scale = 1;
 
-    /* Center the doom viewport */
     doom_offset_x = (scr_w - DOOMGENERIC_RESX * doom_scale) / 2;
     doom_offset_y = (scr_h - DOOMGENERIC_RESY * doom_scale) / 2;
 
-    /* Clear screen to black */
     gfx_clear(0x000000);
     gfx_flip();
-
-    e0_prefix = 0;
-    s_KeyQueueWriteIndex = 0;
-    s_KeyQueueReadIndex = 0;
 
     printf("DOOM: scale=%dx, offset=(%d,%d), screen=%dx%d\n",
            doom_scale, doom_offset_x, doom_offset_y, scr_w, scr_h);
@@ -205,12 +229,58 @@ void DG_Init(void)
 
 void DG_DrawFrame(void)
 {
-    /* Poll keyboard input first */
+    if (doom_windowed_mode) {
+        /* ── Windowed: render to canvas buffer ──────────────────── */
+        if (doom_is_focused)
+            doom_poll_input();
+
+        if (!doom_canvas_buf) return;
+
+        int cw = doom_canvas_w;
+        int ch = doom_canvas_h;
+
+        /* Compute best integer scale for current canvas */
+        int scale_x = cw / DOOMGENERIC_RESX;
+        int scale_y = ch / DOOMGENERIC_RESY;
+        int scale = (scale_x < scale_y) ? scale_x : scale_y;
+        if (scale < 1) scale = 1;
+
+        int ox = (cw - DOOMGENERIC_RESX * scale) / 2;
+        int oy = (ch - DOOMGENERIC_RESY * scale) / 2;
+
+        /* Clear canvas to black */
+        for (int i = 0; i < cw * ch; i++)
+            doom_canvas_buf[i] = 0xFF000000;
+
+        /* Nearest-neighbor scale 320×200 → canvas.
+         * DOOM's cmap_to_fb() writes 0x00RRGGBB (alpha=0), so we
+         * force alpha=0xFF to make pixels opaque for the compositor. */
+        pixel_t *src = DG_ScreenBuffer;
+        for (int sy = 0; sy < DOOMGENERIC_RESY; sy++) {
+            uint32_t *src_row = (uint32_t *)&src[sy * DOOMGENERIC_RESX];
+            int dst_y_base = oy + sy * scale;
+
+            for (int sx = 0; sx < DOOMGENERIC_RESX; sx++) {
+                uint32_t pixel = src_row[sx] | 0xFF000000;
+                int dst_x_base = ox + sx * scale;
+
+                for (int dy = 0; dy < scale; dy++) {
+                    int row = dst_y_base + dy;
+                    if (row >= ch) break;
+                    uint32_t *dst = &doom_canvas_buf[row * cw + dst_x_base];
+                    for (int dx = 0; dx < scale && dst_x_base + dx < cw; dx++)
+                        dst[dx] = pixel;
+                }
+            }
+        }
+        return;
+    }
+
+    /* ── Fullscreen: render to framebuffer ──────────────────────── */
     doom_poll_input();
 
-    /* Nearest-neighbor scale 320x200 → framebuffer */
     uint32_t *backbuf = gfx_backbuffer();
-    uint32_t pitch = gfx_pitch() / 4;  /* pitch in pixels */
+    uint32_t pitch = gfx_pitch() / 4;
     pixel_t *src = DG_ScreenBuffer;
 
     for (int sy = 0; sy < DOOMGENERIC_RESY; sy++) {
@@ -221,7 +291,6 @@ void DG_DrawFrame(void)
             uint32_t pixel = src_row[sx];
             int dst_x_base = doom_offset_x + sx * doom_scale;
 
-            /* Fill scale×scale block */
             for (int dy = 0; dy < doom_scale; dy++) {
                 uint32_t *dst = &backbuf[(dst_y_base + dy) * pitch + dst_x_base];
                 for (int dx = 0; dx < doom_scale; dx++) {
@@ -231,7 +300,6 @@ void DG_DrawFrame(void)
         }
     }
 
-    /* Flip only the doom region */
     gfx_flip_rect(doom_offset_x, doom_offset_y,
                    DOOMGENERIC_RESX * doom_scale,
                    DOOMGENERIC_RESY * doom_scale);
@@ -239,6 +307,7 @@ void DG_DrawFrame(void)
 
 void DG_SleepMs(uint32_t ms)
 {
+    if (doom_windowed_mode) return;   /* no-op: compositor hlt provides pacing */
     pit_sleep_ms(ms);
 }
 

@@ -1,5 +1,6 @@
 #include <kernel/pmm.h>
 #include <kernel/multiboot.h>
+#include <kernel/frame_ref.h>
 #include <kernel/io.h>
 #include <string.h>
 #include <stdio.h>
@@ -97,6 +98,7 @@ uint32_t pmm_alloc_frame(void) {
                 if (frame >= total_frames)
                     return 0;
                 frame_set(frame);
+                frame_ref_set1(frame * FRAME_SIZE);
                 return frame * FRAME_SIZE;
             }
         }
@@ -118,8 +120,10 @@ uint32_t pmm_alloc_contiguous(uint32_t n_frames) {
         } else {
             count++;
             if (count >= n_frames) {
-                for (uint32_t i = start; i < start + n_frames; i++)
+                for (uint32_t i = start; i < start + n_frames; i++) {
                     frame_set(i);
+                    frame_ref_set1(i * FRAME_SIZE);
+                }
                 return start * FRAME_SIZE;
             }
         }

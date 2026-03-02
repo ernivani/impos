@@ -67,6 +67,7 @@ void ui_window_minimize(int id);
 int           ui_window_focused(void);
 int           ui_window_count(void);
 ui_win_info_t ui_window_info(int id);
+int           ui_window_topmost_at(int mx, int my);
 
 /* ── Canvas API ─────────────────────────────────────────────────── */
 /* Returns the app-owned pixel area (below the title bar).

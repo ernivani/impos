@@ -7,15 +7,18 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 
 | Metric | Value |
 |--------|-------|
-| Total source (kernel + libc) | 133,766 LOC |
-| Kernel binary size | 4,396,392 bytes (~4.2 MB) |
-| GUI subsystem | 13,296 LOC (35 files) |
-| GPU pipeline (drivers + compositor) | 3,863 LOC (6 files) |
-| Networking stack | 2,898 LOC (11 files) |
+| Total source (kernel + libc) | ~147K LOC |
+| Kernel + libc (excluding DOOM) | ~79K LOC |
+| Kernel binary size | 4,975,408 bytes (~4.7 MB) |
+| GUI subsystem | 15,701 LOC (42 files) |
+| GPU pipeline (drivers + compositor) | 4,147 LOC (7 files) |
+| Networking stack | 3,561 LOC (12 files) |
 | Cryptography | 1,354 LOC (8 files) |
-| Binary compat (PE + ELF + Win32 DLLs) | 12,400 LOC |
-| Shell | 5,223 LOC (66 commands) |
-| DOOM port | 67,732 LOC |
+| Binary compat (PE + ELF + Win32 DLLs) | 14,658 LOC |
+| Filesystem + VFS + journal | 3,418 LOC |
+| Shell | 5,282 LOC (64 commands) |
+| Test suite | 4,598 LOC (1100+ tests) |
+| DOOM port | 57,327 LOC |
 
 ## Memory
 
@@ -42,7 +45,7 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 | Timer frequency | 120 Hz | PIT divisor 9943 |
 | Context switch | TSS-based, `esp0` updated per switch | `idt.c` |
 | Scheduler | round-robin, preemptive | `sched.c` |
-| File descriptors per task | 64 | `MAX_FDS` |
+| File descriptors per task | 256 | `FD_MAX` |
 | Syscalls (native INT 0x80) | 15 | `syscall.c` |
 | Signals supported | 6 (SIGINT, SIGTERM, SIGKILL, SIGUSR1/2, SIGPIPE) | `signal.c` |
 | Pipe buffer size | 4 KB circular | `PIPE_BUF_SIZE` |
@@ -51,17 +54,24 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 
 | Parameter | Value | Source |
 |-----------|-------|--------|
-| FS version | 2 | `fs.h` superblock |
+| FS version | 4 | `fs.h` superblock |
 | Block size | 4 KB | `BLOCK_SIZE` |
-| Total blocks | 8,192 (32 MB) | `NUM_BLOCKS` |
-| Total inodes | 256 | `NUM_INODES` |
+| Total blocks | 65,536 (256 MB) | `NUM_BLOCKS` |
+| Total inodes | 4,096 | `NUM_INODES` |
 | Direct block pointers | 8 (32 KB) | per-inode |
-| Indirect block pointers | 1,024 | single-indirect |
-| Max file size | ~4.1 MB | `MAX_FILE_SIZE` |
+| Single-indirect pointers | 1,024 (~4 MB) | 1 indirect block |
+| Double-indirect pointers | 1,024 x 1,024 (~4 GB) | 2 levels |
+| Max file size | 4 GB (`0xFFFFFFFF`) | `MAX_FILE_SIZE` |
+| Hardlinks | yes (`nlink` tracking) | `fs_link()` |
 | Disk sectors per block | 8 | `SECTORS_PER_BLOCK` |
-| Disk image size | 40 MB | `DISK_SIZE` in Makefile |
+| Disk image size | 280 MB | `DISK_SIZE` in Makefile |
 | Sync method | dirty bitmap, sector-granular | `fs.c` |
-| Device nodes | 4 (`/dev/null`, `/dev/zero`, `/dev/tty`, `/dev/urandom`) | chardev dispatch |
+| Journal | metadata WAL, 1024 blocks (4 MB) | `journal.c` |
+| VFS mounts | 16 max, longest-prefix match | `vfs.c` |
+| procfs | `/proc` (uptime, meminfo, version, PID dirs) | `procfs.c` |
+| devfs | `/dev` (dynamic device registration) | `devfs.c` |
+| tmpfs | `/tmp` (1024 inodes, 16 MB RAM) | `tmpfs.c` |
+| Device nodes | 5 (`/dev/null`, `/dev/zero`, `/dev/tty`, `/dev/urandom`, `/dev/dri/card0`) | chardev dispatch |
 
 ## Display / GPU
 
@@ -104,7 +114,10 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 | Max sockets | 16 | `MAX_SOCKETS` |
 | Firewall rules | 16 max, first-match-wins | `FW_MAX_RULES` |
 | TLS version | 1.2 | `tls.c` |
-| TLS cipher suites | 2 (AES-128-CBC-SHA256) | `tls.c` |
+| TLS cipher suite | RSA-AES128-CBC-SHA256 | `tls.c` |
+| HTTP client | GET + redirect following (5 max) | `http.c` |
+| HTTP response limit | 1 MB | `http_get()` |
+| HTTP server | static response server | `httpd.c` |
 | DHCP | client, auto-assign on boot | `dhcp.c` |
 | DNS | recursive resolver | `dns.c` |
 
@@ -137,8 +150,27 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 | Win32 PE loader | MZ/PE header, section mapping, import resolution | `pe_loader.c` |
 | Win32 DLL shims | 11 DLLs (kernel32, user32, gdi32, msvcrt, advapi32, ws2_32, ole32, shell32, bcrypt, crypt32, gdiplus) | `win32_*.c` |
 | Win32 SEH | Structured Exception Handling | `pe_loader.c` |
-| Linux ELF loader | Static ELF32, PT_LOAD segments | `elf_loader.c` |
-| Linux syscalls | ~20 (exit, read, write, open, mmap2, brk, stat64, etc.) | `linux_syscall.c` (902 LOC) |
+| Linux ELF loader | Static + dynamic ELF32, PT_LOAD/PT_INTERP, aux vector | `elf_loader.c` |
+| Linux syscalls | 76 (process, I/O, memory, files, time, thread, network) | `linux_syscall.c` (2182 LOC) |
+| Dynamic linking | musl ldso support, file-backed mmap, interpreter loading | `elf_loader.c` |
+
+## Audio
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Audio driver | AC'97 (Intel ICH) | `ac97.c` |
+| Audio mixer | volume, mute, channel control | `audio_mixer.c` |
+| Sample rate | 48 kHz | AC'97 default |
+| Buffer descriptor list | 32 entries | AC'97 BDL |
+
+## USB
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Host controller | UHCI (USB 1.1) | `uhci.c` |
+| PCI detection | class 0x0C/0x03/0x00 or Intel vendor IDs | `uhci.c` |
+| Frame list | 1024 entries, 4KB aligned | `uhci.c` |
+| Enumeration | port reset, GET_DESCRIPTOR, address assignment | `uhci.c` |
 
 ## Boot Sequence (measured from serial log)
 
@@ -152,7 +184,8 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 | ACPI | PM1a control port + SLP_TYP discovered |
 | VirtIO tablet | PCI probe, modern MMIO, queue depth 64 |
 | DRM | VirtIO GPU backend with virgl 3D, Stage 2 (GEM) |
-| Filesystem | v2, 256 inodes, 8192 blocks |
+| Filesystem | v4, 4096 inodes, 65536 blocks, journal active |
+| VFS mounts | procfs(/proc), devfs(/dev), tmpfs(/tmp) |
 | Network | RTL8139, MAC assigned |
 | GPU compositor | virgl ctx 2, self-test clear=ff0000ff (blue), active |
 | Desktop | 3 initial quads (background, splash, taskbar) |

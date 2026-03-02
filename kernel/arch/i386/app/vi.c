@@ -183,23 +183,37 @@ static void vi_draw(void) {
 }
 
 static void vi_load(void) {
-    uint8_t* buf = (uint8_t*)malloc(MAX_FILE_SIZE);
+    uint32_t parent;
+    char name_buf[28];
+    int ino = fs_resolve_path(vi_fname, &parent, name_buf);
+    if (ino < 0) {
+        num_lines = 1;
+        lines[0][0] = '\0';
+        return;
+    }
+    inode_t node;
+    fs_read_inode(ino, &node);
+    if (node.type != 1 || node.size == 0) {
+        num_lines = 1;
+        lines[0][0] = '\0';
+        return;
+    }
+    uint8_t* buf = (uint8_t*)malloc(node.size);
     if (!buf) {
         num_lines = 1;
         lines[0][0] = '\0';
         return;
     }
-    size_t size;
+    uint32_t offset = 0;
+    while (offset < node.size) {
+        int n = fs_read_at(ino, buf + offset, offset, node.size - offset);
+        if (n <= 0) { free(buf); num_lines = 1; lines[0][0] = '\0'; return; }
+        offset += n;
+    }
+    size_t size = node.size;
 
     num_lines = 0;
     memset(lines[0], 0, VI_LINE_LEN);
-
-    if (fs_read_file(vi_fname, buf, &size) < 0) {
-        num_lines = 1;
-        lines[0][0] = '\0';
-        free(buf);
-        return;
-    }
 
     int col = 0;
     for (size_t i = 0; i < size && num_lines < VI_MAX_LINES; i++) {
@@ -223,13 +237,20 @@ static void vi_load(void) {
 }
 
 static int vi_save(void) {
-    uint8_t* buf = (uint8_t*)malloc(MAX_FILE_SIZE);
+    /* Calculate exact size needed */
+    size_t total = 0;
+    for (int i = 0; i < num_lines; i++) {
+        total += strlen(lines[i]);
+        if (i < num_lines - 1) total++;  /* newline */
+    }
+    if (total == 0) total = 1;
+
+    uint8_t* buf = (uint8_t*)malloc(total);
     if (!buf) return -1;
     size_t pos = 0;
 
     for (int i = 0; i < num_lines; i++) {
         int len = (int)strlen(lines[i]);
-        if (pos + (size_t)len + 1 > MAX_FILE_SIZE) { free(buf); return -1; }
         memcpy(buf + pos, lines[i], (size_t)len);
         pos += (size_t)len;
         if (i < num_lines - 1) buf[pos++] = '\n';

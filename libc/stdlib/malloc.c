@@ -92,6 +92,21 @@ void* malloc(size_t size) {
     return (void*)(block + 1);
 }
 
+/* Advance heap past a reserved region (e.g., multiboot modules).
+ * Must be called BEFORE the first malloc. Ensures heap allocations
+ * won't overlap with data between _heap_start and `addr`. */
+void heap_reserve_to(uint32_t addr) {
+    if (!free_list) {
+        heap_init();
+    }
+    /* Page-align the address */
+    addr = (addr + 4095) & ~(uint32_t)4095;
+    char *new_start = (char *)(uintptr_t)addr;
+    if (new_start > heap_end) {
+        heap_end = new_start;
+    }
+}
+
 size_t heap_used(void) {
     if (!heap_end) return 0;
     return (size_t)(heap_end - (char*)_heap_start);

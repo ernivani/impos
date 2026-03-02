@@ -21,16 +21,32 @@
 #include <kernel/context_menu.h>
 #include <kernel/app.h>
 #include <kernel/anim.h>
+#include <kernel/notify.h>
+#include <kernel/systray.h>
+#include <kernel/pmm.h>
+#include <kernel/net.h>
 #include <kernel/settings_app.h>
 #include <kernel/terminal_app.h>
+#include <kernel/doom_app.h>
 #include <kernel/filemgr.h>
 #include <kernel/taskmgr.h>
 #include <kernel/monitor_app.h>
+#include <kernel/ui_widget.h>
 #include <kernel/idt.h>
 #include <kernel/mouse.h>
 #include <kernel/virtio_input.h>
 #include <string.h>
 #include <stdio.h>
+
+/* Forward declarations for widget-based apps */
+int calculator_tick(int mx, int my, int btn_down, int btn_up);
+int calculator_win_open(void);
+int notes_tick(int mx, int my, int btn_down, int btn_up);
+int notes_win_open(void);
+int about_tick(int mx, int my, int btn_down, int btn_up);
+int about_win_open(void);
+int minesweeper_tick(int mx, int my, int btn_down, int btn_up);
+int minesweeper_win_open(void);
 
 /* keyboard_getchar_nb lives in libc — not exposed in a public header */
 extern int keyboard_getchar_nb(void);
@@ -110,6 +126,30 @@ static void demo_paint(void)
     ui_window_damage_all(demo_id);
 }
 
+/* ── Systray update callbacks ─────────────────────────────────── */
+
+static void systray_mem_update(int idx, char *out, uint32_t *color) {
+    (void)idx;
+    uint32_t free_frames = pmm_free_frame_count();
+    uint32_t free_mb = free_frames * 4 / 1024;
+    uint32_t used_pct = (free_mb >= 256) ? 0 : 100 - (free_mb * 100 / 256);
+    out[0] = '0' + (used_pct / 10) % 10;
+    out[1] = '0' + used_pct % 10;
+    out[2] = '\0';
+    *color = (used_pct > 80) ? 0xFFF38BA8 :
+             (used_pct > 50) ? 0xFFFF9500 : 0xFFA6E3A1;
+}
+
+static void systray_net_update(int idx, char *out, uint32_t *color) {
+    (void)idx;
+    net_config_t *cfg = net_get_config();
+    int up = cfg ? cfg->link_up : 0;
+    out[0] = up ? 'N' : '-';
+    out[1] = up ? 't' : '-';
+    out[2] = '\0';
+    *color = up ? 0xFFA6E3A1 : 0xFF6C7086;
+}
+
 /* ── Init ───────────────────────────────────────────────────────── */
 
 void ui_shell_init(void)
@@ -144,6 +184,12 @@ void ui_shell_init(void)
     radial_init();
     drawer_init();
     ctx_menu_init();
+    notify_init();
+    systray_init();
+
+    /* Built-in tray items: memory usage + network status */
+    systray_register("Mm", "Memory", 0xFFA6E3A1, NULL, systray_mem_update);
+    systray_register("Nt", "Network", 0xFF6C7086, NULL, systray_net_update);
 
     /* Demo hint window */
     demo_id = ui_window_create(sw / 2 - 200, sh / 2 - 120,
@@ -218,6 +264,10 @@ int ui_shell_run(void)
                 if (!on_win) { ctx_menu_show(mx, my); consumed = 1; }
             }
 
+            /* Priority 3b: notifications (click to dismiss) */
+            if (!consumed)
+                consumed = notify_mouse(mx, my, btn_down, btn_up);
+
             /* Priority 4: menubar */
             if (!consumed)
                 consumed = menubar_mouse(mx, my, btn_down, btn_up,
@@ -243,6 +293,16 @@ int ui_shell_run(void)
             if (!consumed && monitor_win_open())
                 consumed = monitor_tick(mx, my, btn_down, btn_up);
 
+            /* Priority 5f-5i: widget-based apps */
+            if (!consumed && calculator_win_open())
+                consumed = calculator_tick(mx, my, btn_down, btn_up);
+            if (!consumed && notes_win_open())
+                consumed = notes_tick(mx, my, btn_down, btn_up);
+            if (!consumed && about_win_open())
+                consumed = about_tick(mx, my, btn_down, btn_up);
+            if (!consumed && minesweeper_win_open())
+                consumed = minesweeper_tick(mx, my, btn_down, btn_up);
+
             /* Priority 6: window manager */
             if (!consumed)
                 ui_window_mouse_event(mx, my, cur_btn, prev_btn);
@@ -259,6 +319,9 @@ int ui_shell_run(void)
                 int term_focused = terminal_app_win_open() &&
                     ui_window_focused() == terminal_app_win_id();
 
+                int doom_focused = doom_app_win_open() &&
+                    ui_window_focused() == doom_app_win_id();
+
                 if (radial_visible()) {
                     radial_key(ch, 0);
                 } else if (drawer_visible()) {
@@ -266,6 +329,10 @@ int ui_shell_run(void)
                 } else if (term_focused) {
                     /* Route to terminal shell */
                     terminal_app_handle_key(ch);
+                } else if (doom_focused) {
+                    /* Discard: DOOM reads raw scancodes directly */
+                } else if (uw_route_key(ui_window_focused(), (int)ch)) {
+                    /* Consumed by a widget-based app */
                 } else {
                     if (ch == ' ') {
                         if (ctx_menu_visible()) ctx_menu_hide();
@@ -296,6 +363,16 @@ int ui_shell_run(void)
             taskmgr_tick(mouse_get_x(), mouse_get_y(), 0, 0);
         if (monitor_win_open())
             monitor_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (calculator_win_open())
+            calculator_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (notes_win_open())
+            notes_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (about_win_open())
+            about_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (minesweeper_win_open())
+            minesweeper_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (doom_app_win_open())
+            doom_app_tick(mouse_get_x(), mouse_get_y(), 0, 0);
 
         /* ── Demo window lifecycle ───────────────────────────────── */
         if (demo_id >= 0 && ui_window_close_requested(demo_id)) {
@@ -346,6 +423,7 @@ int ui_shell_run(void)
                 radial_tick();
                 drawer_tick();
                 ctx_menu_tick();
+                notify_tick(now);
                 last_anim = now;
             }
         }

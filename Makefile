@@ -2,7 +2,7 @@ SHELL := /bin/bash
 export PATH := $(HOME)/opt/cross/bin:$(PATH)
 
 DISK_IMAGE := impos_disk.img
-DISK_SIZE  := 40M
+DISK_SIZE  := 280M
 
 # Platform display backend (cocoa on macOS, gtk on Linux)
 UNAME_S := $(shell uname -s)
@@ -10,7 +10,7 @@ ifeq ($(UNAME_S),Darwin)
   QEMU_DISPLAY := cocoa
 else
   QEMU_DISPLAY := gtk
-  QEMU_AUDIO   := -audiodev pa,id=snd0 -machine pcspk-audiodev=snd0
+  QEMU_AUDIO   := -audiodev pa,id=snd0 -device AC97,audiodev=snd0
 endif
 
 # KVM acceleration if available
@@ -18,7 +18,7 @@ KVM_FLAG := $(shell [ -w /dev/kvm ] 2>/dev/null && echo "-enable-kvm -cpu host")
 
 INITRD_MODS := $(shell [ -f doom1.wad ] && echo "-initrd doom1.wad,initrd.tar" || echo "-initrd initrd.tar")
 
-.PHONY: all run run-gl terminal clean
+.PHONY: all run run-gl terminal test clean
 
 # ── Build ──────────────────────────────────────────────────────────
 all: initrd.tar
@@ -33,6 +33,22 @@ initrd.tar:
 		for cmd in ls cat echo pwd uname id wc head tail; do \
 			ln -sf busybox initrd_staging/bin/$$cmd; \
 		done; \
+	fi
+	@if [ -f test_programs/sleep_test ]; then \
+		cp test_programs/sleep_test initrd_staging/bin/sleep_test; \
+	fi
+	@if [ -f test_programs/exec_test ]; then \
+		cp test_programs/exec_test initrd_staging/bin/exec_test; \
+	fi
+	@if [ -f test_programs/exec_target ]; then \
+		cp test_programs/exec_target initrd_staging/bin/exec_target; \
+	fi
+	@if [ -d test_programs/lib ]; then \
+		mkdir -p initrd_staging/lib; \
+		cp test_programs/lib/* initrd_staging/lib/; \
+	fi
+	@if [ -f test_programs/hello_dyn ]; then \
+		cp test_programs/hello_dyn initrd_staging/bin/hello_dyn; \
 	fi
 	@cd initrd_staging && tar cf ../initrd.tar --format=ustar .
 	@rm -rf initrd_staging
@@ -49,6 +65,7 @@ run: all $(DISK_IMAGE)
 		-netdev user,id=net0 \
 		-device rtl8139,netdev=net0 \
 		-device virtio-tablet-pci \
+		-usb -device usb-kbd \
 		-m 4G \
 		-vga virtio \
 		-display $(QEMU_DISPLAY) \
@@ -57,7 +74,6 @@ run: all $(DISK_IMAGE)
 		$(KVM_FLAG)
 
 # ── Run with virtio-vga-gl (3D GPU acceleration via virgl) ─────────
-# Use DISPLAY_GL=sdl or DISPLAY_GL=gtk (default: sdl for WSL2 compat)
 DISPLAY_GL ?= sdl
 run-gl: all $(DISK_IMAGE)
 	qemu-system-i386 \
@@ -67,6 +83,7 @@ run-gl: all $(DISK_IMAGE)
 		-netdev user,id=net0 \
 		-device rtl8139,netdev=net0 \
 		-device virtio-tablet-pci \
+		-usb -device usb-kbd \
 		-m 4G \
 		-device virtio-vga-gl \
 		-display $(DISPLAY_GL),gl=on \
@@ -74,65 +91,7 @@ run-gl: all $(DISK_IMAGE)
 		$(QEMU_AUDIO) \
 		$(KVM_FLAG)
 
-# ── Run with virgl + software GL (bypasses WSL2 d3d12 issues) ─────
-run-gl-sw: all $(DISK_IMAGE)
-	LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-	qemu-system-i386 \
-		-kernel kernel/myos.kernel \
-		$(INITRD_MODS) \
-		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
-		-netdev user,id=net0 \
-		-device rtl8139,netdev=net0 \
-		-device virtio-tablet-pci \
-		-m 4G \
-		-device virtio-vga-gl \
-		-display $(DISPLAY_GL),gl=on \
-		-serial stdio \
-		$(QEMU_AUDIO) \
-		$(KVM_FLAG)
-
-# ── Run with virgl debug logging (captures stderr to qemu_stderr.log) ─
-run-gl-debug: all $(DISK_IMAGE)
-	VIRGL_DEBUG=all LIBGL_DEBUG=verbose MESA_DEBUG=1 \
-	qemu-system-i386 \
-		-kernel kernel/myos.kernel \
-		$(INITRD_MODS) \
-		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
-		-netdev user,id=net0 \
-		-device rtl8139,netdev=net0 \
-		-device virtio-tablet-pci \
-		-m 4G \
-		-device virtio-vga-gl \
-		-display $(DISPLAY_GL),gl=on \
-		-serial stdio \
-		$(QEMU_AUDIO) \
-		$(KVM_FLAG) \
-		2>qemu_stderr.log
-
-# ── Run with GL call tracing via LD_PRELOAD ────────────────────────
-run-gl-trace: all $(DISK_IMAGE)
-	rm -f /tmp/gl_trace.log
-	VIRGL_DEBUG=all LIBGL_DEBUG=verbose MESA_DEBUG=1 \
-	LD_PRELOAD=/tmp/gl_trace.so \
-	timeout 15 \
-	qemu-system-i386 \
-		-kernel kernel/myos.kernel \
-		$(INITRD_MODS) \
-		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
-		-netdev user,id=net0 \
-		-device rtl8139,netdev=net0 \
-		-device virtio-tablet-pci \
-		-m 4G \
-		-device virtio-vga-gl \
-		-display $(DISPLAY_GL),gl=on \
-		-serial stdio \
-		$(QEMU_AUDIO) \
-		$(KVM_FLAG) \
-		2>qemu_stderr.log; \
-	echo "=== GL Trace (glDrawArrays + glVertexAttribPointer calls): ==="; \
-	grep -E 'glDraw|glVertex|glEnable.*Array|glBindBuffer.*ARRAY|glUniform1f|glGetAttrib|glUseProgram|glViewport|glCheckFrame|GL ERROR' /tmp/gl_trace.log 2>/dev/null | head -80
-
-# ── Terminal (QEMU window showing text shell instead of desktop) ───
+# ── Terminal (text shell, no desktop GUI) ──────────────────────────
 terminal: all $(DISK_IMAGE)
 	qemu-system-i386 \
 		-kernel kernel/myos.kernel \
@@ -146,6 +105,10 @@ terminal: all $(DISK_IMAGE)
 		-display $(QEMU_DISPLAY) \
 		-serial stdio \
 		$(KVM_FLAG)
+
+# ── Automated Tests ───────────────────────────────────────────────
+test: all
+	./test_auto.sh --no-build
 
 # ── Clean ──────────────────────────────────────────────────────────
 clean:

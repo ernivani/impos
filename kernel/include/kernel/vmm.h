@@ -15,6 +15,7 @@
 #define PTE_4MB         0x080
 #define PTE_GLOBAL      0x100
 #define PTE_GUARD       0x200  /* AVL bit 9: OS-defined guard page marker */
+#define PTE_COW         0x400  /* AVL bit 10: copy-on-write marker */
 
 #define PAGE_SIZE       4096
 #define PAGE_MASK       (~0xFFF)
@@ -54,5 +55,21 @@ int vmm_set_guard_page(uint32_t virt);
 /* Check if a faulting address is a guard page. If so, removes guard flag,
  * restores PRESENT, and returns 1. Returns 0 if not a guard page. */
 int vmm_check_guard_page(uint32_t virt);
+
+/* Ensure a page table exists for the PDE covering virt in a user page directory.
+ * Allocates a new PT if needed (COW copies kernel PT). Does NOT create a PTE.
+ * Returns the PT physical address, or 0 on failure. */
+uint32_t vmm_ensure_pt(uint32_t pd_phys, uint32_t virt);
+
+/* Read the PTE value for virt from a user page directory.
+ * Returns 0 if no page table exists or PTE is clear. */
+uint32_t vmm_get_pte(uint32_t pd_phys, uint32_t virt);
+
+/* Unmap a 4KB page in a user page directory. Clears PTE and invlpg.
+ * Does NOT free the physical frame (caller's responsibility). */
+void vmm_unmap_user_page(uint32_t pd_phys, uint32_t virt);
+
+/* Flush the entire TLB (reload CR3). */
+void vmm_flush_tlb(void);
 
 #endif

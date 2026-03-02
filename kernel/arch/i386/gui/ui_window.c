@@ -166,6 +166,12 @@ static ui_win_t *top_win_at(int mx, int my)
     return NULL;
 }
 
+int ui_window_topmost_at(int mx, int my)
+{
+    ui_win_t *w = top_win_at(mx, my);
+    return w ? w->id : -1;
+}
+
 /* ── Chrome draw ────────────────────────────────────────────────── */
 
 static void draw_button(gfx_surface_t *s, int cx, int cy,
