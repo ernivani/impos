@@ -26,6 +26,7 @@ static const app_info_t registry[] = {
 
     /* Games — implemented */
     { "mines",      "Minesweeper", "Mi", ICON_GAMEPAD,  0xFF00C7BE, APP_CAT_GAMES,    0, "bomb,sweep,puzzle,grid,game" },
+    { "doom",       "DOOM",        "Dm", ICON_GAMEPAD,  0xFFB5121B, APP_CAT_GAMES,    0, "doom,fps,shooter,game,id,wad" },
 };
 
 #define REGISTRY_COUNT ((int)(sizeof(registry) / sizeof(registry[0])))
@@ -93,6 +94,7 @@ void app_calculator_open(void);
 void app_notes_open(void);
 void app_about_open(void);
 void app_minesweeper_open(void);
+void doom_app_open(void);
 
 void app_launch(const char *id) {
     if (!id) return;
@@ -106,6 +108,7 @@ void app_launch(const char *id) {
     if (strcmp(id, "calculator") == 0)  { app_calculator_open(); return; }
     if (strcmp(id, "notes") == 0)       { app_notes_open(); return; }
     if (strcmp(id, "mines") == 0)       { app_minesweeper_open(); return; }
+    if (strcmp(id, "doom") == 0)        { doom_app_open(); return; }
 
     printf("[app] launch: %s\n", id);
 }

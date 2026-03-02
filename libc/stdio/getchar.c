@@ -30,11 +30,24 @@ static volatile uint8_t kbd_buf[KBD_BUF_SIZE];
 static volatile int kbd_head = 0;
 static volatile int kbd_tail = 0;
 
+/* Secondary ring buffer for raw scancode consumers (DOOM).
+ * Populated in parallel with kbd_buf so both ASCII translation
+ * and raw scancode readers get every scancode independently. */
+static volatile uint8_t raw_buf[KBD_BUF_SIZE];
+static volatile int raw_head = 0;
+static volatile int raw_tail = 0;
+
 void keyboard_push_scancode(uint8_t scancode) {
     int next = (kbd_head + 1) % KBD_BUF_SIZE;
     if (next != kbd_tail) {
         kbd_buf[kbd_head] = scancode;
         kbd_head = next;
+    }
+    /* Mirror to raw buffer for keyboard_get_raw_scancode() */
+    int rnext = (raw_head + 1) % KBD_BUF_SIZE;
+    if (rnext != raw_tail) {
+        raw_buf[raw_head] = scancode;
+        raw_head = rnext;
     }
 }
 
@@ -95,10 +108,13 @@ int keyboard_get_ctrl(void)  { return ctrl_pressed; }
 int keyboard_get_alt(void)   { return alt_pressed; }
 
 /* Raw scancode reader for Doom: returns raw PS/2 scancode (including
-   release bit 7 and E0 prefix as 0xE0), or -1 if none available. */
+   release bit 7 and E0 prefix as 0xE0), or -1 if none available.
+   Reads from a dedicated buffer so it doesn't steal from ASCII translation. */
 int keyboard_get_raw_scancode(void) {
-    if (!kbd_available()) return -1;
-    return (int)kbd_pop();
+    if (raw_head == raw_tail) return -1;
+    uint8_t sc = raw_buf[raw_tail];
+    raw_tail = (raw_tail + 1) % KBD_BUF_SIZE;
+    return (int)sc;
 }
 
 /* -------------------------------------------------------------------

@@ -27,6 +27,7 @@
 #include <kernel/net.h>
 #include <kernel/settings_app.h>
 #include <kernel/terminal_app.h>
+#include <kernel/doom_app.h>
 #include <kernel/filemgr.h>
 #include <kernel/taskmgr.h>
 #include <kernel/monitor_app.h>
@@ -318,6 +319,9 @@ int ui_shell_run(void)
                 int term_focused = terminal_app_win_open() &&
                     ui_window_focused() == terminal_app_win_id();
 
+                int doom_focused = doom_app_win_open() &&
+                    ui_window_focused() == doom_app_win_id();
+
                 if (radial_visible()) {
                     radial_key(ch, 0);
                 } else if (drawer_visible()) {
@@ -325,6 +329,8 @@ int ui_shell_run(void)
                 } else if (term_focused) {
                     /* Route to terminal shell */
                     terminal_app_handle_key(ch);
+                } else if (doom_focused) {
+                    /* Discard: DOOM reads raw scancodes directly */
                 } else if (uw_route_key(ui_window_focused(), (int)ch)) {
                     /* Consumed by a widget-based app */
                 } else {
@@ -365,6 +371,8 @@ int ui_shell_run(void)
             about_tick(mouse_get_x(), mouse_get_y(), 0, 0);
         if (minesweeper_win_open())
             minesweeper_tick(mouse_get_x(), mouse_get_y(), 0, 0);
+        if (doom_app_win_open())
+            doom_app_tick(mouse_get_x(), mouse_get_y(), 0, 0);
 
         /* ── Demo window lifecycle ───────────────────────────────── */
         if (demo_id >= 0 && ui_window_close_requested(demo_id)) {

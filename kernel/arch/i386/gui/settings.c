@@ -392,6 +392,8 @@ int settings_tick(int mx, int my, int btn_down, int btn_up) {
 
         /* Consume button events: focus window and prevent WM2 double-handling */
         if (btn_down) {
+            if (ui_window_topmost_at(mx, my) != settings_win_id)
+                return 0;
             ui_window_focus(settings_win_id);
             ui_window_raise(settings_win_id);
             return 1;

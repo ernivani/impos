@@ -1860,20 +1860,7 @@ static void pipe_cmd_wc(const char *buf, int len) {
 
 /* ═══ DOOM ═════════════════════════════════════════════════════════ */
 
-extern void doomgeneric_Create(int argc, char **argv);
-extern void doomgeneric_Tick(void);
-extern uint8_t *doom_wad_data;
-extern uint32_t doom_wad_size;
-
-/* Doom calls exit() — we use setjmp/longjmp to return to shell */
-#include <setjmp.h>
-static jmp_buf doom_exit_jmp;
-static int doom_running = 0;
-
-void doom_exit_to_shell(void) {
-    if (doom_running)
-        longjmp(doom_exit_jmp, 1);
-}
+extern void doom_app_open(void);
 
 static void cmd_doom(int argc, char* argv[]) {
     (void)argc; (void)argv;
@@ -1882,39 +1869,8 @@ static void cmd_doom(int argc, char* argv[]) {
         printf("doom: requires graphical mode\n");
         return;
     }
-    if (!doom_wad_data || doom_wad_size == 0) {
-        printf("doom: no WAD file loaded (add doom1.wad as GRUB module)\n");
-        return;
-    }
 
-    printf("Starting DOOM...\n");
-
-    /* Disable WM idle callback while doom runs */
-    keyboard_set_idle_callback(0);
-
-    /* Redirect exit() to doom's longjmp so any exit() call in doom
-       returns here instead of freezing the system */
-    exit_set_restart_point(&doom_exit_jmp);
-
-    doom_running = 1;
-    if (setjmp(doom_exit_jmp) == 0) {
-        char *doom_argv[] = { "doom", "-iwad", "doom1.wad", NULL };
-        doomgeneric_Create(3, doom_argv);
-
-        while (doom_running) {
-            doomgeneric_Tick();
-        }
-    }
-    doom_running = 0;
-
-    /* Clear exit() redirect so it doesn't jump back into stale doom state */
-    exit_set_restart_point(0);
-
-    /* Restore idle callback and redraw desktop */
-    keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
-    terminal_clear();
-    if (gfx_is_active())
-        wm_composite();
+    doom_app_open();
 }
 
 void shell_process_command(char* command) {

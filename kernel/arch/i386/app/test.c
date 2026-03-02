@@ -4286,7 +4286,7 @@ static void test_phase75_widgets(void) {
 
     /* ── App registry: only implemented apps ─────────────────── */
     int app_count = app_get_count();
-    TEST_ASSERT(app_count == 8, "p75: app registry has 8 apps");
+    TEST_ASSERT(app_count == 9, "p75: app registry has 9 apps");
 
     /* Verify known apps exist */
     TEST_ASSERT(app_find("terminal") != NULL, "p75: terminal in registry");

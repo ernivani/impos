@@ -157,6 +157,8 @@ int terminal_app_tick(int mx, int my, int btn_down, int btn_up) {
     int ly = my - info.cy;
     if (lx >= 0 && ly >= 0 && lx < info.cw && ly < info.ch) {
         if (btn_down) {
+            if (ui_window_topmost_at(mx, my) != term_win_id)
+                return 0;
             ui_window_focus(term_win_id);
             ui_window_raise(term_win_id);
             return 1;

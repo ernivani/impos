@@ -827,6 +827,9 @@ int uw_tick(ui_window_t *win, int mx, int my, int btn_down, int btn_up,
 
     /* Mouse down */
     if (btn_down && inside) {
+        /* Z-order guard: only consume if this is the topmost window */
+        if (ui_window_topmost_at(mx, my) != win->wm_id)
+            return 0;
         ui_event_t ev;
         memset(&ev, 0, sizeof(ev));
         ev.type = UI_EVENT_MOUSE_DOWN;
