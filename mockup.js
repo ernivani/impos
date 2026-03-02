@@ -360,6 +360,35 @@ loadWallpaperPref();
 animLoop();
 
 // Clock
+// ===== SYSTEM TRAY =====
+(function initTray() {
+  const tray = document.getElementById('tray');
+  if (!tray) return;
+  tray.innerHTML = `
+    <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8 2C4.5 2 1.5 4.2 0 7.5c1.5 3.3 4.5 5.5 8 5.5s6.5-2.2 8-5.5C14.5 4.2 11.5 2 8 2z" fill="none" stroke="white" stroke-width="1.3"/>
+      <circle cx="8" cy="7.5" r="2.5" fill="white" opacity="0.8"/>
+    </svg>
+    <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M1 12h2l1.5-4L7 11l2-6 2 8 1.5-5L14 12h1" fill="none" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8 1.5C4.8 1.5 2 3 0 5.5l2.2 2C3.7 6 5.7 4.8 8 4.8s4.3 1.2 5.8 2.7l2.2-2C14 3 11.2 1.5 8 1.5z" fill="white" opacity="0.4"/>
+      <path d="M8 5.5c-2 0-3.8 0.8-5 2.2L5 9.5c.8-.9 2-1.5 3-1.5s2.2.6 3 1.5l2-1.8C11.8 6.3 10 5.5 8 5.5z" fill="white" opacity="0.6"/>
+      <circle cx="8" cy="12" r="1.5" fill="white" opacity="0.9"/>
+    </svg>
+    <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M3 13V5M6 13V3M9 13V7M12 13V4" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+    </svg>
+    <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="1.5" y="4" width="11" height="8" rx="1.5" fill="none" stroke="white" stroke-width="1.3"/>
+      <rect x="12.5" y="6" width="2" height="4" rx="0.5" fill="white" opacity="0.5"/>
+      <rect x="2.8" y="5.3" width="5" height="5.4" rx="0.5" fill="white" opacity="0.35"/>
+    </svg>
+  `;
+})();
+
+// ===== CLOCK =====
 setInterval(()=>{
   const d=new Date();
   document.getElementById('clock').textContent=
@@ -1430,12 +1459,339 @@ document.addEventListener('mouseup', () => {
 });
 
 // ===== LAUNCH APP DISPATCHER =====
+const APP_CONTENT_BUILDERS = {
+  terminal:  { builder: buildTerminalContent,  w: 680, h: 440 },
+  files:     { builder: buildFilesContent,     w: 720, h: 480 },
+  browser:   { builder: buildBrowserContent,   w: 800, h: 540 },
+  monitor:   { builder: buildMonitorContent,   w: 520, h: 440 },
+  music:     { builder: buildMusicContent,     w: 340, h: 480 },
+};
+
 function launchApp(appId) {
   if (appId === 'settings') {
     openSettingsWindow();
-  } else {
-    console.log('Launch app:', appId);
+    return;
   }
+  const app = APP_CATALOG.find(a => a.id === appId);
+  const label = app ? app.label : appId;
+  const cfg = APP_CONTENT_BUILDERS[appId];
+  if (cfg) {
+    openAppWindow(appId, label, cfg.w, cfg.h, cfg.builder);
+  } else {
+    openAppWindow(appId, label, 520, 380, (body) => buildDefaultContent(body, app));
+  }
+}
+
+// ===== APP CONTENT BUILDERS =====
+
+function buildTerminalContent(body) {
+  const term = document.createElement('div');
+  term.className = 'app-terminal';
+
+  const hl = (s) => '<span class="term-highlight">' + s + '</span>';
+  const lines = [
+    { prompt: true, path: '~', cmd: 'neofetch' },
+    { output: hl('  _____                            ____  _____ ') },
+    { output: hl(' |_   _|_ __ ___  _ __   ___  ___|  _ \\/ ____|') },
+    { output: hl("   | | | '_ ` _ \\| '_ \\ / _ \\/ __| | | \\___ \\ ") },
+    { output: hl('   | | | | | | | | |_) | (_) \\__ \\ |_| |___) |') },
+    { output: hl('   |_| |_| |_| |_| .__/ \\___/|___/____/|____/ ') },
+    { output: hl('                  |_|                          ') },
+    { output: '' },
+    { output: '  ' + hl('OS') + ':       ImposOS 0.1 i386' },
+    { output: '  ' + hl('Kernel') + ':   imposkernel 0.1.0' },
+    { output: '  ' + hl('Shell') + ':    impossh 1.0' },
+    { output: '  ' + hl('WM') + ':       Liquid Glass Compositor' },
+    { output: '  ' + hl('Terminal') + ': impos-term' },
+    { output: '  ' + hl('CPU') + ':      i686 @ 120Hz PIT' },
+    { output: '  ' + hl('Memory') + ':   64MB / 256MB (25%)' },
+    { output: '  ' + hl('Disk') + ':     256MB imposfs v3' },
+    { output: '' },
+    { prompt: true, path: '~', cmd: 'ls /home' },
+    { output: '<span style="color:#3478F6">Desktop</span>  <span style="color:#3478F6">Documents</span>  <span style="color:#3478F6">Downloads</span>  <span style="color:#3478F6">Music</span>  <span style="color:#3478F6">Pictures</span>' },
+    { output: '' },
+    { prompt: true, path: '~', cmd: '' },
+  ];
+
+  lines.forEach(l => {
+    const div = document.createElement('div');
+    div.className = 'term-line';
+    if (l.prompt) {
+      div.innerHTML = `<span class="term-prompt">root</span>@<span class="term-path">${l.path}</span> $ <span class="term-cmd">${l.cmd}</span>`;
+      if (!l.cmd) {
+        div.classList.add('term-input-line');
+        div.innerHTML += '<span class="term-cursor"></span>';
+      }
+    } else {
+      div.innerHTML = `<span class="term-output">${l.output}</span>`;
+    }
+    term.appendChild(div);
+  });
+
+  body.appendChild(term);
+}
+
+function buildFilesContent(body) {
+  const wrap = document.createElement('div');
+  wrap.className = 'app-files';
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'files-toolbar';
+  toolbar.innerHTML = `
+    <div class="files-breadcrumb">
+      <span>/</span><span class="sep">/</span>
+      <span>home</span><span class="sep">/</span>
+      <span>root</span>
+    </div>
+  `;
+
+  const grid = document.createElement('div');
+  grid.className = 'files-grid';
+
+  const items = [
+    { name: 'Desktop',    folder: true },
+    { name: 'Documents',  folder: true },
+    { name: 'Downloads',  folder: true },
+    { name: 'Music',      folder: true },
+    { name: 'Pictures',   folder: true },
+    { name: '.bashrc',    folder: false },
+    { name: '.profile',   folder: false },
+    { name: 'notes.txt',  folder: false },
+    { name: 'todo.md',    folder: false },
+    { name: 'config.sh',  folder: false },
+    { name: 'build.sh',   folder: false },
+    { name: 'kernel.elf', folder: false },
+  ];
+
+  const folderSvg = `<svg viewBox="0 0 36 36" fill="none"><path d="M3 10a2 2 0 012-2h8l3 3h13a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V10z" fill="rgba(52,199,89,0.25)" stroke="rgba(52,199,89,0.6)" stroke-width="1.3"/></svg>`;
+  const fileSvg = `<svg viewBox="0 0 36 36" fill="none"><path d="M8 4h12l8 8v18a2 2 0 01-2 2H8a2 2 0 01-2-2V6a2 2 0 012-2z" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.2)" stroke-width="1.2"/><path d="M20 4v8h8" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1.2"/></svg>`;
+
+  items.forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'files-item' + (item.folder ? ' is-folder' : '');
+    el.innerHTML = (item.folder ? folderSvg : fileSvg) +
+      `<span class="files-item-name">${item.name}</span>`;
+    grid.appendChild(el);
+  });
+
+  const status = document.createElement('div');
+  status.className = 'files-status';
+  status.textContent = `${items.length} items — ${items.filter(i => i.folder).length} folders, ${items.filter(i => !i.folder).length} files`;
+
+  wrap.appendChild(toolbar);
+  wrap.appendChild(grid);
+  wrap.appendChild(status);
+  body.appendChild(wrap);
+}
+
+function buildBrowserContent(body) {
+  const wrap = document.createElement('div');
+  wrap.className = 'app-browser';
+
+  const bar = document.createElement('div');
+  bar.className = 'browser-bar';
+  bar.innerHTML = `
+    <div class="browser-nav">
+      <button class="browser-nav-btn">\u2190</button>
+      <button class="browser-nav-btn">\u2192</button>
+      <button class="browser-nav-btn">\u21BB</button>
+    </div>
+    <input class="browser-url" type="text" value="impos://newtab" spellcheck="false">
+  `;
+
+  const content = document.createElement('div');
+  content.className = 'browser-content';
+  content.innerHTML = `
+    <div class="browser-page">
+      <h1>Welcome to ImposOS</h1>
+      <p>The web browser for ImposOS. Built on the imposhttp networking stack with TCP/IP, DNS resolution, and HTML rendering.</p>
+      <div class="browser-cards">
+        <div class="browser-card">
+          <h3>ImposOS Docs</h3>
+          <p>Kernel documentation, syscall reference, and developer guides.</p>
+        </div>
+        <div class="browser-card">
+          <h3>Network Tools</h3>
+          <p>Ping, ARP tables, DNS lookup, and firewall configuration.</p>
+        </div>
+        <div class="browser-card">
+          <h3>Package Manager</h3>
+          <p>Browse and install packages from the ImposOS repository.</p>
+        </div>
+        <div class="browser-card">
+          <h3>System Status</h3>
+          <p>Real-time CPU, memory, disk, and network statistics.</p>
+        </div>
+      </div>
+    </div>
+  `;
+
+  wrap.appendChild(bar);
+  wrap.appendChild(content);
+  body.appendChild(wrap);
+}
+
+function buildMonitorContent(body) {
+  const wrap = document.createElement('div');
+  wrap.className = 'app-monitor';
+
+  // Resource bars
+  const resources = [
+    { label: 'CPU',    pct: 34, color: '#3478F6' },
+    { label: 'Memory', pct: 62, color: '#34C759' },
+    { label: 'Disk',   pct: 18, color: '#FF9500' },
+    { label: 'Swap',   pct: 5,  color: '#AF52DE' },
+  ];
+
+  const resSection = document.createElement('div');
+  const resLabel = document.createElement('div');
+  resLabel.className = 'monitor-section-label';
+  resLabel.textContent = 'Resources';
+  resSection.appendChild(resLabel);
+
+  resources.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'monitor-row';
+    row.innerHTML = `
+      <span class="monitor-label">${r.label}</span>
+      <div class="monitor-bar"><div class="monitor-fill" style="width:${r.pct}%;background:${r.color}"></div></div>
+      <span class="monitor-value">${r.pct}%</span>
+    `;
+    resSection.appendChild(row);
+  });
+
+  // Process list
+  const procSection = document.createElement('div');
+  procSection.style.cssText = 'flex:1;display:flex;flex-direction:column;min-height:0';
+  const procLabel = document.createElement('div');
+  procLabel.className = 'monitor-section-label';
+  procLabel.textContent = 'Processes';
+  procSection.appendChild(procLabel);
+
+  const procHeader = document.createElement('div');
+  procHeader.className = 'monitor-proc-header';
+  procHeader.innerHTML = '<span>PID</span><span>Name</span><span>CPU</span><span>Mem</span>';
+  procSection.appendChild(procHeader);
+
+  const procs = [
+    { pid: 1,  name: 'init',          cpu: '0.0%', mem: '0.8MB' },
+    { pid: 2,  name: 'scheduler',     cpu: '0.2%', mem: '0.1MB' },
+    { pid: 3,  name: 'desktop',       cpu: '8.4%', mem: '4.2MB' },
+    { pid: 4,  name: 'wm',            cpu: '12.1%', mem: '6.8MB' },
+    { pid: 5,  name: 'terminal',      cpu: '1.2%', mem: '1.4MB' },
+    { pid: 6,  name: 'monitor',       cpu: '3.5%', mem: '2.1MB' },
+    { pid: 7,  name: 'httpd',         cpu: '0.1%', mem: '0.6MB' },
+    { pid: 8,  name: 'dhcp_client',   cpu: '0.0%', mem: '0.3MB' },
+    { pid: 9,  name: 'kworker/0',     cpu: '0.4%', mem: '0.1MB' },
+    { pid: 10, name: 'rtl8139_irq',   cpu: '0.3%', mem: '0.2MB' },
+  ];
+
+  const procList = document.createElement('div');
+  procList.className = 'monitor-procs';
+  procs.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'monitor-proc-row';
+    row.innerHTML = `<span class="pid">${p.pid}</span><span>${p.name}</span><span class="cpu">${p.cpu}</span><span class="mem">${p.mem}</span>`;
+    procList.appendChild(row);
+  });
+  procSection.appendChild(procList);
+
+  wrap.appendChild(resSection);
+  wrap.appendChild(procSection);
+  body.appendChild(wrap);
+
+  // Animate bars in
+  setTimeout(() => {
+    wrap.querySelectorAll('.monitor-fill').forEach(el => {
+      const target = el.style.width;
+      el.style.width = '0%';
+      requestAnimationFrame(() => { el.style.width = target; });
+    });
+  }, 100);
+}
+
+function buildMusicContent(body) {
+  const wrap = document.createElement('div');
+  wrap.className = 'app-music';
+
+  // Album art (generated on canvas)
+  const artWrap = document.createElement('div');
+  artWrap.className = 'music-art-wrap';
+  const art = document.createElement('div');
+  art.className = 'music-art';
+  const artCanvas = document.createElement('canvas');
+  artCanvas.width = 360; artCanvas.height = 360;
+  const actx = artCanvas.getContext('2d');
+
+  // Paint a simple gradient album art
+  const g = actx.createLinearGradient(0, 0, 360, 360);
+  g.addColorStop(0, '#1a0533');
+  g.addColorStop(0.4, '#3a1c71');
+  g.addColorStop(0.7, '#d76d77');
+  g.addColorStop(1, '#ffaf7b');
+  actx.fillStyle = g;
+  actx.fillRect(0, 0, 360, 360);
+  // Add some circles for texture
+  for (let i = 0; i < 5; i++) {
+    actx.beginPath();
+    actx.arc(80 + i * 55, 180 + Math.sin(i) * 60, 30 + i * 8, 0, Math.PI * 2);
+    actx.fillStyle = `rgba(255,255,255,${0.03 + i * 0.015})`;
+    actx.fill();
+  }
+
+  art.appendChild(artCanvas);
+  artWrap.appendChild(art);
+
+  const info = document.createElement('div');
+  info.className = 'music-info';
+  info.innerHTML = `
+    <div class="music-title">Kernel Panic</div>
+    <div class="music-artist">The Interrupts</div>
+  `;
+
+  const progressWrap = document.createElement('div');
+  progressWrap.className = 'music-progress-wrap';
+  progressWrap.innerHTML = '<div class="music-progress"><div class="music-progress-fill"></div></div>';
+
+  const time = document.createElement('div');
+  time.className = 'music-time';
+  time.innerHTML = '<span>1:24</span><span>4:07</span>';
+
+  const controls = document.createElement('div');
+  controls.className = 'music-controls';
+  controls.innerHTML = `
+    <button class="music-btn"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 3h2v10H3zM7 8l7-5v10z" fill="white"/></svg></button>
+    <button class="music-btn play"><svg viewBox="0 0 16 16" width="18" height="18"><polygon points="4,2 14,8 4,14" fill="white"/></svg></button>
+    <button class="music-btn"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M11 3h2v10h-2zM9 8L2 3v10z" fill="white"/></svg></button>
+  `;
+
+  wrap.appendChild(artWrap);
+  wrap.appendChild(info);
+  wrap.appendChild(progressWrap);
+  wrap.appendChild(time);
+  wrap.appendChild(controls);
+  body.appendChild(wrap);
+}
+
+function buildDefaultContent(body, app) {
+  const wrap = document.createElement('div');
+  wrap.className = 'app-placeholder';
+  const iconKey = app && app.icon ? app.icon : null;
+  if (iconKey && ICONS[iconKey]) {
+    const iconDiv = document.createElement('div');
+    iconDiv.innerHTML = ICONS[iconKey];
+    iconDiv.querySelector('svg').style.cssText = 'width:48px;height:48px;opacity:0.12';
+    wrap.appendChild(iconDiv);
+  } else {
+    const placeholder = document.createElement('div');
+    placeholder.innerHTML = `<svg viewBox="0 0 48 48" fill="none"><rect x="6" y="6" width="36" height="36" rx="8" stroke="white" stroke-width="2" opacity="0.12"/><line x1="18" y1="24" x2="30" y2="24" stroke="white" stroke-width="2" opacity="0.12"/></svg>`;
+    wrap.appendChild(placeholder);
+  }
+  const label = document.createElement('div');
+  label.className = 'placeholder-label';
+  label.textContent = app ? `${app.label} is not yet implemented` : 'App not available';
+  wrap.appendChild(label);
+  body.appendChild(wrap);
 }
 
 // ===== SETTINGS WINDOW =====
@@ -1561,12 +1917,41 @@ function buildWallpaperSettings(container) {
 }
 
 function buildAboutSettings(container) {
-  container.innerHTML = `
-    <h2>About ImposOS</h2>
-    <div style="color:rgba(255,255,255,0.5);font-size:13px;line-height:1.8">
-      <div style="font-size:28px;font-weight:700;color:rgba(255,255,255,0.85);margin-bottom:8px">ImposOS</div>
-      <div>Version 0.1 (Desktop Mockup)</div>
-      <div style="margin-top:12px;color:rgba(255,255,255,0.3)">A concept desktop environment</div>
+  container.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'about-header';
+  header.innerHTML = `
+    <div class="about-logo">iO</div>
+    <div class="about-title-group">
+      <h1>ImposOS</h1>
+      <div class="about-version">Version 0.1.0 &mdash; Liquid Glass Edition</div>
     </div>
   `;
+  container.appendChild(header);
+
+  const stats = document.createElement('div');
+  stats.className = 'about-stats';
+  const statData = [
+    { label: 'Architecture', value: 'i386 (32-bit)' },
+    { label: 'Kernel',       value: 'imposkernel 0.1' },
+    { label: 'Filesystem',   value: 'imposfs v3' },
+    { label: 'Memory',       value: '256 MB' },
+    { label: 'Display',      value: '1920\u00d71080 @ 32bpp' },
+    { label: 'Network',      value: 'TCP/IP Stack' },
+  ];
+  statData.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'about-stat';
+    el.innerHTML = `<div class="stat-label">${s.label}</div><div class="stat-value">${s.value}</div>`;
+    stats.appendChild(el);
+  });
+  container.appendChild(stats);
+
+  const credits = document.createElement('div');
+  credits.className = 'about-credits';
+  credits.innerHTML = `A bare-metal operating system built from scratch.<br>
+    Multiboot-compliant kernel &bull; Custom filesystem with journaling &bull; Full networking stack<br>
+    Window manager with liquid glass compositing &bull; 42+ shell commands`;
+  container.appendChild(credits);
 }
