@@ -430,7 +430,20 @@ void kernel_main(multiboot_info_t* mbi) {
                 memset(mod_magic[m], 0, 4);
         }
 
-        /* Now safe to malloc — module table may be overwritten */
+        /* Reserve heap past module data to prevent malloc from overwriting it.
+         * GRUB/QEMU places modules right after the kernel image, overlapping
+         * with _heap_start.  Without this, the first malloc corrupts module data. */
+        extern char _heap_start[];
+        extern void heap_reserve_to(uint32_t addr);
+        uint32_t max_mod_end = (uint32_t)_heap_start;
+        for (uint32_t m = 0; m < n; m++) {
+            uint32_t mod_end_addr = mod_starts[m] + mod_lens[m];
+            if (mod_end_addr > max_mod_end)
+                max_mod_end = mod_end_addr;
+        }
+        heap_reserve_to(max_mod_end);
+
+        /* Now safe to malloc — heap starts past all module data */
         for (uint32_t m = 0; m < n; m++) {
             uint32_t len = mod_lens[m];
             if (len == 0 || len >= 32 * 1024 * 1024) continue;
