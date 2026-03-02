@@ -1,511 +1,593 @@
 # ImposOS Modernization Upgrade Plan
 
-> Linear upgrade path to bring ImposOS from ~1997 era to ~2010+ across all subsystems.
+> Linear upgrade path to bring ImposOS from ~1997 era to ~2015 across all subsystems.
 > Each phase builds on the previous one. Follow in order.
 
 ---
 
-## Phase 1 — Filesystem Overhaul
+## Phases 1–11 — COMPLETED
 
-**Current state:** Custom FS v2, 32MB total, 256 inodes, 8 direct + 1024 indirect blocks, no journaling, ~4MB max file size.
-**Target state:** ~2005 era (ext3/HFS+ level).
+| Phase | Summary | Status |
+|-------|---------|--------|
+| 1 — Filesystem Overhaul | FS v4, 256MB/4096 inodes, double-indirect, journaling, VFS, procfs/devfs/tmpfs | Done |
+| 2 — Process Model & Scheduling | 256 fds, clone/threads, pthreads, signals, process groups, waitpid | Done |
+| 3 — Memory Management | Per-process address spaces, demand paging, mmap, shared memory | Done |
+| 4 — Expanded Syscall Interface | 76 Linux syscalls, poll, ioctl, futex, readv/writev | Done |
+| 5 — Dynamic Linking | ELF dynamic loader, musl ldso, file-backed mmap, PT_INTERP | Done |
+| 6 — Networking Modernization | Non-blocking sockets, TCP improvements, full BSD socket API | Done |
+| 7 — Win32 Compatibility Expansion | 11 DLL shims, SEH, PE loader, threading, memory, GUI APIs | Done |
+| 8 — Desktop Environment & IPC | Window manager, widget toolkit, notifications, system tray, desktop apps | Done |
+| 9 — Audio Subsystem | AC'97 driver, audio mixer, DOOM windowed mode | Done |
+| 10 — Filesystem Hardlinks & VM | Hardlinks, VM improvements, HTTP client, USB enumeration | Done |
+| 11 — HTTPS & TLS Expansion | TLS 1.2 with 4 cipher suites, ECDHE/GCM, wget HTTPS, redirect following | Done |
 
-The filesystem is the foundation — almost every later phase (larger binaries, shared libraries, swap, /proc, /dev, tmpfs) depends on a capable FS layer first.
-
-### Step 1.1 — Increase Disk Geometry
-
-- Raise the block count from 8192 to at least 262,144 (1GB) or more
-- Raise the inode count from 256 to at least 4096
-- These are just constant changes but will require updating the on-disk format version and any hardcoded limits in `fs.c`
-
-### Step 1.2 — Double/Triple Indirect Blocks
-
-- Add double indirect block pointers (pointer → block of pointers → data blocks)
-- This lifts the max file size from ~4MB to ~4GB
-- Required before you can handle larger ELF binaries, swap files, or disk images
-
-### Step 1.3 — Journaling
-
-- Implement a write-ahead journal (even a simple metadata-only journal)
-- Log metadata operations (inode updates, block allocations, directory changes) before committing
-- On crash recovery, replay the journal to restore consistency
-- This brings you from FAT-era reliability to ext3-era (2001)
-
-### Step 1.4 — Virtual Filesystem (VFS) Layer
-
-- Abstract the filesystem interface behind a VFS so multiple filesystem types can coexist
-- Define a common `struct vfs_ops` with: `mount`, `open`, `read`, `write`, `readdir`, `stat`, `mkdir`, `unlink`
-- Your current FS becomes one backend; this enables Step 1.5 and later tmpfs, procfs, devfs
-
-### Step 1.5 — Special Filesystems (procfs, devfs, tmpfs)
-
-- **procfs** (`/proc`): expose per-process info (pid, status, memory maps, fd table) as virtual files — needed for a proper `top`, `ps`, and debugging
-- **devfs** (`/dev`): dynamic device node creation instead of hardcoded device entries — needed for hot-pluggable devices later
-- **tmpfs**: RAM-backed filesystem for `/tmp` — useful for pipe buffers, IPC, and temporary files without disk I/O
-
-### Step 1.6 — Larger File Support & Sparse Files
-
-- Support files larger than the block count × block size through sparse allocation (don't allocate zero-filled blocks until written)
-- Add `ftruncate` and `lseek` beyond current file size
-- Needed for swap files (Phase 3) and larger application data
+**Current state after Phase 11:** ~2008 era across most subsystems. ~148K LOC, 1146 tests, 4 TLS cipher suites, GPU-accelerated desktop, Win32+Linux binary compat.
 
 ---
 
-## Phase 2 — Process Model & Scheduling
+## Phase 12 — I/O Multiplexing & Shell Scripting
 
-**Current state:** Preemptive multitasking, 16 fds per process, no threads, TSS-based switching, basic signals.
-**Target state:** ~2003 era (Linux 2.6 / Windows XP level).
+**Current state:** poll() exists in Linux syscall compat, shell has 64 commands but no scripting.
+**Target state:** ~2010 era shell with proper I/O multiplexing.
 
-Depends on Phase 1 (VFS, procfs) for exposing process info and handling larger address spaces.
+The shell is the primary user interface for a lot of OS functionality. Without scripting, every task is manual. Without proper select/poll on native fds, event-driven apps can't work.
 
-### Step 2.1 — Increase File Descriptor Limit
+### Step 12.1 — Native poll()/select() for All FD Types
 
-- Raise from 16 to at least 256 per process
-- Switch from a fixed array to a dynamically allocated fd table
-- Almost everything downstream (networking, GUI apps, servers) will hit the 16 fd limit
+- Ensure poll/select works natively (not just Linux compat) across pipes, sockets, device fds, and regular files
+- Add `O_NONBLOCK` support on pipes and device fds (not just sockets)
+- Implement `POLLIN`, `POLLOUT`, `POLLHUP`, `POLLERR` properly for each fd type
+- This is the foundation for any event loop (GUI, server, terminal multiplexer)
 
-### Step 2.2 — Kernel Threads (kthreads)
+### Step 12.2 — Shell Variable Expansion
 
-- Implement kernel-level threads sharing the same address space but with independent stacks and register state
-- Add `clone()` syscall with flags for shared memory, shared fd table, shared signal handlers
-- This is a prerequisite for userspace threads (Step 2.3) and is needed for background kernel work (network processing, async I/O)
+- Environment variable expansion: `$HOME`, `$PATH`, `$?` (last exit code)
+- Variable assignment: `FOO=bar`
+- Double-quote interpolation: `"hello $USER"` vs single-quote literal: `'hello $USER'`
+- Special variables: `$0`, `$1`..`$9`, `$#`, `$@`, `$$`
 
-### Step 2.3 — Userspace Threads (pthreads-style)
+### Step 12.3 — Shell Redirection & Globbing
 
-- Implement `pthread_create`, `pthread_join`, `pthread_mutex_*`, `pthread_cond_*` in libc
-- Map to kernel threads via `clone()`
-- Thread-local storage (TLS) support — you already have `set_thread_area` in the Linux syscall layer, extend it
-- Required for running real multi-threaded applications and for Phase 7 (Win32 `CreateThread`)
+- Output redirection: `>`, `>>` (append), `2>` (stderr), `2>&1`
+- Input redirection: `<`
+- Here-documents: `<<EOF`
+- Glob expansion: `*`, `?`, `[abc]` patterns via a simple `glob()` implementation
+- Depends on dup/dup2 (already in Linux syscall layer — expose natively)
 
-### Step 2.4 — Improved Scheduler
+### Step 12.4 — Shell Control Flow
 
-- Replace the current round-robin (implicit from PIT-driven preemption) with a priority-based scheduler
-- Add nice values or at least 3-4 priority classes (real-time, normal, background, idle)
-- Implement `sleep()`, `nanosleep()`, and timer-based wakeups properly
-- O(1) or O(log n) runqueue (simple priority array or a basic CFS-like tree)
+- `if`/`then`/`elif`/`else`/`fi`
+- `for` loops: `for x in *.c; do echo $x; done`
+- `while`/`until` loops
+- `case`/`esac` pattern matching
+- Exit code testing: `&&`, `||`
+- Subshells: `$(command)` or backtick substitution
 
-### Step 2.5 — Full POSIX Signal Handling
+### Step 12.5 — Job Control
 
-- Add the missing signals: SIGCHLD, SIGSTOP, SIGCONT, SIGALRM, SIGSEGV (with info)
-- Implement `sigaction()` with `sa_sigaction` and `siginfo_t`
-- Signal queuing for real-time signals
-- Needed for proper process group management and job control (Phase 2.6)
+- Background execution: `command &`
+- `fg`, `bg` builtins
+- `Ctrl+Z` sends `SIGTSTP` to foreground process group
+- `jobs` builtin to list background jobs
+- Depends on process groups and sessions (already implemented)
 
-### Step 2.6 — Process Groups & Sessions
+### Step 12.6 — Core Userspace Utilities
 
-- Implement process groups (`setpgid`, `getpgid`), sessions (`setsid`), and controlling terminals
-- Job control: foreground/background process groups, SIGTSTP (Ctrl+Z), `fg`, `bg` shell builtins
-- Required for a proper shell experience and daemon processes
-
-### Step 2.7 — waitpid & Process Lifecycle
-
-- Full `waitpid()` with WNOHANG, WUNTRACED, WCONTINUED
-- Proper zombie reaping, orphan reparenting to init
-- `exec` family: `execvp`, `execle`, environment variable passing
-- This completes the Unix process model
-
----
-
-## Phase 3 — Memory Management
-
-**Current state:** PMM + VMM with identity mapping, 4KB/4MB pages, flat 256MB kernel space, 64KB shared memory regions.
-**Target state:** ~2003 era (proper virtual address spaces).
-
-Depends on Phase 1 (VFS for swap files, larger FS) and Phase 2 (process model for per-process address spaces).
-
-### Step 3.1 — Per-Process Address Spaces
-
-- Each process gets its own page directory
-- Map kernel space identically across all processes (upper 1GB or 2GB), user space is private (lower 2GB or 3GB)
-- `fork()` with copy-on-write (COW): mark shared pages read-only, copy on page fault
-- This is the single biggest architectural leap — it enables true process isolation
-
-### Step 3.2 — Demand Paging
-
-- Don't map all pages at process creation; map them on first access via page fault handler
-- Lazy allocation: `mmap` reserves virtual range but only allocates physical frames on fault
-- Reduces memory pressure significantly for large address space reservations
-
-### Step 3.3 — mmap (Full Implementation)
-
-- `mmap` with `MAP_PRIVATE`, `MAP_SHARED`, `MAP_ANONYMOUS`, `MAP_FIXED`
-- File-backed mappings (read a file by mapping it into memory) — requires VFS (Phase 1.4)
-- This is how modern programs load shared libraries, allocate large buffers, and do file I/O
-
-### Step 3.4 — Swap
-
-- Page out least-recently-used frames to a swap file or swap partition
-- Basic LRU or clock algorithm for page replacement
-- Swap-backed anonymous pages allow the system to overcommit memory
-- Requires the filesystem to handle large files (Phase 1.6)
-
-### Step 3.5 — Shared Memory (Proper)
-
-- Replace the current fixed 16-region / 64KB shared memory with `mmap MAP_SHARED`
-- Support arbitrary sizes, proper refcounting, CoW semantics
-- POSIX `shm_open`/`shm_unlink` backed by tmpfs (Phase 1.5)
+- `cp`, `mv` (currently missing — basic file operations)
+- `grep` (basic pattern matching, no full regex needed)
+- `wc` (line/word/byte count)
+- `head`, `tail` (first/last N lines)
+- `sort`, `uniq`
+- `find` (recursive directory search with name matching)
+- `tee` (write to stdout and file simultaneously)
+- `xargs` (build commands from stdin)
 
 ---
 
-## Phase 4 — Expanded Syscall Interface
+## Phase 13 — Image Decoding & Desktop Polish
 
-**Current state:** 15 native syscalls, ~20 Linux syscalls.
-**Target state:** ~100+ Linux syscalls (enough for musl libc / basic GNU tools).
+**Current state:** TrueType fonts, vector path graphics, GNOME-dark theme, but no image format support.
+**Target state:** ~2010 era desktop that can display images and feels cohesive.
 
-Depends on Phase 2 (threads, signals, process groups) and Phase 3 (mmap, per-process address spaces).
+Every desktop OS from 2000 onward can display PNG and JPEG. This is a major usability gap.
 
-### Step 4.1 — Core POSIX Syscalls
+### Step 13.1 — PNG Decoder
 
-Add the missing fundamentals. These are needed for nearly any real Unix program:
+- Implement a minimal PNG decoder: IHDR, IDAT (deflate), IEND chunks
+- Support 8-bit RGBA and RGB, grayscale
+- Inflate (zlib decompress) — you can port a minimal `tinfl` or write one from RFC 1951
+- Filter reconstruction (None, Sub, Up, Average, Paeth)
+- Output to 32-bit BGRA framebuffer format for direct compositor use
 
-- `dup`, `dup2` — fd duplication (critical for shell redirection)
-- `fcntl` — fd flags, non-blocking I/O
-- `access`, `unlink`, `rename`, `rmdir`, `link`, `symlink`, `readlink`
-- `chdir`, `fchdir`
-- `umask`, `chmod`, `chown` (already partial — complete them)
-- `getuid`, `getgid`, `setuid`, `setgid`, `geteuid`, `getegid`
-- `time`, `gettimeofday`, `clock_gettime`
-- `uname`
+### Step 13.2 — JPEG Decoder
 
-### Step 4.2 — Poll / Select / Epoll
+- Implement baseline JPEG decoding (DCT-based, Huffman, YCbCr→RGB)
+- A minimal stb_image-style decoder is ~1500 LOC in C
+- Support 4:2:0 and 4:4:4 chroma subsampling
+- No need for progressive JPEG initially
 
-- Implement `select()` and `poll()` for I/O multiplexing
-- Even a basic `poll()` unlocks event-driven servers, GUI event loops, and terminal multiplexers
-- Later: `epoll` for scalable I/O (Linux 2.6 era)
-- Depends on the fd table expansion (Phase 2.1)
+### Step 13.3 — BMP/ICO Support
 
-### Step 4.3 — ioctl Framework
+- BMP is trivial (raw pixel data with a header) — useful for icons and cursors
+- ICO format for window icons and taskbar (wraps BMP or PNG)
+- Use for custom app icons in the desktop, file manager thumbnails
 
-- Generalize `ioctl()` to dispatch to device-specific handlers (terminal, network, DRM, block devices)
-- Terminal ioctls: `TIOCGWINSZ`, `TCGETS`, `TCSETS` (for ncurses-style apps)
-- Network ioctls: `SIOCGIFADDR`, `SIOCSIFADDR`
-- DRM ioctls: already partially there, formalize them
+### Step 13.4 — Image Viewer Application
 
-### Step 4.4 — Extended File Operations
+- Desktop app: open PNG/JPEG/BMP files from the file manager
+- Zoom, pan, fit-to-window
+- Integrate with file manager: double-click an image opens the viewer
+- Thumbnail generation in file manager directory listings
 
-- `readv`, `writev` — scatter/gather I/O
-- `sendfile` — zero-copy file-to-socket transfer
-- `truncate`, `ftruncate`
-- `statfs`, `fstatfs` — filesystem info
-- `getdents64` improvements (already exists, make it robust)
+### Step 13.5 — Wallpaper & Theming Improvements
 
-### Step 4.5 — Futex (Fast User-Space Mutex)
+- Load a PNG/JPEG wallpaper at boot instead of a solid color
+- Wallpaper selection in Settings app
+- Icon themes: PNG-based icons for files, folders, apps in the file manager and dock
+- Cursor themes (custom cursor images from PNG/BMP)
 
-- Implement `futex()` syscall — this is the building block for all userspace synchronization
-- pthreads mutexes, condition variables, and semaphores all compile down to futex calls
-- Depends on threads (Phase 2.3)
+### Step 13.6 — Clipboard
 
----
-
-## Phase 5 — Dynamic Linking & Shared Libraries
-
-**Current state:** Static ELF32 only, no dynamic linker.
-**Target state:** ~2000 era (Linux with ld-linux.so).
-
-Depends on Phase 3 (mmap for library loading, per-process address spaces) and Phase 4 (extended syscalls for the dynamic linker).
-
-### Step 5.1 — ELF Dynamic Loader (ld.so)
-
-- Parse ELF `PT_DYNAMIC` segment, `.dynamic` section
-- Resolve `DT_NEEDED` entries to find required shared libraries
-- Load `.so` files via `mmap` at their preferred (or relocated) addresses
-
-### Step 5.2 — Symbol Resolution & Relocation
-
-- Process `DT_REL`/`DT_RELA` relocation tables
-- Handle `R_386_32`, `R_386_PC32`, `R_386_GLOB_DAT`, `R_386_JMP_SLOT`, `R_386_RELATIVE`
-- Lazy binding via PLT/GOT (resolve on first call) for performance
-
-### Step 5.3 — Shared libc (libc.so)
-
-- Compile your libc as a shared library
-- All user programs link against it dynamically — saves memory (one copy mapped into all processes)
-- This is also the path toward running musl-linked binaries
-
-### Step 5.4 — dlopen / dlsym
-
-- Runtime dynamic loading API
-- `dlopen("libfoo.so", RTLD_LAZY)`, `dlsym(handle, "function_name")`
-- Enables plugin architectures, optional features, and is used heavily by real applications
+- Implement a global clipboard buffer (kernel-managed or via shared memory)
+- Copy/paste plain text between terminal, notes, and other text widgets
+- `Ctrl+C` / `Ctrl+V` keybindings in text input widgets
+- Later: support image clipboard data
 
 ---
 
-## Phase 6 — Networking Stack Modernization
+## Phase 14 — SMP (Symmetric Multiprocessing)
 
-**Current state:** Full L2-L7 stack, BSD sockets, TCP/UDP, TLS 1.2, HTTP server, DNS, DHCP. Already strong — this phase is polish.
-**Target state:** ~2005 era (Linux 2.6 networking).
+**Current state:** Single CPU, PIC-based interrupts, round-robin scheduler.
+**Target state:** ~2005 era (Linux 2.6 SMP, dual/quad core support).
 
-Depends on Phase 4 (poll/epoll for async I/O, ioctl framework).
+By 2010 every desktop machine has multiple cores. SMP is the single biggest architectural leap remaining. This is the hardest phase.
 
-### Step 6.1 — Non-Blocking Sockets & Async I/O
+### Step 14.1 — APIC & IOAPIC
 
-- `O_NONBLOCK` flag on sockets
-- `EAGAIN`/`EWOULDBLOCK` return values
-- Combine with `poll()`/`select()` (Phase 4.2) for event-driven networking
+- Replace legacy 8259 PIC with Local APIC + IOAPIC
+- Parse ACPI MADT table to discover CPU cores and IOAPIC
+- Program IOAPIC routing entries for IRQ delivery
+- Local APIC timer replaces PIT for per-CPU scheduling ticks
+- Spurious interrupt handler
 
-### Step 6.2 — TCP Improvements
+### Step 14.2 — AP Startup (Application Processor Bootstrap)
 
-- Implement TCP window scaling (RFC 1323)
-- TCP congestion control: at least slow start + congestion avoidance (Reno or NewReno)
-- TCP keepalive
-- Proper TIME_WAIT handling
-- Retransmission timer improvements
+- Send INIT + SIPI (Startup IPI) sequence to bring up secondary cores
+- AP trampoline code: real mode → protected mode → paging → kernel entry
+- Each AP gets its own GDT, IDT, TSS, kernel stack
+- Per-CPU data structure (current task, runqueue, APIC ID)
 
-### Step 6.3 — Unix Domain Sockets
+### Step 14.3 — SMP-Safe Kernel
 
-- `AF_UNIX` / `AF_LOCAL` socket family
-- `SOCK_STREAM` and `SOCK_DGRAM` modes
-- Heavily used for local IPC (X11, D-Bus, GUI toolkits)
-- This enables Phase 8 (IPC infrastructure) to work over sockets
+- Add spinlocks (`spin_lock`, `spin_unlock` with `lock` prefix on x86)
+- Identify and lock all shared data: scheduler runqueue, PMM bitmap, fd tables, VFS caches, network buffers
+- Replace interrupt-disable critical sections with proper spinlocks + interrupt disable
+- Per-CPU idle task
 
-### Step 6.4 — IPv6 (Optional, Low Priority)
+### Step 14.4 — SMP Scheduler
 
-- Dual-stack IPv4/IPv6
-- Neighbor Discovery Protocol instead of ARP
-- This is optional for a hobby OS but would bring you past 2010
+- Per-CPU runqueues (each core has its own task list)
+- Load balancing: migrate tasks from overloaded to idle CPUs
+- CPU affinity: tasks can prefer specific cores
+- IPI (Inter-Processor Interrupt) for cross-CPU wakeups and TLB shootdowns
 
----
+### Step 14.5 — TLB Management
 
-## Phase 7 — Win32 Compatibility Expansion
-
-**Current state:** PE loader with 11 DLL shims, SEH support. Already impressive.
-**Target state:** ~2000 era (Windows 2000 compatibility level).
-
-Depends on Phase 2 (threads for CreateThread), Phase 3 (mmap for VirtualAlloc), Phase 5 (dynamic linking concepts for DLL loading).
-
-### Step 7.1 — Win32 Threading
-
-- Implement `CreateThread`, `ExitThread`, `WaitForSingleObject`, `WaitForMultipleObjects`
-- Critical sections: `InitializeCriticalSection`, `EnterCriticalSection`, `LeaveCriticalSection`
-- Events: `CreateEvent`, `SetEvent`, `ResetEvent`
-- Map to kernel threads (Phase 2.2)
-
-### Step 7.2 — Win32 Memory APIs
-
-- `VirtualAlloc`, `VirtualFree`, `VirtualProtect` (map to mmap, Phase 3.3)
-- `HeapCreate`, `HeapAlloc`, `HeapFree` (thin wrapper over malloc or a dedicated heap)
-- `MapViewOfFile` for memory-mapped files
-
-### Step 7.3 — Win32 File API Expansion
-
-- `CreateFile` with full flags (sharing modes, creation disposition)
-- `ReadFile`, `WriteFile` with overlapped I/O stubs
-- `FindFirstFile`, `FindNextFile` for directory enumeration
-- `GetFileSize`, `SetFilePointer`, `GetFileAttributes`
-- `CreateDirectory`, `RemoveDirectory`
-
-### Step 7.4 — Win32 GUI Expansion
-
-- Expand `user32`: more window styles, `WS_CHILD`, `WS_POPUP`, multiple windows
-- Message queue: `PostMessage`, `SendMessage`, `GetMessage` with proper blocking
-- Basic common controls: static, button, edit, listbox, combobox (separate DLL or inline)
-- `gdi32` expansion: more brush/pen types, `BitBlt`, `StretchBlt`, `SetPixel`, `GetPixel`
-
-### Step 7.5 — Win32 DLL Loading
-
-- `LoadLibrary`, `GetProcAddress`, `FreeLibrary`
-- Parse PE import tables more robustly (ordinal imports, forwarded exports)
-- Delay-load DLL support
+- TLB shootdown via IPI when page tables change (munmap, CoW, process exit)
+- Per-CPU `cr3` tracking
+- Lazy TLB invalidation for kernel threads (no user address space)
 
 ---
 
-## Phase 8 — Desktop Environment & IPC
+## Phase 15 — Networking Maturity
 
-**Current state:** Window manager, widget toolkit, desktop apps, radial launcher.
-**Target state:** ~2005 era (GNOME 2 / KDE 3 level IPC and desktop integration).
+**Current state:** TCP/UDP, TLS 1.2 with 4 cipher suites, HTTP GET with redirects, 8 max connections.
+**Target state:** ~2012 era networking.
 
-Depends on Phase 6.3 (Unix domain sockets), Phase 2.3 (threads), Phase 3.5 (shared memory).
+### Step 15.1 — TCP Window Scaling & Performance
 
-### Step 8.1 — Client-Server Window System
+- TCP window scaling (RFC 1323) — current 4KB buffer limits throughput
+- Increase TCP buffer to 64KB (or configurable per-socket)
+- TCP SACK (Selective Acknowledgment) for better loss recovery
+- TCP congestion control: slow start + congestion avoidance (NewReno at minimum)
+- Raise max TCP connections from 8 to at least 64
 
-- Move from the current in-kernel window manager to a client-server model (like X11 or Wayland)
-- Server process owns the compositor and input; client apps connect via Unix domain sockets or shared memory
-- This decouples GUI apps from the kernel — crash in an app doesn't bring down the display
+### Step 15.2 — Loopback Interface
 
-### Step 8.2 — IPC Message Bus
+- `lo` interface at `127.0.0.1`
+- Deliver packets directly to the receive path without going through a NIC driver
+- Required for local services, testing, and Unix convention
 
-- Implement a simple message bus (inspired by D-Bus) over Unix domain sockets
-- Named services register on the bus; clients send messages by service name
-- Enables: clipboard sharing, drag-and-drop, system notifications, settings sync
+### Step 15.3 — HTTP POST & Chunked Transfer
 
-### Step 8.3 — Clipboard & Drag-and-Drop
+- HTTP client: POST method with `Content-Length` body
+- Chunked transfer-encoding decoding (receiving)
+- `Content-Type` handling for form data (`application/x-www-form-urlencoded`, `multipart/form-data`)
+- Needed for any meaningful web interaction beyond GETs
 
-- Implement a clipboard manager as a bus service
-- Copy/paste between applications (at least plain text, then images)
-- Basic drag-and-drop protocol between windows
+### Step 15.4 — TLS SNI (Server Name Indication)
 
-### Step 8.4 — Desktop Notifications & System Tray
+- Send SNI extension in TLS ClientHello
+- Many HTTPS servers (Cloudflare, AWS, shared hosting) require SNI by ~2013
+- Without this, `wget https://` fails on most modern sites
 
-- Notification daemon: apps send notification messages via the IPC bus
-- System tray area in the panel for background app indicators
-- Volume control, network status, clock as tray applets
+### Step 15.5 — UDP sendto/recvfrom & DNS Improvements
 
----
+- Proper `sendto()`/`recvfrom()` for UDP sockets (not just internal DNS use)
+- DNS response caching (TTL-based)
+- DNS TCP fallback for large responses
+- Multiple DNS server support
 
-## Phase 9 — Audio Subsystem
-**Current state:** PC speaker beep only.
-**Target state:** ~2003 era (basic sound output like ALSA or early PulseAudio).
+### Step 15.6 — Netcat / Telnet Utility
 
-Depends on Phase 2.2 (kernel threads for audio mixing), Phase 1.4 (VFS for device nodes).
-
-### Step 9.05 — DOOM Windowed Mode
-
-- Wrap DOOM in a GUI window via `ui_window_create()` with a 640x400 canvas (320x200 scaled 2x)
-- Replace direct framebuffer writes (`I_FinishUpdate`) with rendering into the window canvas buffer
-- Replace raw keyboard/mouse grabs (`I_GetEvent`) with window-system event routing — only receive input when DOOM window is focused
-- Convert the blocking game loop into a cooperative `doom_tick()` that runs one frame per call, yielding between frames so other apps remain responsive
-- Register DOOM in the app registry with proper `doom_tick()` / `doom_win_open()` like other widget apps
-- Tie frame pacing to a ~35fps interval (matching original DOOM) via tick counting rather than busy-looping
-
-
-### Step 9.1 — Sound Card Driver (AC'97 or Intel HDA)
-
-- Implement an AC'97 driver (simpler, well-documented, emulated by QEMU with `-device AC97`)
-- Or Intel HDA if you want something more modern (also emulated by QEMU)
-- DMA-based audio output with ring buffers
-
-### Step 9.2 — Audio Abstraction Layer
-
-- Create `/dev/dsp` or `/dev/snd/*` device interface
-- `open`, `write`, `ioctl` for sample rate, format, channels
-- Basic PCM playback (16-bit signed, 44100 Hz, stereo)
-
-### Step 9.3 — Audio Mixer
-
-- Kernel-level or userspace mixer thread that combines audio streams from multiple processes
-- Per-stream volume control
-- Required for simultaneous audio (system sounds + music + app audio)
-
-### Step 9.4 — Audio in Applications
-
-- Add audio playback to DOOM (it currently has no sound, presumably)
-- Simple system sounds (startup, notification, error beep)
-- WAV file playback utility
+- `nc` command: arbitrary TCP/UDP connections from the shell
+- Useful as a debug tool and for simple data transfer
+- Listen mode: `nc -l 8080` for ad-hoc servers
 
 ---
 
-## Phase 10 — Loadable Kernel Modules
+## Phase 16 — USB Device Classes
 
-**Current state:** Monolithic kernel, all drivers compiled in.
-**Target state:** ~2000 era (Linux 2.4 module system).
+**Current state:** UHCI host controller with enumeration only. No device class drivers.
+**Target state:** ~2008 era (functional USB keyboard, mouse, storage).
 
-Depends on Phase 5 (ELF loading, symbol resolution) and Phase 1.4 (VFS for sysfs-like interfaces).
+### Step 16.1 — USB Transfer Infrastructure
 
-### Step 10.1 — Module Format & Loader
+- Implement Control, Bulk, and Interrupt transfer types on UHCI
+- TD (Transfer Descriptor) and QH (Queue Head) management
+- Proper error handling and retry logic
+- USB request block (URB) abstraction
 
-- Define a module format (ELF relocatable `.ko` files)
-- Module loader: parse ELF, resolve symbols against kernel symbol table, relocate
-- `init_module()` / `cleanup_module()` entry points
+### Step 16.2 — USB HID (Human Interface Devices)
 
-### Step 10.2 — Kernel Symbol Table Export
+- USB keyboard driver: HID report parsing, keycode translation
+- USB mouse driver: relative/absolute reports, button state
+- Hot-plug detection: port status change → device enumeration → driver binding
+- Fall back gracefully when PS/2 devices are also present
 
-- Export key kernel functions (kmalloc, printk, register_device, etc.) in a symbol table
-- Modules link against these symbols at load time
-- `EXPORT_SYMBOL()` macro or equivalent
+### Step 16.3 — USB Mass Storage (Bulk-Only Transport)
 
-### Step 10.3 — Module Management
+- BOT (Bulk-Only Transport) protocol: CBW/CSW/data phases
+- SCSI command set: INQUIRY, READ CAPACITY, READ(10), WRITE(10)
+- Block device layer: expose as `/dev/sda`, `/dev/sdb`
+- Mount via VFS (requires a readable FS — FAT32 in Step 16.4)
+
+### Step 16.4 — FAT32 Read Support
+
+- Read-only FAT32 filesystem driver (sufficient for USB sticks and SD cards)
+- Parse BPB (BIOS Parameter Block), FAT table, directory entries
+- Long File Name (LFN) support (VFAT)
+- Mount via VFS: `mount /dev/sda1 /mnt/usb`
+
+### Step 16.5 — USB Hub Support
+
+- Hub descriptor parsing, port power management
+- Cascaded hubs (hub behind hub)
+- Port status change handling for nested hot-plug
+
+---
+
+## Phase 17 — Audio Expansion
+
+**Current state:** AC'97 driver, audio mixer, but no userspace audio API or file playback.
+**Target state:** ~2008 era (OSS/ALSA-level audio with app integration).
+
+### Step 17.1 — Audio Device Interface
+
+- Create `/dev/dsp` (OSS-compatible) or `/dev/snd/pcmC0D0p` device node
+- `open`, `write`, `ioctl` interface for PCM playback
+- ioctls: set sample rate, format (S16LE, U8), channels (mono/stereo)
+- Basic ring buffer with blocking writes when buffer is full
+
+### Step 17.2 — WAV File Playback
+
+- WAV file parser (RIFF header, fmt/data chunks)
+- `play` shell command: `play /sounds/startup.wav`
+- Sample rate conversion (nearest-neighbor or linear interpolation) if WAV rate ≠ 48kHz
+- 8-bit to 16-bit conversion
+
+### Step 17.3 — Multi-Stream Mixing
+
+- Expand the audio mixer to support N simultaneous streams (not just master volume)
+- Per-stream sample rate, volume, and format conversion
+- Mix by summing with clipping protection
+- At least 4 concurrent streams (system sounds + music + app + game)
+
+### Step 17.4 — System Sounds
+
+- Startup sound, shutdown sound
+- Notification chime, error beep (replace PC speaker)
+- Window open/close sounds (optional, toggleable in Settings)
+- Sounds stored as WAV in initrd or on disk
+
+### Step 17.5 — DOOM Audio
+
+- Hook DOOM's audio subsystem to the audio mixer
+- SFX: PCM playback through `/dev/dsp` or direct mixer API
+- Music: OPL2/OPL3 FM synthesis or MUS→PCM conversion
+- Simultaneous game audio + system sounds via mixing
+
+---
+
+## Phase 18 — Security Hardening
+
+**Current state:** Unix permissions (rwx), user/group, ring 0/ring 3 separation. No ASLR, NX, or stack protection.
+**Target state:** ~2010 era (basic exploit mitigations).
+
+### Step 18.1 — NX Bit (No-Execute)
+
+- Enable NX/XD bit via PAE or PSE (requires EFER.NXE on x86)
+- Mark stack and heap pages as non-executable
+- Mark code pages as non-writable
+- This stops the most basic code injection attacks
+
+### Step 18.2 — Stack Canaries
+
+- Compile with `-fstack-protector` or implement manual canaries
+- Random canary value from CSPRNG, checked on function return
+- `__stack_chk_fail` handler: kill the process with SIGABRT
+
+### Step 18.3 — ASLR (Address Space Layout Randomization)
+
+- Randomize user stack base, mmap base, heap start, and ELF load address
+- CSPRNG-seeded offsets (you already have `/dev/urandom`)
+- Per-exec randomization (new layout on each `execve`)
+- Even basic ASLR (8-12 bits of entropy) raises the bar significantly
+
+### Step 18.4 — Password Hashing
+
+- Implement bcrypt or SHA-512 crypt for `/etc/shadow`
+- Replace plaintext or simple hash password storage
+- Salt generation from CSPRNG
+- `passwd` command to change passwords
+
+### Step 18.5 — Kernel Stack Isolation
+
+- Separate kernel stacks completely from user-accessible memory
+- Guard pages above/below kernel stacks (unmapped pages that trap on overflow)
+- Prevents kernel stack buffer overflows from corrupting adjacent memory
+
+---
+
+## Phase 19 — Expanded Binary Compatibility
+
+**Current state:** 76 Linux syscalls, 11 Win32 DLLs. Can run static and dynamically-linked ELF32.
+**Target state:** ~2010 era (run real-world small Linux utilities natively).
+
+### Step 19.1 — Missing Critical Syscalls
+
+- `select()` / `pselect6` (many programs prefer select over poll)
+- `epoll_create`, `epoll_ctl`, `epoll_wait` (modern event-driven programs)
+- `eventfd`, `signalfd`, `timerfd` (Linux 2.6+ event primitives)
+- `getrlimit`, `setrlimit` (resource limits — many programs query these)
+- `prctl` (at least PR_SET_NAME for thread naming)
+- `sysinfo` (total/free RAM, uptime — used by many tools)
+
+### Step 19.2 — /proc Expansion
+
+- `/proc/self` symlink (critical — almost every program uses it)
+- `/proc/[pid]/maps` (memory map — needed by debuggers, sanitizers)
+- `/proc/[pid]/exe` symlink to executable
+- `/proc/[pid]/fd/` directory with symlinks to open files
+- `/proc/[pid]/cmdline`, `/proc/[pid]/environ`
+- `/proc/cpuinfo`, `/proc/stat`, `/proc/loadavg`
+
+### Step 19.3 — Terminal Emulation (PTY)
+
+- Implement pseudo-terminals (`/dev/pts/*`)
+- `openpty()`, `posix_openpt()`, `grantpt()`, `unlockpt()`
+- Line discipline: canonical mode (line buffering), raw mode, echo
+- Terminal ioctls: `TIOCGWINSZ`, `TIOCSWINSZ`, `TCGETS`, `TCSETS`, `TIOCSCTTY`
+- This is required to run any real interactive program (vim, less, htop, ssh)
+
+### Step 19.4 — Linux Syscall Hardening
+
+- Proper `errno` return convention for all 76+ syscalls (negative return = -errno)
+- `strace`-style syscall tracing (log syscall number + args to serial) for debugging
+- Stub commonly-queried syscalls that can safely return 0 or ENOSYS
+- Goal: `busybox ash` runs as a secondary shell
+
+### Step 19.5 — Win32 Expansion
+
+- `comctl32.dll` shim: common controls (ListView, TreeView, ProgressBar, Toolbar)
+- `winmm.dll` shim: `PlaySound`, `waveOutOpen`, `timeGetTime` (map to audio subsystem)
+- `version.dll` shim: `GetFileVersionInfo` (many apps check this early)
+- `shlwapi.dll` shim: path utilities (`PathCombine`, `PathFindFileName`)
+- Goal: run a few more real Win32 apps (simple utilities, early open-source Windows software)
+
+---
+
+## Phase 20 — Power Management & System Polish
+
+**Current state:** ACPI shutdown/reboot only. No suspend, no CPU frequency scaling, no battery awareness.
+**Target state:** ~2012 era system management.
+
+### Step 20.1 — ACPI Sleep States
+
+- S1 (power-on suspend): halt CPUs, low-power, quick resume
+- S3 (suspend-to-RAM): save state, power down most hardware, resume from RAM
+- Implement the ACPI sleep state machine (PM1a/PM1b control registers)
+- Resume path: re-init PIC/APIC, restore CPU state, wake scheduler
+
+### Step 20.2 — CPU Idle States (C-States)
+
+- `HLT` instruction in idle loop (C1) — already done implicitly
+- ACPI C2/C3 states via `ioport` access for deeper idle
+- Reduces power consumption when the OS is idle
+
+### Step 20.3 — Syslog / Kernel Log
+
+- Ring buffer kernel log (`dmesg` command)
+- `printk` levels (KERN_ERR, KERN_WARN, KERN_INFO, KERN_DEBUG)
+- `/proc/kmsg` or `/dev/kmsg` interface
+- User-space `syslog()` writing to `/var/log/messages`
+- Log rotation (circular buffer or size-limited file)
+
+### Step 20.4 — Timezone Support
+
+- Parse TZ database (zoneinfo) for UTC offset and DST rules
+- `TZ` environment variable
+- `localtime()`, `mktime()` in libc that respect timezone
+- Display local time in taskbar clock, `date` command, and file timestamps
+
+### Step 20.5 — Init System
+
+- Proper `/sbin/init` as PID 1 (instead of kernel launching shell directly)
+- `/etc/inittab` or simple script-based init: mount filesystems, start services, launch login
+- `rc.d`-style service scripts or a simple service manager
+- Graceful shutdown: signal all processes, sync filesystems, unmount, ACPI power off
+- Runlevels or targets: single-user, multi-user, graphical
+
+---
+
+## Phase 21 — Loadable Kernel Modules & FAT32 Write
+
+**Current state:** Monolithic kernel, all drivers compiled in. FAT32 read (from Phase 16).
+**Target state:** ~2010 era (modular kernel, interoperable storage).
+
+### Step 21.1 — Module Format & Loader
+
+- Define module format: ELF relocatable `.ko` files
+- Module loader: parse ELF sections, resolve symbols against kernel symbol table, apply relocations
+- `init_module()` / `cleanup_module()` entry points per module
+- Module memory allocation from kernel heap with proper alignment
+
+### Step 21.2 — Kernel Symbol Table Export
+
+- Export key kernel functions: `kmalloc`, `kfree`, `printk`, `register_chrdev`, `register_blkdev`, `spin_lock`, `spin_unlock`
+- `EXPORT_SYMBOL()` macro that places entries in a `__ksymtab` section
+- Symbol lookup by name at module load time
+
+### Step 21.3 — Module Management
 
 - `insmod`, `rmmod`, `lsmod` shell commands
-- Dependency tracking (module A requires module B)
+- Dependency tracking (module A requires module B loaded first)
 - Reference counting to prevent unloading in-use modules
-- `/proc/modules` via procfs (Phase 1.5)
+- `/proc/modules` listing loaded modules with refcounts
 
-### Step 10.4 — Convert Drivers to Modules
+### Step 21.4 — Convert Drivers to Modules
 
-- Move NIC drivers (RTL8139, PCnet), sound driver (Phase 9), and non-essential drivers into loadable modules
-- Keep core drivers (VirtIO GPU, ATA, keyboard/mouse) built-in
-- Reduces kernel binary size and enables driver hot-loading
+- Move NIC drivers (RTL8139, PCnet) into loadable modules
+- Move AC'97 audio driver into a module
+- Move USB UHCI + device class drivers into modules
+- Keep core built-in: VirtIO GPU, ATA, keyboard, mouse, VirtIO tablet
+- Goal: kernel binary shrinks, drivers load on demand
 
----
+### Step 21.5 — FAT32 Write Support
 
-## Summary — Dependency Graph
-
-```
-Phase 1: Filesystem ──────────────────────────────────┐
-  1.1 Disk geometry                                    │
-  1.2 Double indirect blocks                           │
-  1.3 Journaling                                       │
-  1.4 VFS layer ──────────────────────────┐            │
-  1.5 procfs / devfs / tmpfs              │            │
-  1.6 Large files / sparse                │            │
-                                          │            │
-Phase 2: Process Model ◄─── needs 1.4, 1.5            │
-  2.1 FD limit increase                               │
-  2.2 Kernel threads                                   │
-  2.3 Userspace threads (pthreads) ◄── needs 2.2      │
-  2.4 Scheduler upgrade                                │
-  2.5 Full signals                                     │
-  2.6 Process groups ◄── needs 2.5                     │
-  2.7 waitpid & lifecycle                              │
-                                                       │
-Phase 3: Memory Management ◄─── needs 1.4, 1.6, 2.x  │
-  3.1 Per-process address spaces                       │
-  3.2 Demand paging                                    │
-  3.3 mmap (full) ◄── needs 3.1, 3.2                  │
-  3.4 Swap ◄── needs 1.6, 3.3                         │
-  3.5 Shared memory ◄── needs 3.3, 1.5                │
-                                                       │
-Phase 4: Syscall Expansion ◄─── needs 2.x, 3.x       │
-  4.1 Core POSIX syscalls                              │
-  4.2 poll / select / epoll ◄── needs 2.1             │
-  4.3 ioctl framework                                  │
-  4.4 Extended file ops                                │
-  4.5 futex ◄── needs 2.3                             │
-                                                       │
-Phase 5: Dynamic Linking ◄─── needs 3.3, 4.x         │
-  5.1 ELF dynamic loader                              │
-  5.2 Symbol resolution                                │
-  5.3 Shared libc                                      │
-  5.4 dlopen / dlsym                                   │
-                                                       │
-Phase 6: Networking ◄─── needs 4.2, 4.3              │
-  6.1 Non-blocking sockets                             │
-  6.2 TCP improvements                                 │
-  6.3 Unix domain sockets                              │
-                                                       │
-Phase 7: Win32 Expansion ◄─── needs 2.2, 3.3, 5.x   │
-  7.1 Threading                                        │
-  7.2 Memory APIs                                      │
-  7.3 File APIs                                        │
-  7.4 GUI expansion                                    │
-  7.5 DLL loading                                      │
-                                                       │
-Phase 8: Desktop & IPC ◄─── needs 6.3, 2.3, 3.5     │
-  8.1 Client-server window system                      │
-  8.2 IPC message bus                                  │
-  8.3 Clipboard & DnD                                  │
-  8.4 Notifications & tray                             │
-                                                       │
-Phase 9: Audio ◄─── needs 2.2, 1.4                   │
-  9.1 Sound card driver                                │
-  9.2 Audio device layer                               │
-  9.3 Mixer                                            │
-  9.4 App integration                                  │
-                                                       │
-Phase 10: Modules ◄─── needs 5.x, 1.5               │
-  10.1 Module loader                                   │
-  10.2 Symbol table                                    │
-  10.3 Management                                      │
-  10.4 Convert drivers                                 │
-```
+- Extend the FAT32 driver from read-only to read-write
+- File creation, deletion, directory creation
+- FAT table updates with proper cluster chain management
+- Dirty flag and `sync` support
+- Goal: copy files to/from USB drives
 
 ---
 
-## Estimated Timeline (Rough)
+## Summary — Dependency Graph (Phases 12–21)
 
-| Phase | Effort | Result |
-|-------|--------|--------|
-| 1 — Filesystem | 3-5 weeks | OS era jumps from ~1993 to ~2001 |
-| 2 — Process Model | 4-6 weeks | ~2003 process management |
-| 3 — Memory Management | 6-8 weeks | Hardest phase — proper virtual memory |
-| 4 — Syscalls | 3-4 weeks | Unlocks real Unix software |
-| 5 — Dynamic Linking | 4-6 weeks | Shared libraries, smaller binaries |
-| 6 — Networking | 2-3 weeks | Already strong, mostly polish |
-| 7 — Win32 Expansion | 4-6 weeks | Run more Windows programs |
-| 8 — Desktop & IPC | 5-7 weeks | Modern desktop architecture |
-| 9 — Audio | 3-4 weeks | Sound output, DOOM with audio |
-| 10 — Modules | 3-4 weeks | Modular kernel architecture |
+```
+Phase 12: I/O Mux & Shell ─────────────────────────────────────┐
+  12.1 Native poll/select                                       │
+  12.2 Shell variables                                          │
+  12.3 Redirection & globbing                                   │
+  12.4 Control flow                                             │
+  12.5 Job control                                              │
+  12.6 Core utilities (cp, mv, grep...)                         │
+                                                                │
+Phase 13: Image & Desktop ─────────────────────────────────────│
+  13.1 PNG decoder                                              │
+  13.2 JPEG decoder                                             │
+  13.3 BMP/ICO support                                          │
+  13.4 Image viewer app                                         │
+  13.5 Wallpaper & theming                                      │
+  13.6 Clipboard                                                │
+                                                                │
+Phase 14: SMP ◄── hardest phase ───────────────────────────────│
+  14.1 APIC / IOAPIC ◄── replaces PIC                          │
+  14.2 AP startup (boot secondary cores)                        │
+  14.3 SMP-safe kernel (spinlocks everywhere)                   │
+  14.4 SMP scheduler (per-CPU runqueues)                        │
+  14.5 TLB shootdown                                            │
+                                                                │
+Phase 15: Networking Maturity ◄── needs 12.1 (poll)            │
+  15.1 TCP window scaling & performance                         │
+  15.2 Loopback interface                                       │
+  15.3 HTTP POST & chunked transfer                             │
+  15.4 TLS SNI                                                  │
+  15.5 UDP sendto/recvfrom & DNS cache                          │
+  15.6 Netcat utility                                           │
+                                                                │
+Phase 16: USB Device Classes ──────────────────────────────────│
+  16.1 USB transfer infrastructure                              │
+  16.2 USB HID (keyboard/mouse)                                 │
+  16.3 USB mass storage                                         │
+  16.4 FAT32 read support ◄── needs VFS                        │
+  16.5 USB hub support                                          │
+                                                                │
+Phase 17: Audio Expansion ◄── needs 16 for nothing, standalone │
+  17.1 Audio device interface (/dev/dsp)                        │
+  17.2 WAV file playback                                        │
+  17.3 Multi-stream mixing                                      │
+  17.4 System sounds                                            │
+  17.5 DOOM audio                                               │
+                                                                │
+Phase 18: Security ◄── needs 14 (SMP-aware NX/ASLR)           │
+  18.1 NX bit                                                   │
+  18.2 Stack canaries                                           │
+  18.3 ASLR                                                     │
+  18.4 Password hashing                                         │
+  18.5 Kernel stack isolation                                   │
+                                                                │
+Phase 19: Binary Compat Expansion ◄── needs 15, 17, 18        │
+  19.1 Missing critical syscalls (epoll, eventfd, etc.)         │
+  19.2 /proc expansion                                          │
+  19.3 PTY (pseudo-terminals)                                   │
+  19.4 Linux syscall hardening                                  │
+  19.5 Win32 expansion (comctl32, winmm, etc.)                  │
+                                                                │
+Phase 20: Power & System Polish ◄── needs 14.1 (APIC)         │
+  20.1 ACPI sleep states (S1/S3)                                │
+  20.2 CPU idle states (C-states)                               │
+  20.3 Syslog / kernel log                                      │
+  20.4 Timezone support                                         │
+  20.5 Init system                                              │
+                                                                │
+Phase 21: Modules & FAT32 Write ◄── needs 16.4                │
+  21.1 Module format & loader                                   │
+  21.2 Kernel symbol table export                               │
+  21.3 Module management (insmod/rmmod/lsmod)                   │
+  21.4 Convert drivers to modules                               │
+  21.5 FAT32 write support                                      │
+```
 
-**Total: ~40-55 weeks of focused development**
+---
 
-After all 10 phases, ImposOS would sit comfortably in the **2005-2008 era** across all subsystems — roughly Linux 2.6 / Windows XP SP2 / Mac OS X Tiger level.
+## Estimated Timeline (Phases 12–21)
+
+| Phase | Effort | Era Jump |
+|-------|--------|----------|
+| 12 — I/O Mux & Shell Scripting | 3-4 weeks | Shell goes from ~1993 to ~2005 |
+| 13 — Image & Desktop Polish | 3-5 weeks | Desktop goes from ~2003 to ~2010 |
+| 14 — SMP | 6-8 weeks | Hardest phase — multi-core support |
+| 15 — Networking Maturity | 2-3 weeks | Networking goes from ~2005 to ~2012 |
+| 16 — USB Device Classes | 4-5 weeks | Functional USB devices at last |
+| 17 — Audio Expansion | 2-3 weeks | Real audio playback with mixing |
+| 18 — Security Hardening | 3-4 weeks | Basic exploit mitigations |
+| 19 — Binary Compat Expansion | 4-5 weeks | Run real-world Linux utilities |
+| 20 — Power & System Polish | 3-4 weeks | Proper init, logging, timezones |
+| 21 — Modules & FAT32 Write | 3-4 weeks | Modular kernel, USB interop |
+
+**Total: ~35-45 weeks of focused development**
+
+After all 21 phases, ImposOS would sit comfortably in the **~2013-2015 era** — roughly Linux 3.x / Windows 7 / Mac OS X Mavericks level across all subsystems.
+
+---
+
+## Combined Era Progression
+
+| Phases | Era | Comparable To |
+|--------|-----|---------------|
+| 1–5 | ~2000-2003 | Linux 2.4, Windows 2000 |
+| 6–11 | ~2005-2008 | Linux 2.6, Windows XP SP2, Mac OS X Tiger |
+| 12–16 | ~2008-2012 | Linux 2.6.30+, Windows Vista/7, Mac OS X Snow Leopard |
+| 17–21 | ~2012-2015 | Linux 3.x, Windows 7 SP1, Mac OS X Mavericks |
