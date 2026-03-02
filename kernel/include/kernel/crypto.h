@@ -63,6 +63,20 @@ void aes128_cbc_decrypt(const aes128_ctx_t *ctx,
                         const uint8_t *cipher, size_t len,
                         uint8_t *plain);
 
+/* GCM mode — AEAD: authenticated encryption with associated data.
+ * nonce must be 12 bytes. tag is 16 bytes.
+ * Returns 0 on success, -1 on bad params, -2 on auth failure (decrypt). */
+int aes128_gcm_encrypt(const aes128_ctx_t *ctx,
+                       const uint8_t *nonce, size_t nonce_len,
+                       const uint8_t *aad, size_t aad_len,
+                       const uint8_t *plain, size_t plain_len,
+                       uint8_t *cipher, uint8_t tag[16]);
+int aes128_gcm_decrypt(const aes128_ctx_t *ctx,
+                       const uint8_t *nonce, size_t nonce_len,
+                       const uint8_t *aad, size_t aad_len,
+                       const uint8_t *cipher, size_t cipher_len,
+                       uint8_t *plain, const uint8_t tag[16]);
+
 /* ── Big-number (2048-bit) ───────────────────────────────────── */
 
 #define BN_WORDS 64   /* 64 × 32 = 2048 bits */
@@ -97,9 +111,15 @@ int rsa_encrypt(const rsa_pubkey_t *key,
 
 /* ── ASN.1 / X.509 ──────────────────────────────────────────── */
 
+#include <kernel/ec.h>
+
 /* Extract RSA public key from a DER-encoded X.509 certificate */
 int asn1_extract_rsa_pubkey(const uint8_t *cert, size_t cert_len,
                             rsa_pubkey_t *key);
+
+/* Extract EC (P-256) public key from a DER-encoded X.509 certificate */
+int asn1_extract_ec_pubkey(const uint8_t *cert, size_t cert_len,
+                            ec_point_t *pubkey);
 
 /* ── CSPRNG ──────────────────────────────────────────────────── */
 

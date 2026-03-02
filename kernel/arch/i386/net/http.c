@@ -22,7 +22,9 @@ void http_set_verbose(int v) { http_verbose = v; }
 
 static const char *tls_cipher_name(uint16_t suite) {
     switch (suite) {
+        case 0xC02B: return "ECDHE-ECDSA-AES128-GCM-SHA256";
         case 0xC027: return "ECDHE-RSA-AES128-CBC-SHA256";
+        case 0x009C: return "RSA-AES128-GCM-SHA256";
         case 0x003C: return "RSA-AES128-CBC-SHA256";
         default:     return "unknown";
     }

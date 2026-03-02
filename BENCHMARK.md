@@ -7,17 +7,17 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 
 | Metric | Value |
 |--------|-------|
-| Total source (kernel + libc) | ~147K LOC |
+| Total source (kernel + libc) | ~148K LOC |
 | Kernel + libc (excluding DOOM) | ~79K LOC |
 | Kernel binary size | 4,975,408 bytes (~4.7 MB) |
 | GUI subsystem | 15,701 LOC (42 files) |
 | GPU pipeline (drivers + compositor) | 4,147 LOC (7 files) |
-| Networking stack | 3,561 LOC (12 files) |
-| Cryptography | 1,354 LOC (8 files) |
+| Networking stack | 3,652 LOC (12 files) |
+| Cryptography | 1,571 LOC (8 files) |
 | Binary compat (PE + ELF + Win32 DLLs) | 14,658 LOC |
 | Filesystem + VFS + journal | 3,418 LOC |
 | Shell | 5,282 LOC (64 commands) |
-| Test suite | 4,598 LOC (1100+ tests) |
+| Test suite | 4,715 LOC (1146 tests) |
 | DOOM port | 57,327 LOC |
 
 ## Memory
@@ -114,7 +114,7 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 | Max sockets | 16 | `MAX_SOCKETS` |
 | Firewall rules | 16 max, first-match-wins | `FW_MAX_RULES` |
 | TLS version | 1.2 | `tls.c` |
-| TLS cipher suite | RSA-AES128-CBC-SHA256 | `tls.c` |
+| TLS cipher suites | ECDHE-ECDSA-AES128-GCM-SHA256, ECDHE-RSA-AES128-CBC-SHA256, RSA-AES128-GCM-SHA256, RSA-AES128-CBC-SHA256 | `tls.c` |
 | HTTP client | GET + redirect following (5 max) | `http.c` |
 | HTTP response limit | 1 MB | `http_get()` |
 | HTTP server | static response server | `httpd.c` |
@@ -135,12 +135,12 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 
 | Algorithm | Implementation | Source |
 |-----------|---------------|--------|
-| AES-128 | CBC mode, 16-byte blocks | `aes.c` (215 LOC) |
+| AES-128 | CBC + GCM modes, GHASH | `aes.c` (384 LOC) |
 | SHA-256 | Full NIST implementation | `sha256.c` (131 LOC) |
 | HMAC-SHA256 | RFC 2104 | `hmac.c` (88 LOC) |
 | RSA 2048-bit | PKCS#1 v1.5, bignum arithmetic | `rsa.c` + `bignum.c` (241 LOC) |
-| Elliptic curve | Point add, scalar multiply | `ec.c` (419 LOC) |
-| X.509 | ASN.1 DER parsing | `asn1.c` (175 LOC) |
+| Elliptic curve | P-256 ECDHE + ECDH key agreement | `ec.c` (416 LOC) |
+| X.509 | ASN.1 DER, RSA + EC public key extraction | `asn1.c` (226 LOC) |
 | CSPRNG | PIT + RTC + RDTSC seeded | `prng.c` (85 LOC) |
 
 ## Binary Compatibility

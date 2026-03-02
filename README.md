@@ -2,7 +2,7 @@
 
 A 32-bit x86 operating system built from scratch in C, featuring a full graphical desktop environment, GPU-accelerated compositing via VirtIO GPU 3D (virgl), a complete TCP/IP networking stack with TLS 1.2, a Unix-style filesystem, and Win32/Linux binary compatibility layers.
 
-~136K lines of kernel + libc code. Boots via GRUB multiboot, runs in QEMU or on bare metal.
+~148K lines of kernel + libc code. Boots via GRUB multiboot, runs in QEMU or on bare metal.
 
 ## Features
 
@@ -35,7 +35,7 @@ A 32-bit x86 operating system built from scratch in C, featuring a full graphica
 - **L4**: TCP (reliable streams), UDP (datagrams)
 - **L5-7**: DHCP client, DNS resolver, HTTP server, HTTP client (`wget`), TLS 1.2 (HTTPS)
 - **HTTP client**: GET with redirect following (301/302/303/307/308), verbose mode, HTTPS support
-- **TLS 1.2**: RSA-AES128-CBC-SHA256, X.509 certificate parsing, full handshake
+- **TLS 1.2**: ECDHE-ECDSA-AES128-GCM-SHA256, ECDHE-RSA, RSA-GCM, RSA-CBC cipher suites; RSA + EC certificate parsing
 - **BSD socket API**: socket, bind, listen, connect, send, recv
 - **Stateless firewall**: 16 rules, first-match-wins
 
@@ -95,13 +95,14 @@ SEH (Structured Exception Handling) support included.
 - Dynamic linking: PT_INTERP interpreter loading, auxiliary vector, file-backed mmap
 
 ### Cryptography
-- AES-128 (CBC mode)
+- AES-128 (CBC + GCM modes, GHASH)
 - SHA-256, HMAC-SHA256
 - RSA 2048-bit (PKCS#1 v1.5, via bignum arithmetic)
-- Elliptic curve operations (point add, scalar multiply)
-- ASN.1/X.509 certificate parsing
+- P-256 elliptic curve (ECDHE key exchange, ECDH shared secret agreement)
+- ASN.1/X.509 certificate parsing (RSA + EC public keys)
 - CSPRNG (seeded from PIT + RTC + RDTSC)
 - TLS 1.2 PRF (P_SHA256 key derivation)
+- 4 TLS cipher suites: ECDHE-ECDSA-AES128-GCM-SHA256, ECDHE-RSA-AES128-CBC-SHA256, RSA-AES128-GCM-SHA256, RSA-AES128-CBC-SHA256
 
 ### Shell
 64 built-in commands with pipe support (`cmd1 | cmd2`):
@@ -127,7 +128,7 @@ SEH (Structured Exception Handling) support included.
 - AC'97 audio subsystem with audio mixer
 - USB (UHCI host controller, device enumeration)
 - DOOM (full game port, 57K LOC)
-- Automated test suite (1100+ tests, `make test`)
+- Automated test suite (1146 tests, `make test`)
 
 ## Building
 
@@ -148,7 +149,7 @@ make run          # Run with VirtIO GPU (2D), 4GB RAM
 make run-gl       # Run with virgl 3D GPU acceleration
 make run-gl-sw    # Run with software GL (llvmpipe)
 make terminal     # Run in text-only mode (no GUI)
-make test         # Run automated test suite (headless, 1100+ tests)
+make test         # Run automated test suite (headless, 1146 tests)
 make clean        # Remove build artifacts
 ```
 

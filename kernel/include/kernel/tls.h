@@ -25,8 +25,10 @@
 #define TLS_VERSION_1_2  0x0303
 
 /* Cipher suites */
-#define TLS_RSA_AES128_CBC_SHA256      0x003C
-#define TLS_ECDHE_RSA_AES128_CBC_SHA256 0xC027
+#define TLS_RSA_AES128_CBC_SHA256           0x003C
+#define TLS_RSA_AES128_GCM_SHA256           0x009C
+#define TLS_ECDHE_RSA_AES128_CBC_SHA256     0xC027
+#define TLS_ECDHE_ECDSA_AES128_GCM_SHA256  0xC02B
 
 /* Max TLS record payload */
 #define TLS_MAX_RECORD   16384
@@ -59,6 +61,11 @@ typedef struct {
     uint64_t client_seq;
     uint64_t server_seq;
 
+    /* GCM implicit IVs (4 bytes each, combined with 8-byte explicit nonce) */
+    uint8_t  client_write_iv[4];
+    uint8_t  server_write_iv[4];
+    int      is_gcm;             /* 1 if using GCM cipher suite */
+
     /* Encryption active flags */
     int      client_encrypted;
     int      server_encrypted;
@@ -70,6 +77,10 @@ typedef struct {
 
     /* Server's RSA public key */
     rsa_pubkey_t server_key;
+
+    /* Server's EC public key (from ECDSA cert) */
+    ec_point_t server_ec_pubkey;
+    int        has_ec_cert;
 
     /* ECDHE state */
     uint16_t cipher_suite;           /* negotiated cipher */

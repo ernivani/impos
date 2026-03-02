@@ -212,9 +212,6 @@ void ec_fe_mul(ec_fe_t *r, const ec_fe_t *a, const ec_fe_t *b) {
         acc[i] += carry;
         r->d[i] = (uint32_t)(acc[i] & 0xFFFFFFFF);
         carry = acc[i] >> 32;
-        /* Sign-extend for negative values */
-        if (acc[i] < 0 && r->d[i] != 0)
-            carry--;
     }
 
     /* Final reduction: add/sub multiples of p until 0 <= r < p */
