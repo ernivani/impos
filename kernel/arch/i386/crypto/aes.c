@@ -1,6 +1,7 @@
 /* AES-128 — FIPS 197 */
 #include <kernel/crypto.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* S-box */
 static const uint8_t sbox[256] = {
@@ -212,4 +213,172 @@ void aes128_cbc_decrypt(const aes128_ctx_t *ctx,
             plain[off + i] = tmp[i] ^ prev[i];
         prev = cipher + off;
     }
+}
+
+/* ── AES-128-GCM ───────────────────────────────────────────────── */
+
+/* GF(2^128) multiplication for GHASH.
+ * Irreducible polynomial: x^128 + x^7 + x^2 + x + 1
+ * Inputs/outputs are 16-byte big-endian blocks. */
+static void ghash_mul(uint8_t *x, const uint8_t *y) {
+    uint8_t v[16], z[16];
+    memcpy(v, y, 16);
+    memset(z, 0, 16);
+
+    for (int i = 0; i < 128; i++) {
+        if (x[i / 8] & (0x80 >> (i % 8))) {
+            for (int j = 0; j < 16; j++)
+                z[j] ^= v[j];
+        }
+        /* Multiply v by x in GF(2^128): right-shift + conditional XOR */
+        int carry = v[15] & 1;
+        for (int j = 15; j > 0; j--)
+            v[j] = (v[j] >> 1) | (v[j - 1] << 7);
+        v[0] >>= 1;
+        if (carry)
+            v[0] ^= 0xe1;  /* reduction: x^128 = x^7 + x^2 + x + 1 */
+    }
+    memcpy(x, z, 16);
+}
+
+/* GHASH: hash data in 16-byte blocks using subkey H */
+static void ghash(const uint8_t h[16], const uint8_t *data, size_t len,
+                  uint8_t out[16]) {
+    memset(out, 0, 16);
+    for (size_t i = 0; i < len; i += 16) {
+        size_t blen = len - i;
+        if (blen > 16) blen = 16;
+        for (size_t j = 0; j < blen; j++)
+            out[j] ^= data[i + j];
+        ghash_mul(out, h);
+    }
+}
+
+/* Increment the last 4 bytes (32-bit big-endian counter) of a 16-byte block */
+static void gcm_inc32(uint8_t blk[16]) {
+    for (int i = 15; i >= 12; i--) {
+        if (++blk[i] != 0) break;
+    }
+}
+
+/* Store 64-bit big-endian */
+static void gcm_put_be64(uint8_t *p, uint64_t v) {
+    p[0] = (uint8_t)(v >> 56); p[1] = (uint8_t)(v >> 48);
+    p[2] = (uint8_t)(v >> 40); p[3] = (uint8_t)(v >> 32);
+    p[4] = (uint8_t)(v >> 24); p[5] = (uint8_t)(v >> 16);
+    p[6] = (uint8_t)(v >> 8);  p[7] = (uint8_t)v;
+}
+
+int aes128_gcm_encrypt(const aes128_ctx_t *ctx,
+                       const uint8_t *nonce, size_t nonce_len,
+                       const uint8_t *aad, size_t aad_len,
+                       const uint8_t *plain, size_t plain_len,
+                       uint8_t *cipher, uint8_t tag[16]) {
+    if (nonce_len != 12) return -1;  /* only 96-bit nonces */
+
+    /* H = AES(K, 0^128) — GHASH subkey */
+    uint8_t h[16] = {0};
+    aes128_encrypt_block(ctx, h, h);
+
+    /* J0 = nonce || 0x00000001 */
+    uint8_t j0[16] = {0};
+    memcpy(j0, nonce, 12);
+    j0[15] = 1;
+
+    /* CTR encryption starting from J0 + 1 */
+    uint8_t counter[16];
+    memcpy(counter, j0, 16);
+
+    for (size_t i = 0; i < plain_len; i += 16) {
+        gcm_inc32(counter);
+        uint8_t ks[16];
+        aes128_encrypt_block(ctx, counter, ks);
+        size_t blen = plain_len - i;
+        if (blen > 16) blen = 16;
+        for (size_t j = 0; j < blen; j++)
+            cipher[i + j] = plain[i + j] ^ ks[j];
+    }
+
+    /* GHASH over: pad(AAD) || pad(cipher) || len_A(8) || len_C(8) */
+    size_t aad_padded = ((aad_len + 15) / 16) * 16;
+    size_t ct_padded  = ((plain_len + 15) / 16) * 16;
+    size_t ghash_len  = aad_padded + ct_padded + 16;
+
+    uint8_t *ghash_buf = calloc(1, ghash_len);
+    if (!ghash_buf) return -1;
+    memcpy(ghash_buf, aad, aad_len);
+    memcpy(ghash_buf + aad_padded, cipher, plain_len);
+    gcm_put_be64(ghash_buf + ghash_len - 16, (uint64_t)aad_len * 8);
+    gcm_put_be64(ghash_buf + ghash_len - 8,  (uint64_t)plain_len * 8);
+
+    uint8_t s[16];
+    ghash(h, ghash_buf, ghash_len, s);
+    free(ghash_buf);
+
+    /* Tag = AES(K, J0) XOR S */
+    uint8_t enc_j0[16];
+    aes128_encrypt_block(ctx, j0, enc_j0);
+    for (int i = 0; i < 16; i++)
+        tag[i] = enc_j0[i] ^ s[i];
+
+    return 0;
+}
+
+int aes128_gcm_decrypt(const aes128_ctx_t *ctx,
+                       const uint8_t *nonce, size_t nonce_len,
+                       const uint8_t *aad, size_t aad_len,
+                       const uint8_t *cipher, size_t cipher_len,
+                       uint8_t *plain, const uint8_t tag[16]) {
+    if (nonce_len != 12) return -1;
+
+    /* H = AES(K, 0^128) */
+    uint8_t h[16] = {0};
+    aes128_encrypt_block(ctx, h, h);
+
+    /* J0 = nonce || 0x00000001 */
+    uint8_t j0[16] = {0};
+    memcpy(j0, nonce, 12);
+    j0[15] = 1;
+
+    /* Verify tag BEFORE decryption (authenticate-then-decrypt) */
+    size_t aad_padded = ((aad_len + 15) / 16) * 16;
+    size_t ct_padded  = ((cipher_len + 15) / 16) * 16;
+    size_t ghash_len  = aad_padded + ct_padded + 16;
+
+    uint8_t *ghash_buf = calloc(1, ghash_len);
+    if (!ghash_buf) return -1;
+    memcpy(ghash_buf, aad, aad_len);
+    memcpy(ghash_buf + aad_padded, cipher, cipher_len);
+    gcm_put_be64(ghash_buf + ghash_len - 16, (uint64_t)aad_len * 8);
+    gcm_put_be64(ghash_buf + ghash_len - 8,  (uint64_t)cipher_len * 8);
+
+    uint8_t s[16];
+    ghash(h, ghash_buf, ghash_len, s);
+    free(ghash_buf);
+
+    uint8_t enc_j0[16];
+    aes128_encrypt_block(ctx, j0, enc_j0);
+
+    uint8_t computed_tag[16];
+    for (int i = 0; i < 16; i++)
+        computed_tag[i] = enc_j0[i] ^ s[i];
+
+    if (memcmp(computed_tag, tag, 16) != 0)
+        return -2;  /* authentication failed */
+
+    /* CTR decryption (same as encryption — CTR is symmetric) */
+    uint8_t counter[16];
+    memcpy(counter, j0, 16);
+
+    for (size_t i = 0; i < cipher_len; i += 16) {
+        gcm_inc32(counter);
+        uint8_t ks[16];
+        aes128_encrypt_block(ctx, counter, ks);
+        size_t blen = cipher_len - i;
+        if (blen > 16) blen = 16;
+        for (size_t j = 0; j < blen; j++)
+            plain[i + j] = cipher[i + j] ^ ks[j];
+    }
+
+    return 0;
 }

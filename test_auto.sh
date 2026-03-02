@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-TIMEOUT=120
+TIMEOUT=180
 BUILD=1
 LOG_FILE="test_output.log"
 
@@ -100,7 +100,7 @@ fi
 
 echo "$RESULTS_LINE"
 
-# Known failures in headless mode (no GPU)
+# Known failures in headless mode (no GPU) and external service tests
 KNOWN_HEADLESS=(
     "gfx is active"
     "gfx width > 0"
@@ -111,6 +111,9 @@ KNOWN_HEADLESS=(
     "GFX_RGB white"
     "GFX_RGB red"
     "GFX_RGB green"
+    "http: GET https://google.com succeeds"
+    "http: google.com status"
+    "http: google.com body"
 )
 
 # Print any FAIL lines, filtering out known headless failures

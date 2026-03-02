@@ -1,5 +1,6 @@
-/* Minimal ASN.1 DER parser — extract RSA public key from X.509 cert */
+/* ASN.1 DER parser — extract RSA/EC public key from X.509 cert */
 #include <kernel/crypto.h>
+#include <kernel/ec.h>
 #include <kernel/io.h>
 #include <string.h>
 
@@ -48,9 +49,9 @@ static const uint8_t *der_skip(const uint8_t *p, const uint8_t *end) {
     return p + len;
 }
 
-/* Find SubjectPublicKeyInfo containing rsaEncryption OID */
-static const uint8_t *find_rsa_spki(const uint8_t *cert, size_t cert_len,
-                                     size_t *spki_len) {
+/* Find SubjectPublicKeyInfo in an X.509 certificate (key-type-agnostic) */
+static const uint8_t *find_spki(const uint8_t *cert, size_t cert_len,
+                                 size_t *spki_len) {
     const uint8_t *p = cert;
     const uint8_t *end = cert + cert_len;
     uint8_t tag;
@@ -162,7 +163,7 @@ static int parse_rsa_pubkey(const uint8_t *spki, size_t spki_len,
 int asn1_extract_rsa_pubkey(const uint8_t *cert, size_t cert_len,
                             rsa_pubkey_t *key) {
     size_t spki_len;
-    const uint8_t *spki = find_rsa_spki(cert, cert_len, &spki_len);
+    const uint8_t *spki = find_spki(cert, cert_len, &spki_len);
     if (!spki) {
         DBG("asn1: failed to find SPKI in certificate");
         return -1;
@@ -172,4 +173,54 @@ int asn1_extract_rsa_pubkey(const uint8_t *cert, size_t cert_len,
         DBG("asn1: failed to parse RSA pubkey (%d)", ret);
     }
     return ret;
+}
+
+/* OID for ecPublicKey: 1.2.840.10045.2.1 */
+static const uint8_t oid_ec_pubkey[] = {
+    0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01
+};
+
+int asn1_extract_ec_pubkey(const uint8_t *cert, size_t cert_len,
+                            ec_point_t *pubkey) {
+    size_t spki_len;
+    const uint8_t *spki = find_spki(cert, cert_len, &spki_len);
+    if (!spki) {
+        DBG("asn1: failed to find SPKI in certificate");
+        return -1;
+    }
+
+    const uint8_t *p = spki;
+    const uint8_t *end = spki + spki_len;
+    uint8_t tag;
+    size_t len;
+
+    /* AlgorithmIdentifier SEQUENCE */
+    p = der_read_tl(p, end, &tag, &len);
+    if (!p || tag != ASN1_SEQUENCE) return -1;
+    const uint8_t *alg_end = p + len;
+
+    /* Check OID is ecPublicKey */
+    p = der_read_tl(p, alg_end, &tag, &len);
+    if (!p || tag != ASN1_OID) return -1;
+    if (len != sizeof(oid_ec_pubkey) || memcmp(p, oid_ec_pubkey, len) != 0)
+        return -2;  /* Not EC */
+    p = alg_end;  /* skip past AlgorithmIdentifier */
+
+    /* BIT STRING containing the EC public key point */
+    p = der_read_tl(p, end, &tag, &len);
+    if (!p || tag != ASN1_BITSTRING) return -1;
+    if (len < 2 || *p != 0x00) return -1;  /* unused bits must be 0 */
+    p++; len--;  /* skip unused-bits byte */
+
+    /* Uncompressed point: 0x04 || x(32) || y(32) */
+    if (len != 65 || p[0] != 0x04) {
+        DBG("asn1: EC point not uncompressed or wrong size (%u)", (unsigned)len);
+        return -3;
+    }
+
+    ec_fe_from_bytes(&pubkey->x, p + 1, 32);
+    ec_fe_from_bytes(&pubkey->y, p + 33, 32);
+    pubkey->infinity = 0;
+
+    return 0;
 }

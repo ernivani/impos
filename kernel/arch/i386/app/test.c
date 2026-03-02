@@ -1028,6 +1028,45 @@ void test_crypto(void) {
         TEST_ASSERT(memcmp(plain, data, 32) == 0, "AES-CBC roundtrip");
     }
 
+    /* AES-128-GCM: NIST test case 3 (64-byte plaintext, no AAD)
+     * From: NIST SP 800-38D, test case 3 */
+    {
+        uint8_t key[] = {0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c,
+                         0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08};
+        uint8_t nonce[] = {0xca,0xfe,0xba,0xbe,0xfa,0xce,0xdb,0xad,
+                           0xde,0xca,0xf8,0x88};
+        uint8_t pt[] = {0xd9,0x31,0x32,0x25,0xf8,0x84,0x06,0xe5,
+                        0xa5,0x59,0x09,0xc5,0xaf,0xf5,0x26,0x9a,
+                        0x86,0xa7,0xa9,0x53,0x15,0x34,0xf7,0xda,
+                        0x2e,0x4c,0x30,0x3d,0x8a,0x31,0x8a,0x72,
+                        0x1c,0x3c,0x0c,0x95,0x95,0x68,0x09,0x53,
+                        0x2f,0xcf,0x0e,0x24,0x49,0xa6,0xb5,0x25,
+                        0xb1,0x6a,0xed,0xf5,0xaa,0x0d,0xe6,0x57,
+                        0xba,0x63,0x7b,0x39,0x1a,0xaf,0xd2,0x55};
+        uint8_t expected_tag[] = {0x4d,0x5c,0x2a,0xf3,0x27,0xcd,0x64,0xa6,
+                                  0x2c,0xf3,0x5a,0xbd,0x2b,0xa6,0xfa,0xb4};
+
+        aes128_ctx_t ctx;
+        aes128_init(&ctx, key);
+        uint8_t ct[64], tag[16], dec[64];
+
+        int rc_enc = aes128_gcm_encrypt(&ctx, nonce, 12, NULL, 0,
+                                         pt, 64, ct, tag);
+        TEST_ASSERT(rc_enc == 0, "AES-GCM encrypt succeeds");
+        TEST_ASSERT(memcmp(tag, expected_tag, 16) == 0, "AES-GCM tag matches NIST");
+
+        int rc_dec = aes128_gcm_decrypt(&ctx, nonce, 12, NULL, 0,
+                                         ct, 64, dec, tag);
+        TEST_ASSERT(rc_dec == 0, "AES-GCM decrypt succeeds");
+        TEST_ASSERT(memcmp(dec, pt, 64) == 0, "AES-GCM roundtrip matches");
+
+        /* Tamper test: flip a ciphertext byte, should fail auth */
+        ct[0] ^= 0x01;
+        int rc_tamper = aes128_gcm_decrypt(&ctx, nonce, 12, NULL, 0,
+                                            ct, 64, dec, tag);
+        TEST_ASSERT(rc_tamper == -2, "AES-GCM rejects tampered ciphertext");
+    }
+
     /* Bignum: 3^10 mod 7 = 4 */
     {
         bignum_t base, exp, mod, result;
@@ -1087,6 +1126,50 @@ void test_crypto(void) {
         bn_modexp(&result, &base, &exp, &m);
         /* (m-1)^2 mod m = (-1)^2 mod m = 1 */
         TEST_ASSERT(result.d[0] == 1 && result.top == 1, "modexp (m-1)^2 mod m = 1");
+    }
+
+    /* P-256: 2*G via scalar_mul must match point_double(G) */
+    {
+        ec_point_t g, dbl, mul;
+        ec_get_generator(&g);
+        ec_point_double(&dbl, &g);
+
+        uint8_t k[32];
+        memset(k, 0, 32);
+        k[31] = 2; /* k = 2, big-endian */
+        ec_scalar_mul(&mul, k, 32, &g);
+
+        TEST_ASSERT(memcmp(&dbl.x, &mul.x, sizeof(ec_fe_t)) == 0, "P256 2*G x matches double");
+        TEST_ASSERT(memcmp(&dbl.y, &mul.y, sizeof(ec_fe_t)) == 0, "P256 2*G y matches double");
+    }
+
+    /* P-256 NIST known-answer: k=1 => k*G == G */
+    {
+        ec_point_t g, res;
+        ec_get_generator(&g);
+        uint8_t k[32];
+        memset(k, 0, 32);
+        k[31] = 1; /* k = 1 */
+        ec_scalar_mul(&res, k, 32, &g);
+        TEST_ASSERT(memcmp(&res.x, &g.x, sizeof(ec_fe_t)) == 0, "P256 1*G == G (x)");
+        TEST_ASSERT(memcmp(&res.y, &g.y, sizeof(ec_fe_t)) == 0, "P256 1*G == G (y)");
+    }
+
+    /* ECDH roundtrip: privA*pubB == privB*pubA */
+    {
+        uint8_t privA[32], privB[32];
+        ec_point_t pubA, pubB;
+        ec_generate_keypair(privA, &pubA);
+        ec_generate_keypair(privB, &pubB);
+
+        ec_fe_t sharedAB, sharedBA;
+        ec_compute_shared(&sharedAB, privA, &pubB);
+        ec_compute_shared(&sharedBA, privB, &pubA);
+
+        uint8_t sAB[32], sBA[32];
+        ec_fe_to_bytes(&sharedAB, sAB);
+        ec_fe_to_bytes(&sharedBA, sBA);
+        TEST_ASSERT(memcmp(sAB, sBA, 32) == 0, "ECDH shared secret agreement");
     }
 
     /* PRNG: should produce non-zero, non-identical output */
@@ -1250,6 +1333,40 @@ static void test_http(void) {
             http_response_free(&resp);
         } else {
             printf("  HTTPS GET failed: error %d (check serial for TLS diag)\n", rc);
+        }
+    }
+
+    /* HTTPS GET google.com (requires GCM — Google rejects CBC ciphers) */
+    {
+        http_response_t resp;
+        int rc = http_get("https://google.com", &resp);
+        TEST_ASSERT(rc == 0, "http: GET https://google.com succeeds");
+        if (rc == 0) {
+            /* Google typically redirects (301) to www.google.com, or returns 200.
+             * Our redirect-following should give us a final 200. */
+            TEST_ASSERT(resp.status_code == 200 || resp.status_code == 301,
+                        "http: google.com status 200 or 301");
+            TEST_ASSERT(resp.body_len > 0, "http: google.com body not empty");
+            printf("  HTTPS google.com: %d bytes, status %d\n",
+                   resp.body_len, resp.status_code);
+            http_response_free(&resp);
+        } else {
+            printf("  HTTPS google.com failed: error %d\n", rc);
+        }
+    }
+
+    /* HTTPS GET impin.fr — uses ECDSA cert, ECDHE-ECDSA-AES128-GCM-SHA256 */
+    {
+        http_response_t resp;
+        int rc = http_get("https://impin.fr", &resp);
+        TEST_ASSERT(rc == 0, "http: GET https://impin.fr succeeds");
+        if (rc == 0) {
+            TEST_ASSERT(resp.body_len > 0, "http: impin.fr body");
+            printf("  HTTPS impin.fr: %d bytes, status %d\n",
+                   resp.body_len, resp.status_code);
+            http_response_free(&resp);
+        } else {
+            printf("  HTTPS impin.fr failed: error %d\n", rc);
         }
     }
 }

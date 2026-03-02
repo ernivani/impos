@@ -68,7 +68,50 @@ static int tls_send_record(tls_conn_t *conn, uint8_t type,
         return 0;
     }
 
-    /* Encrypted record: MAC-then-encrypt (AES-128-CBC + HMAC-SHA-256) */
+    if (conn->is_gcm) {
+        /* GCM: nonce = implicit_iv(4) || explicit_nonce(8)
+         * explicit_nonce = sequence number (big-endian)
+         * AAD = seq(8) + type(1) + version(2) + length(2) = 13 bytes
+         * Record = explicit_nonce(8) + ciphertext + tag(16) */
+        uint8_t nonce[12];
+        memcpy(nonce, conn->client_write_iv, 4);
+        put_be64(nonce + 4, conn->client_seq);
+
+        uint8_t aad[13];
+        put_be64(aad, conn->client_seq);
+        aad[8] = type;
+        put_be16(aad + 9, TLS_VERSION_1_2);
+        put_be16(aad + 11, (uint16_t)len);
+
+        uint8_t *cipher = malloc(len);
+        if (!cipher) return -1;
+        uint8_t tag[16];
+        if (aes128_gcm_encrypt(&conn->client_aes, nonce, 12,
+                                aad, 13, data, len, cipher, tag) < 0) {
+            free(cipher);
+            return -1;
+        }
+
+        conn->client_seq++;
+
+        /* Record: hdr(5) + explicit_nonce(8) + ciphertext(len) + tag(16) */
+        size_t record_len = 8 + len + 16;
+        uint8_t hdr[5];
+        hdr[0] = type;
+        put_be16(hdr + 1, TLS_VERSION_1_2);
+        put_be16(hdr + 3, (uint16_t)record_len);
+
+        int ret = 0;
+        if (socket_send(conn->sock_fd, hdr, 5) < 0) ret = -1;
+        if (ret == 0 && socket_send(conn->sock_fd, nonce + 4, 8) < 0) ret = -1;
+        if (ret == 0 && len > 0 && socket_send(conn->sock_fd, cipher, len) < 0) ret = -1;
+        if (ret == 0 && socket_send(conn->sock_fd, tag, 16) < 0) ret = -1;
+
+        free(cipher);
+        return ret;
+    }
+
+    /* CBC: MAC-then-encrypt (AES-128-CBC + HMAC-SHA-256) */
 
     /* Compute MAC over: seq_num(8) || type(1) || version(2) || length(2) || data */
     uint8_t mac_input[13];
@@ -78,7 +121,6 @@ static int tls_send_record(tls_conn_t *conn, uint8_t type,
     put_be16(mac_input + 11, (uint16_t)len);
 
     sha256_ctx_t hmac_h;
-    /* Manual HMAC to handle two-part data (header + body) */
     uint8_t k_ipad[SHA256_BLOCK_SIZE], k_opad[SHA256_BLOCK_SIZE];
     memset(k_ipad, 0x36, SHA256_BLOCK_SIZE);
     memset(k_opad, 0x5c, SHA256_BLOCK_SIZE);
@@ -102,8 +144,7 @@ static int tls_send_record(tls_conn_t *conn, uint8_t type,
 
     conn->client_seq++;
 
-    /* Build plaintext = data || mac || padding */
-    size_t payload_len = len + 32;  /* data + MAC */
+    size_t payload_len = len + 32;
     size_t pad_needed = AES_BLOCK_SIZE - (payload_len % AES_BLOCK_SIZE);
     if (pad_needed == 0) pad_needed = AES_BLOCK_SIZE;
     size_t total = payload_len + pad_needed;
@@ -115,26 +156,19 @@ static int tls_send_record(tls_conn_t *conn, uint8_t type,
     uint8_t pad_byte = (uint8_t)(pad_needed - 1);
     memset(plain + payload_len, pad_byte, pad_needed);
 
-    /* Generate random IV */
     uint8_t iv[AES_BLOCK_SIZE];
     prng_random(iv, AES_BLOCK_SIZE);
 
-    /* Encrypt */
     uint8_t *cipher = malloc(total);
     if (!cipher) { free(plain); return -1; }
     aes128_cbc_encrypt(&conn->client_aes, iv, plain, total, cipher);
     free(plain);
 
-    /* Send record: hdr(5) + IV(16) + cipher */
     size_t record_len = AES_BLOCK_SIZE + total;
     uint8_t hdr[5];
     hdr[0] = type;
     put_be16(hdr + 1, TLS_VERSION_1_2);
     put_be16(hdr + 3, (uint16_t)record_len);
-
-    DBG("tls: enc record type=%d plain_len=%u pad=%u cipher_len=%u rec_len=%u seq=%u",
-        type, (unsigned)len, (unsigned)pad_needed, (unsigned)total,
-        (unsigned)record_len, (unsigned)conn->client_seq);
 
     int ret = 0;
     if (socket_send(conn->sock_fd, hdr, 5) < 0) ret = -1;
@@ -179,7 +213,43 @@ static int tls_recv_record(tls_conn_t *conn, uint8_t *out_type,
         return 0;
     }
 
-    /* Decrypt: IV(16) + ciphertext */
+    if (conn->is_gcm) {
+        /* GCM: explicit_nonce(8) + ciphertext + tag(16) */
+        if (rec_len < 8 + 16) { free(rec); return -1; }
+
+        const uint8_t *explicit_nonce = rec;
+        const uint8_t *cipher = rec + 8;
+        size_t ct_len = rec_len - 8 - 16;
+        const uint8_t *tag = rec + 8 + ct_len;
+
+        if (ct_len > buf_size) { free(rec); return -1; }
+
+        /* Nonce = implicit_iv(4) || explicit_nonce(8) */
+        uint8_t nonce[12];
+        memcpy(nonce, conn->server_write_iv, 4);
+        memcpy(nonce + 4, explicit_nonce, 8);
+
+        /* AAD = seq(8) + type(1) + version(2) + length(2) */
+        uint8_t aad[13];
+        put_be64(aad, conn->server_seq);
+        aad[8] = *out_type;
+        put_be16(aad + 9, TLS_VERSION_1_2);
+        put_be16(aad + 11, (uint16_t)ct_len);
+
+        int rc = aes128_gcm_decrypt(&conn->server_aes, nonce, 12,
+                                     aad, 13, cipher, ct_len, buf, tag);
+        free(rec);
+        if (rc < 0) {
+            DBG("tls: GCM authentication failed!");
+            return -1;
+        }
+
+        conn->server_seq++;
+        *out_len = ct_len;
+        return 0;
+    }
+
+    /* CBC: IV(16) + ciphertext */
     if (rec_len < AES_BLOCK_SIZE + AES_BLOCK_SIZE) {
         free(rec);
         return -1;
@@ -199,7 +269,6 @@ static int tls_recv_record(tls_conn_t *conn, uint8_t *out_type,
     aes128_cbc_decrypt(&conn->server_aes, iv, cipher, cipher_len, plain);
     free(rec);
 
-    /* Remove padding */
     uint8_t pad_byte = plain[cipher_len - 1];
     size_t pad_len = (size_t)pad_byte + 1;
     if (pad_len > cipher_len || pad_len > AES_BLOCK_SIZE) {
@@ -207,7 +276,7 @@ static int tls_recv_record(tls_conn_t *conn, uint8_t *out_type,
         return -1;
     }
 
-    size_t content_len = cipher_len - pad_len - 32; /* minus padding and MAC */
+    size_t content_len = cipher_len - pad_len - 32;
     if (content_len > buf_size) {
         free(plain);
         return -1;
@@ -220,7 +289,6 @@ static int tls_recv_record(tls_conn_t *conn, uint8_t *out_type,
     put_be16(mac_input + 9, TLS_VERSION_1_2);
     put_be16(mac_input + 11, (uint16_t)content_len);
 
-    /* HMAC(server_write_mac_key, mac_input || content) */
     uint8_t k_ipad[SHA256_BLOCK_SIZE], k_opad[SHA256_BLOCK_SIZE];
     memset(k_ipad, 0x36, SHA256_BLOCK_SIZE);
     memset(k_opad, 0x5c, SHA256_BLOCK_SIZE);
@@ -332,18 +400,9 @@ static int tls_send_client_hello(tls_conn_t *conn, const char *hostname) {
     size_t extensions_len = sni_ext_len + sizeof(sig_algs) +
                             sizeof(sup_groups) + sizeof(ec_formats);
 
-    /* Cipher suites: RSA-AES128-CBC-SHA256 only.
-     * ECDHE-RSA-AES128-CBC-SHA256 (0xC027) is disabled due to a bug in the
-     * EC shared secret computation — the server replies with decode_error
-     * (alert 50) after receiving our encrypted Finished message.  The ECDHE
-     * handshake completes up to key derivation, but the derived keys are
-     * wrong because ec_compute_shared() produces an incorrect shared secret.
-     * TODO: fix secp256r1 scalar multiplication in ec.c, then restore:
-     *   size_t cipher_len = 4;
-     *   put_be16(p, TLS_ECDHE_RSA_AES128_CBC_SHA256); p += 2;
-     *   put_be16(p, TLS_RSA_AES128_CBC_SHA256);       p += 2;
-     */
-    size_t cipher_len = 2; /* 1 cipher suite × 2 bytes */
+    /* Cipher suites: ECDHE-ECDSA first (for ECDSA servers like impin.fr),
+     * then ECDHE-RSA, then RSA-only GCM/CBC fallback. */
+    size_t cipher_len = 8; /* 4 cipher suites × 2 bytes */
     size_t body_len = 2 + 32 + 1 + 2 + cipher_len + 1 + 1 + 2 + extensions_len;
     uint8_t *body = malloc(body_len);
     if (!body) return -1;
@@ -358,9 +417,12 @@ static int tls_send_client_hello(tls_conn_t *conn, const char *hostname) {
     /* Session ID (empty) */
     *p++ = 0;
 
-    /* Cipher suites (see comment above) */
+    /* Cipher suites */
     put_be16(p, (uint16_t)cipher_len); p += 2;
-    put_be16(p, TLS_RSA_AES128_CBC_SHA256); p += 2;
+    put_be16(p, TLS_ECDHE_ECDSA_AES128_GCM_SHA256); p += 2;
+    put_be16(p, TLS_ECDHE_RSA_AES128_CBC_SHA256);    p += 2;
+    put_be16(p, TLS_RSA_AES128_GCM_SHA256);          p += 2;
+    put_be16(p, TLS_RSA_AES128_CBC_SHA256);           p += 2;
 
     /* Compression methods: null only */
     *p++ = 1;
@@ -438,8 +500,10 @@ static int tls_recv_server_hello(tls_conn_t *conn) {
                 size_t off = 35 + sid_len;
                 if (off + 3 > hs_len) { free(buf); return -1; }
                 uint16_t cipher = get_be16(hs_body + off);
-                if (cipher != TLS_RSA_AES128_CBC_SHA256 &&
-                    cipher != TLS_ECDHE_RSA_AES128_CBC_SHA256) {
+                if (cipher != TLS_RSA_AES128_GCM_SHA256 &&
+                    cipher != TLS_RSA_AES128_CBC_SHA256 &&
+                    cipher != TLS_ECDHE_RSA_AES128_CBC_SHA256 &&
+                    cipher != TLS_ECDHE_ECDSA_AES128_GCM_SHA256) {
                     DBG("tls: server chose unsupported cipher 0x%x", cipher);
                     free(buf);
                     return -1;
@@ -463,13 +527,18 @@ static int tls_recv_server_hello(tls_conn_t *conn) {
 
                 DBG("tls: Certificate length=%u", cert_len);
 
-                /* Extract RSA public key */
-                if (asn1_extract_rsa_pubkey(cp, cert_len, &conn->server_key) < 0) {
-                    DBG("tls: failed to extract RSA pubkey from cert");
+                /* Try RSA first, then EC */
+                if (asn1_extract_rsa_pubkey(cp, cert_len, &conn->server_key) == 0) {
+                    conn->has_ec_cert = 0;
+                    DBG("tls: RSA key extracted, n_bytes=%u", (unsigned)conn->server_key.n_bytes);
+                } else if (asn1_extract_ec_pubkey(cp, cert_len, &conn->server_ec_pubkey) == 0) {
+                    conn->has_ec_cert = 1;
+                    DBG("tls: EC key extracted from cert");
+                } else {
+                    DBG("tls: failed to extract key from cert");
                     free(buf);
                     return -1;
                 }
-                DBG("tls: RSA key extracted, n_bytes=%u", (unsigned)conn->server_key.n_bytes);
                 got_cert = 1;
                 break;
             }
@@ -534,7 +603,9 @@ static int tls_recv_server_hello(tls_conn_t *conn) {
         return -1;
     }
     /* ECDHE requires ServerKeyExchange */
-    if (conn->cipher_suite == TLS_ECDHE_RSA_AES128_CBC_SHA256 && !got_ske) {
+    int is_ecdhe = (conn->cipher_suite == TLS_ECDHE_RSA_AES128_CBC_SHA256 ||
+                    conn->cipher_suite == TLS_ECDHE_ECDSA_AES128_GCM_SHA256);
+    if (is_ecdhe && !got_ske) {
         DBG("tls: ECDHE cipher but no ServerKeyExchange");
         return -1;
     }
@@ -545,7 +616,8 @@ static int tls_recv_server_hello(tls_conn_t *conn) {
 static int tls_send_client_finish(tls_conn_t *conn) {
     uint8_t pms[48];
 
-    if (conn->cipher_suite == TLS_ECDHE_RSA_AES128_CBC_SHA256) {
+    if (conn->cipher_suite == TLS_ECDHE_RSA_AES128_CBC_SHA256 ||
+        conn->cipher_suite == TLS_ECDHE_ECDSA_AES128_GCM_SHA256) {
         /* ECDHE key exchange */
         DBG("tls: ECDHE key exchange");
 
@@ -624,34 +696,41 @@ static int tls_send_client_finish(tls_conn_t *conn) {
     }
 
     /* Derive key_block = PRF(master_secret, "key expansion", server_random + client_random)
-     * For TLS_RSA_WITH_AES_128_CBC_SHA256:
-     *   client_write_MAC_key (32) + server_write_MAC_key (32) +
-     *   client_write_key (16) + server_write_key (16) = 96 bytes */
+     *
+     * CBC (0x003C): MAC_key(32)*2 + write_key(16)*2 = 96 bytes
+     * GCM (0x009C): write_key(16)*2 + implicit_iv(4)*2 = 40 bytes (no MAC) */
+    conn->is_gcm = (conn->cipher_suite == TLS_RSA_AES128_GCM_SHA256 ||
+                    conn->cipher_suite == TLS_ECDHE_ECDSA_AES128_GCM_SHA256);
+
     uint8_t ks_seed[64];
     memcpy(ks_seed, conn->server_random, 32);
     memcpy(ks_seed + 32, conn->client_random, 32);
-    uint8_t key_block[96];
-    tls_prf(conn->master_secret, 48, "key expansion", ks_seed, 64,
-            key_block, 96);
 
-    memcpy(conn->client_write_mac_key, key_block, 32);
-    memcpy(conn->server_write_mac_key, key_block + 32, 32);
-    memcpy(conn->client_write_key, key_block + 64, 16);
-    memcpy(conn->server_write_key, key_block + 80, 16);
+    if (conn->is_gcm) {
+        uint8_t key_block[40];
+        tls_prf(conn->master_secret, 48, "key expansion", ks_seed, 64,
+                key_block, 40);
+        memcpy(conn->client_write_key, key_block, 16);
+        memcpy(conn->server_write_key, key_block + 16, 16);
+        memcpy(conn->client_write_iv, key_block + 32, 4);
+        memcpy(conn->server_write_iv, key_block + 36, 4);
+    } else {
+        uint8_t key_block[96];
+        tls_prf(conn->master_secret, 48, "key expansion", ks_seed, 64,
+                key_block, 96);
+        memcpy(conn->client_write_mac_key, key_block, 32);
+        memcpy(conn->server_write_mac_key, key_block + 32, 32);
+        memcpy(conn->client_write_key, key_block + 64, 16);
+        memcpy(conn->server_write_key, key_block + 80, 16);
+    }
 
     aes128_init(&conn->client_aes, conn->client_write_key);
     aes128_init(&conn->server_aes, conn->server_write_key);
 
-    DBG("tls: keys derived");
-    DBG("tls: master[0..3]=%x %x %x %x",
-        conn->master_secret[0], conn->master_secret[1],
-        conn->master_secret[2], conn->master_secret[3]);
+    DBG("tls: keys derived (mode=%s)", conn->is_gcm ? "GCM" : "CBC");
     DBG("tls: client_key[0..3]=%x %x %x %x",
         conn->client_write_key[0], conn->client_write_key[1],
         conn->client_write_key[2], conn->client_write_key[3]);
-    DBG("tls: client_mac[0..3]=%x %x %x %x",
-        conn->client_write_mac_key[0], conn->client_write_mac_key[1],
-        conn->client_write_mac_key[2], conn->client_write_mac_key[3]);
 
     /* Send ChangeCipherSpec */
     uint8_t ccs = 1;
