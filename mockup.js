@@ -928,7 +928,8 @@ function closeDrawer() {
 
 function createTile(app) {
   const tile = document.createElement('div');
-  tile.className = 'drawer-tile' + (app.pinned ? ' is-pinned' : '');
+  const isOpen = openWindows.some(w => w.appId === app.id);
+  tile.className = 'drawer-tile' + (app.pinned ? ' is-pinned' : '') + (isOpen ? ' is-open' : '');
 
   const iconWrap = document.createElement('div');
   iconWrap.className = 'drawer-tile-icon';
@@ -1185,7 +1186,7 @@ document.addEventListener('click', () => closeContextMenu());
 
 document.addEventListener('contextmenu', (e) => {
   e.preventDefault();
-  if (drawerOpen || menuOpen) return;
+  if (drawerOpen || menuOpen || overviewOpen) return;
   if (e.clientY < 28) return;
   showContextMenu(e.clientX, e.clientY);
 });
@@ -1249,39 +1250,94 @@ overlay.addEventListener('click', () => {
 
 // Keyboard
 document.addEventListener('keydown', (e) => {
+  // Escape cascade: overview → radial → close top window → drawer
   if (e.key === 'Escape') {
     e.preventDefault();
     closeContextMenu();
+    if (overviewOpen) { closeOverview(); return; }
+    if (drawerOpen) { closeDrawer(); return; }
+    if (menuOpen) { closeMenu(); return; }
     if (openWindows.length > 0) {
       const top = openWindows[openWindows.length - 1];
       closeAppWindow(top.el);
       return;
     }
-    if (drawerOpen) { closeDrawer(); return; }
-    if (menuOpen) { closeMenu(); return; }
     return;
   }
 
   if (e.key === 'Tab') {
     e.preventDefault();
     closeContextMenu();
+    if (overviewOpen) closeOverview();
     if (drawerOpen) { closeDrawer(); return; }
     if (menuOpen) closeMenu();
     openDrawer('');
     return;
   }
 
+  // Ctrl+Space → direct to overview (check before drawerOpen bail)
+  if ((e.key === ' ' || e.code === 'Space') && e.ctrlKey
+      && document.activeElement?.tagName !== 'INPUT'
+      && document.activeElement?.tagName !== 'TEXTAREA') {
+    e.preventDefault();
+    closeContextMenu();
+    if (drawerOpen) closeDrawer();
+    if (menuOpen) closeMenu();
+    if (overviewOpen) { closeOverview(); return; }
+    if (openWindows.length > 0) openOverview();
+    return;
+  }
+
   if (drawerOpen) return;
 
+  // Space — radial toggle, or radial→overview if already open with windows
   if (e.key === ' ' && !e.ctrlKey && !e.metaKey && !e.altKey
       && document.activeElement?.tagName !== 'INPUT'
       && document.activeElement?.tagName !== 'TEXTAREA') {
     e.preventDefault();
     closeContextMenu();
-    if (menuOpen) { closeMenu(); return; }
+    if (overviewOpen) { closeOverview(); return; }
+    if (menuOpen) {
+      // Space while radial open: if windows exist → overview, else just close
+      if (openWindows.length > 0) {
+        closeMenu();
+        openOverview();
+      } else {
+        closeMenu();
+      }
+      return;
+    }
     openMenu(window.innerWidth / 2, window.innerHeight / 2);
     return;
   }
+
+  // Overview keyboard navigation
+  if (overviewOpen) {
+    const ovContainer = document.getElementById('overview');
+    const thumbEls = ovContainer._thumbEls || [];
+    const wins = ovContainer._wins || [];
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      overviewSelectedIdx = (overviewSelectedIdx + 1) % thumbEls.length;
+      thumbEls.forEach((t, i) => t.classList.toggle('selected', i === overviewSelectedIdx));
+      return;
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      overviewSelectedIdx = (overviewSelectedIdx - 1 + thumbEls.length) % thumbEls.length;
+      thumbEls.forEach((t, i) => t.classList.toggle('selected', i === overviewSelectedIdx));
+      return;
+    }
+    if (e.key === 'Enter' && overviewSelectedIdx >= 0 && overviewSelectedIdx < wins.length) {
+      const win = wins[overviewSelectedIdx];
+      if (win.minimized) restoreAppWindow(win);
+      else bringToFront(win.el);
+      closeOverview();
+      return;
+    }
+    return;
+  }
+
   if (!menuOpen || launchIdx >= 0) return;
 
   if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
@@ -1449,14 +1505,11 @@ function minimizeAppWindow(win) {
   if (!entry || entry.minimized) return;
   entry.minimized = true;
   updateMenubarWindows();
-  const mbBtn = document.querySelector(`.menubar-win-btn[data-app-id="${entry.appId}"]`);
-  if (mbBtn) {
-    const btnRect = mbBtn.getBoundingClientRect();
-    const winRect = win.getBoundingClientRect();
-    const targetX = btnRect.left + btnRect.width / 2 - winRect.width / 2;
-    const targetY = btnRect.top;
-    win.style.transform = `translate(${targetX - winRect.left}px, ${targetY - winRect.top}px) scale(0.05)`;
-  }
+  // Animate toward center-bottom of screen — clean "shrink to nothing" effect
+  const winRect = win.getBoundingClientRect();
+  const targetX = window.innerWidth / 2 - winRect.width / 2;
+  const targetY = window.innerHeight;
+  win.style.transform = `translate(${targetX - winRect.left}px, ${targetY - winRect.top}px) scale(0.05)`;
   win.classList.add('minimized');
 }
 
@@ -2184,7 +2237,10 @@ function closeOverview() {
   }, 250);
 }
 
-// Overview overlay click to close
+// Overview overlay + empty space click to close
 document.getElementById('overview-overlay').addEventListener('click', () => {
   if (overviewOpen) closeOverview();
+});
+document.getElementById('overview').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('overview') && overviewOpen) closeOverview();
 });
