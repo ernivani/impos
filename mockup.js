@@ -8,13 +8,28 @@
   svgWrap.className = 'lg-svg-filters';
   svgWrap.innerHTML = `
     <svg xmlns="http://www.w3.org/2000/svg">
-      <filter id="lensFilter" x="0%" y="0%" width="100%" height="100%" filterUnits="objectBoundingBox">
-        <feComponentTransfer in="SourceAlpha" result="alpha">
-          <feFuncA type="identity" />
+      <filter id="lensFilter" x="-5%" y="-5%" width="110%" height="110%" filterUnits="objectBoundingBox">
+        <!-- Procedural noise for organic glass surface -->
+        <feTurbulence type="fractalNoise" baseFrequency="0.015 0.012"
+          numOctaves="2" seed="3" result="noise"/>
+        <!-- Concentrate noise into lens-like spots via gamma curve -->
+        <feComponentTransfer in="noise" result="shaped">
+          <feFuncR type="gamma" amplitude="1" exponent="6" offset="0.5"/>
+          <feFuncG type="gamma" amplitude="1" exponent="6" offset="0.5"/>
         </feComponentTransfer>
-        <feGaussianBlur in="alpha" stdDeviation="50" result="blur" />
-        <feDisplacementMap in="SourceGraphic" in2="blur" scale="50"
-          xChannelSelector="A" yChannelSelector="A" />
+        <!-- Smooth the displacement map -->
+        <feGaussianBlur in="shaped" stdDeviation="5" result="softMap"/>
+        <!-- Specular highlights from the glass surface curvature -->
+        <feSpecularLighting in="softMap" surfaceScale="3" specularConstant="0.75"
+          specularExponent="80" lighting-color="white" result="specLight">
+          <fePointLight x="-150" y="-100" z="300"/>
+        </feSpecularLighting>
+        <!-- Displace source through the glass -->
+        <feDisplacementMap in="SourceGraphic" in2="softMap" scale="30"
+          xChannelSelector="R" yChannelSelector="G" result="refracted"/>
+        <!-- Blend subtle specular caustics over refracted image -->
+        <feComposite in="specLight" in2="refracted" operator="arithmetic"
+          k1="0" k2="0.12" k3="1" k4="0"/>
       </filter>
     </svg>`;
   document.body.appendChild(svgWrap);
@@ -608,7 +623,7 @@ function drawIcon(ix, iy, app, scale, alpha) {
     const gs = 28 * 2;
     rctx.drawImage(img, ix - gs / 2, iy - gs / 2, gs, gs);
   } else {
-    rctx.font = '700 32px -apple-system, BlinkMacSystemFont, sans-serif';
+    rctx.font = '700 32px Sora, sans-serif';
     rctx.fillStyle = 'rgba(255,255,255,0.9)';
     rctx.textAlign = 'center';
     rctx.textBaseline = 'middle';
@@ -687,7 +702,7 @@ function drawRadial() {
 
   rctx.textAlign = 'center';
   rctx.textBaseline = 'top';
-  rctx.font = '500 17px -apple-system, BlinkMacSystemFont, sans-serif';
+  rctx.font = '500 16px Sora, sans-serif';
   for (let i = 0; i < n; i++) {
     const a = sliceAngle(i);
     const lx = cx + Math.cos(a) * IR * 2;
@@ -711,7 +726,7 @@ function drawRadial() {
   rctx.textBaseline = 'middle';
 
   if (highlightIdx >= 0 && highlightIdx < n) {
-    rctx.font = '600 20px -apple-system, BlinkMacSystemFont, sans-serif';
+    rctx.font = '600 20px Sora, sans-serif';
     rctx.fillStyle = 'rgba(255,255,255,0.95)';
     rctx.fillText(ringItems[highlightIdx].label, cx, cy);
   } else {
@@ -726,7 +741,7 @@ function drawRadial() {
         rctx.fill();
       }
     }
-    rctx.font = (ch ? '500' : '400') + ' 11px -apple-system, BlinkMacSystemFont, sans-serif';
+    rctx.font = (ch ? '500' : '400') + ' 11px Sora, sans-serif';
     rctx.fillStyle = ch ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.2)';
     rctx.fillText('All apps', cx, cy + 20);
   }

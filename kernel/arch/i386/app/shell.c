@@ -29,7 +29,6 @@
 #include <kernel/signal.h>
 #include <kernel/shm.h>
 #include <kernel/rtc.h>
-#include <kernel/beep.h>
 #include <kernel/pe_loader.h>
 #include <kernel/elf_loader.h>
 #include <kernel/tls.h>
@@ -136,7 +135,6 @@ static void cmd_fps(int argc, char* argv[]);
 static void cmd_spawn(int argc, char* argv[]);
 static void cmd_shm(int argc, char* argv[]);
 static void cmd_ntpdate(int argc, char* argv[]);
-static void cmd_beep(int argc, char* argv[]);
 static void cmd_winget(int argc, char* argv[]);
 static void cmd_run(int argc, char* argv[]);
 static void cmd_petest(int argc, char* argv[]);
@@ -1049,21 +1047,6 @@ static command_t commands[] = {
         "    Contacts pool.ntp.org via UDP port 123 to obtain\n"
         "    the current time and updates the system clock.\n"
         "    Requires an active network connection.\n",
-        CMD_FLAG_ROOT
-    },
-    {
-        "beep", cmd_beep,
-        "Play a tone on the PC speaker",
-        "beep: beep [FREQ MS | startup | error | ok | notify]\n"
-        "    Play a tone on the PC speaker.\n",
-        "NAME\n"
-        "    beep - PC speaker tone generator\n\n"
-        "SYNOPSIS\n"
-        "    beep [FREQ DURATION_MS]\n"
-        "    beep startup|error|ok|notify\n\n"
-        "DESCRIPTION\n"
-        "    Plays a tone using PIT channel 2 and the PC speaker.\n"
-        "    With no arguments, plays a default 880Hz beep.\n",
         CMD_FLAG_ROOT
     },
     {
@@ -4654,24 +4637,6 @@ static void cmd_ntpdate(int argc, char* argv[]) {
     }
 }
 
-/* ═══ beep: PC speaker test ════════════════════════════════════ */
-
-static void cmd_beep(int argc, char* argv[]) {
-    if (argc >= 3) {
-        uint32_t freq = (uint32_t)atoi(argv[1]);
-        uint32_t dur  = (uint32_t)atoi(argv[2]);
-        if (freq > 0 && dur > 0) {
-            beep(freq, dur);
-            return;
-        }
-    }
-    if (argc == 2 && strcmp(argv[1], "startup") == 0) { beep_startup(); return; }
-    if (argc == 2 && strcmp(argv[1], "error") == 0)   { beep_error(); return; }
-    if (argc == 2 && strcmp(argv[1], "ok") == 0)      { beep_ok(); return; }
-    if (argc == 2 && strcmp(argv[1], "notify") == 0)   { beep_notify(); return; }
-    /* Default beep */
-    beep(880, 150);
-}
 
 static void cmd_run(int argc, char* argv[]) {
     if (argc < 2) {

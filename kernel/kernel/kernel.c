@@ -28,6 +28,7 @@
 #include <kernel/crypto.h>
 #include <kernel/io.h>
 #include <kernel/drm.h>
+#include <kernel/ac97.h>
 #include <kernel/virtio_input.h>
 #include <kernel/test.h>
 #include <kernel/user.h>
@@ -541,6 +542,9 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Initialize DRM subsystem (GPU ioctl interface) */
     drm_init();
+
+    /* Initialize AC'97 audio (silent if no device present) */
+    ac97_initialize();
 
     if (autotest_mode) {
         /* Automated test mode: serial console, no login, run tests, shutdown */
