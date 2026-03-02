@@ -21,6 +21,10 @@
 #include <kernel/context_menu.h>
 #include <kernel/app.h>
 #include <kernel/anim.h>
+#include <kernel/notify.h>
+#include <kernel/systray.h>
+#include <kernel/pmm.h>
+#include <kernel/net.h>
 #include <kernel/settings_app.h>
 #include <kernel/terminal_app.h>
 #include <kernel/filemgr.h>
@@ -121,6 +125,30 @@ static void demo_paint(void)
     ui_window_damage_all(demo_id);
 }
 
+/* ── Systray update callbacks ─────────────────────────────────── */
+
+static void systray_mem_update(int idx, char *out, uint32_t *color) {
+    (void)idx;
+    uint32_t free_frames = pmm_free_frame_count();
+    uint32_t free_mb = free_frames * 4 / 1024;
+    uint32_t used_pct = (free_mb >= 256) ? 0 : 100 - (free_mb * 100 / 256);
+    out[0] = '0' + (used_pct / 10) % 10;
+    out[1] = '0' + used_pct % 10;
+    out[2] = '\0';
+    *color = (used_pct > 80) ? 0xFFF38BA8 :
+             (used_pct > 50) ? 0xFFFF9500 : 0xFFA6E3A1;
+}
+
+static void systray_net_update(int idx, char *out, uint32_t *color) {
+    (void)idx;
+    net_config_t *cfg = net_get_config();
+    int up = cfg ? cfg->link_up : 0;
+    out[0] = up ? 'N' : '-';
+    out[1] = up ? 't' : '-';
+    out[2] = '\0';
+    *color = up ? 0xFFA6E3A1 : 0xFF6C7086;
+}
+
 /* ── Init ───────────────────────────────────────────────────────── */
 
 void ui_shell_init(void)
@@ -155,6 +183,12 @@ void ui_shell_init(void)
     radial_init();
     drawer_init();
     ctx_menu_init();
+    notify_init();
+    systray_init();
+
+    /* Built-in tray items: memory usage + network status */
+    systray_register("Mm", "Memory", 0xFFA6E3A1, NULL, systray_mem_update);
+    systray_register("Nt", "Network", 0xFF6C7086, NULL, systray_net_update);
 
     /* Demo hint window */
     demo_id = ui_window_create(sw / 2 - 200, sh / 2 - 120,
@@ -228,6 +262,10 @@ int ui_shell_run(void)
                 }
                 if (!on_win) { ctx_menu_show(mx, my); consumed = 1; }
             }
+
+            /* Priority 3b: notifications (click to dismiss) */
+            if (!consumed)
+                consumed = notify_mouse(mx, my, btn_down, btn_up);
 
             /* Priority 4: menubar */
             if (!consumed)
@@ -377,6 +415,7 @@ int ui_shell_run(void)
                 radial_tick();
                 drawer_tick();
                 ctx_menu_tick();
+                notify_tick(now);
                 last_anim = now;
             }
         }

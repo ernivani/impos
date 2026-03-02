@@ -10,6 +10,7 @@
 #include <kernel/ui_window.h>
 #include <kernel/ui_theme.h>
 #include <kernel/ui_event.h>
+#include <kernel/clipboard.h>
 #include <kernel/gfx.h>
 #include <string.h>
 #include <stdio.h>
@@ -722,6 +723,51 @@ void ui_dispatch_event(ui_window_t *win, ui_event_t *ev)
                 char ch = ev->key.key;
                 int len = (int)strlen(w->textinput.text);
 
+                /* Ctrl+C/V/X/A: clipboard operations */
+                if (ev->key.ctrl && (ch == 'c' || ch == 'v' || ch == 'x' || ch == 'a')) {
+                    if (ch == 'c') {
+                        /* Copy: selected text or all text */
+                        if (w->textinput.sel_start >= 0 &&
+                            w->textinput.sel_start != w->textinput.cursor) {
+                            int s = w->textinput.sel_start < w->textinput.cursor
+                                    ? w->textinput.sel_start : w->textinput.cursor;
+                            int e = w->textinput.sel_start > w->textinput.cursor
+                                    ? w->textinput.sel_start : w->textinput.cursor;
+                            clipboard_copy(w->textinput.text + s, (size_t)(e - s));
+                        } else {
+                            clipboard_copy(w->textinput.text, (size_t)len);
+                        }
+                    } else if (ch == 'v') {
+                        /* Paste: insert clipboard text at cursor */
+                        size_t clip_len;
+                        const char *clip = clipboard_get(&clip_len);
+                        if (clip && clip_len > 0) {
+                            int space = w->textinput.max_len - len;
+                            if (space < 0) space = 0;
+                            int insert = (int)clip_len < space ? (int)clip_len : space;
+                            if (insert > 0) {
+                                memmove(w->textinput.text + w->textinput.cursor + insert,
+                                        w->textinput.text + w->textinput.cursor,
+                                        (size_t)(len - w->textinput.cursor + 1));
+                                memcpy(w->textinput.text + w->textinput.cursor, clip, (size_t)insert);
+                                w->textinput.cursor += insert;
+                            }
+                        }
+                    } else if (ch == 'x') {
+                        /* Cut: copy all text, then clear */
+                        clipboard_copy(w->textinput.text, (size_t)len);
+                        w->textinput.text[0] = '\0';
+                        w->textinput.cursor = 0;
+                        w->textinput.sel_start = -1;
+                    } else if (ch == 'a') {
+                        /* Select all */
+                        w->textinput.sel_start = 0;
+                        w->textinput.cursor = len;
+                    }
+                    win->dirty = 1;
+                    return;
+                }
+
                 if (ch == '\b' || ch == 127) {
                     /* Backspace */
                     if (w->textinput.cursor > 0) {
@@ -828,6 +874,10 @@ int uw_tick(ui_window_t *win, int mx, int my, int btn_down, int btn_up,
         memset(&ev, 0, sizeof(ev));
         ev.type = UI_EVENT_KEY_PRESS;
         ev.key.key = (char)key;
+        extern int keyboard_get_ctrl(void);
+        extern int keyboard_get_shift(void);
+        ev.key.ctrl  = (uint8_t)keyboard_get_ctrl();
+        ev.key.shift = (uint8_t)keyboard_get_shift();
         ui_dispatch_event(win, &ev);
     }
 
@@ -849,6 +899,10 @@ int uw_route_key(int focused_wm_id, int key)
             memset(&ev, 0, sizeof(ev));
             ev.type = UI_EVENT_KEY_PRESS;
             ev.key.key = (char)key;
+            extern int keyboard_get_ctrl(void);
+            extern int keyboard_get_shift(void);
+            ev.key.ctrl  = (uint8_t)keyboard_get_ctrl();
+            ev.key.shift = (uint8_t)keyboard_get_shift();
             ui_dispatch_event(&uw_pool[i], &ev);
             if (uw_pool[i].dirty)
                 uw_redraw(&uw_pool[i]);

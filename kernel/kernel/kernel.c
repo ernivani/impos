@@ -24,6 +24,7 @@
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <kernel/clipboard.h>
+#include <kernel/msgbus.h>
 #include <kernel/crypto.h>
 #include <kernel/io.h>
 #include <kernel/drm.h>
@@ -489,6 +490,9 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Set up GDT, IDT, PIC, PIT before anything else */
     idt_initialize();
+
+    /* Initialize message bus (used by clipboard, notifications, etc.) */
+    msgbus_init();
 
     /* Initialize physical and virtual memory management */
     pmm_init(mbi);

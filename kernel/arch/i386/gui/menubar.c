@@ -13,6 +13,7 @@
 #include <kernel/gfx.h>
 #include <kernel/ui_theme.h>
 #include <kernel/ui_window.h>
+#include <kernel/systray.h>
 #include <kernel/rtc.h>
 #include <kernel/idt.h>
 #include <string.h>
@@ -34,6 +35,10 @@ static int pill_count = 0;
 
 /* Logo click zone */
 static int logo_x = 0, logo_w = 64;
+
+/* System tray x position (for hit-testing from menubar_mouse) */
+static int tray_x_pos = 0;
+static int tray_total_w = 0;
 
 /* ── Tiny helpers ─────────────────────────────────────────────────── */
 
@@ -215,6 +220,29 @@ void menubar_paint(void) {
 
         int clock_len = strlenx(clock_str);
         int clock_x = w - clock_len * 8 - 12;
+
+        /* ── System tray (between pills and clock) ──────────────── */
+        systray_update_all();
+        tray_total_w = systray_get_width();
+        if (tray_total_w > 0) {
+            tray_x_pos = clock_x - tray_total_w - 12;
+            int tx = tray_x_pos;
+            for (int ti = 0; ti < SYSTRAY_MAX_ITEMS; ti++) {
+                const systray_item_t *item = systray_get_item(ti);
+                if (!item) continue;
+                gfx_surf_draw_string_smooth(&gs, tx + 6,
+                    (MENUBAR_HEIGHT - 16) / 2, item->abbrev,
+                    item->color, 1);
+                tx += SYSTRAY_ITEM_W;
+            }
+            /* Separator line between tray and clock */
+            for (int y = 6; y < MENUBAR_HEIGHT - 6; y++)
+                if (clock_x - 6 >= 0 && clock_x - 6 < w)
+                    blend_px(&px[y * w + clock_x - 6], 0xFFFFFFFF, 30);
+        } else {
+            tray_x_pos = clock_x;
+        }
+
         gfx_surf_draw_string_smooth(&gs, clock_x, (MENUBAR_HEIGHT - 16) / 2,
                                    clock_str, ui_theme.text_primary, 1);
     }
@@ -264,6 +292,13 @@ int menubar_mouse(int mx, int my, int btn_down, int btn_up, int right_click) {
         } else {
             radial_show();
         }
+        return 1;
+    }
+
+    /* System tray click */
+    if (tray_total_w > 0 && mx >= tray_x_pos &&
+        mx < tray_x_pos + tray_total_w) {
+        systray_click(mx, tray_x_pos);
         return 1;
     }
 

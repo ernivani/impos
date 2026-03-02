@@ -6,6 +6,7 @@
  * or prints a placeholder message for unimplemented apps.
  */
 #include <kernel/app.h>
+#include <kernel/msgbus.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -95,6 +96,7 @@ void app_minesweeper_open(void);
 
 void app_launch(const char *id) {
     if (!id) return;
+    msgbus_publish_str(MSGBUS_TOPIC_APP_LAUNCHED, id);
 
     if (strcmp(id, "settings") == 0)    { app_settings_open_to("wallpaper"); return; }
     if (strcmp(id, "terminal") == 0)    { app_terminal_open(); return; }

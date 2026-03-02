@@ -4303,6 +4303,136 @@ static void test_phase75_widgets(void) {
     uw_destroy(tw);
 }
 
+/* ---- Phase 8: Desktop IPC ---- */
+
+#include <kernel/msgbus.h>
+#include <kernel/clipboard.h>
+#include <kernel/notify.h>
+#include <kernel/systray.h>
+
+static int p8_handler_called;
+static int p8_handler_ival;
+static const char *p8_handler_sval;
+
+static void p8_test_handler(const msgbus_msg_t *msg, void *ctx) {
+    (void)ctx;
+    p8_handler_called++;
+    if (msg->type == MSGBUS_TYPE_INT)
+        p8_handler_ival = msg->ival;
+    else if (msg->type == MSGBUS_TYPE_STR)
+        p8_handler_sval = msg->sval;
+}
+
+static void test_phase8_ipc(void) {
+    printf("== Phase 8 Desktop IPC Tests ==\n");
+
+    /* ── Clipboard tests ────────────────────────────────────────── */
+    clipboard_clear();
+    size_t clen = 0;
+    const char *cdata = clipboard_get(&clen);
+    TEST_ASSERT(clen == 0, "p8: clipboard initially empty");
+    TEST_ASSERT(clipboard_has_content() == 0, "p8: no content initially");
+
+    clipboard_copy("hello", 5);
+    cdata = clipboard_get(&clen);
+    TEST_ASSERT(clen == 5, "p8: clipboard len after copy");
+    TEST_ASSERT(memcmp(cdata, "hello", 5) == 0, "p8: clipboard content");
+    TEST_ASSERT(clipboard_has_content() == 1, "p8: has content after copy");
+
+    clipboard_copy("world!", 6);
+    cdata = clipboard_get(&clen);
+    TEST_ASSERT(clen == 6, "p8: clipboard overwrite len");
+    TEST_ASSERT(memcmp(cdata, "world!", 6) == 0, "p8: clipboard overwrite");
+
+    clipboard_clear();
+    cdata = clipboard_get(&clen);
+    TEST_ASSERT(clen == 0, "p8: clipboard clear");
+
+    /* Large copy truncates at CLIPBOARD_MAX-1 */
+    {
+        char big[CLIPBOARD_MAX + 10];
+        memset(big, 'A', sizeof(big));
+        clipboard_copy(big, sizeof(big));
+        cdata = clipboard_get(&clen);
+        TEST_ASSERT(clen == CLIPBOARD_MAX - 1, "p8: clipboard truncate");
+    }
+    clipboard_clear();
+
+    /* ── Message bus tests ──────────────────────────────────────── */
+    msgbus_init(); /* reset for testing */
+
+    int sub = msgbus_subscribe("test-topic", p8_test_handler, NULL);
+    TEST_ASSERT(sub >= 0, "p8: msgbus subscribe returns valid id");
+
+    p8_handler_called = 0;
+    p8_handler_ival = 0;
+    int delivered = msgbus_publish_int("test-topic", 42);
+    TEST_ASSERT(delivered == 1, "p8: msgbus publish delivers to 1 sub");
+    TEST_ASSERT(p8_handler_called == 1, "p8: handler called once");
+    TEST_ASSERT(p8_handler_ival == 42, "p8: handler received int value");
+
+    /* Unrelated topic */
+    p8_handler_called = 0;
+    delivered = msgbus_publish_int("other-topic", 99);
+    TEST_ASSERT(delivered == 0, "p8: unrelated topic not delivered");
+    TEST_ASSERT(p8_handler_called == 0, "p8: handler not called for other topic");
+
+    /* Multiple subscribers */
+    int sub2 = msgbus_subscribe("test-topic", p8_test_handler, NULL);
+    TEST_ASSERT(sub2 >= 0, "p8: second subscribe ok");
+    p8_handler_called = 0;
+    delivered = msgbus_publish_int("test-topic", 7);
+    TEST_ASSERT(delivered == 2, "p8: two subscribers notified");
+    TEST_ASSERT(p8_handler_called == 2, "p8: handler called twice");
+
+    /* Unsubscribe */
+    msgbus_unsubscribe(sub);
+    p8_handler_called = 0;
+    delivered = msgbus_publish_int("test-topic", 1);
+    TEST_ASSERT(delivered == 1, "p8: after unsub, one remaining");
+    TEST_ASSERT(p8_handler_called == 1, "p8: only remaining handler called");
+
+    /* String message */
+    p8_handler_called = 0;
+    p8_handler_sval = NULL;
+    msgbus_publish_str("test-topic", "hello bus");
+    TEST_ASSERT(p8_handler_called == 1, "p8: str msg delivered");
+    TEST_ASSERT(p8_handler_sval != NULL && strcmp(p8_handler_sval, "hello bus") == 0,
+                "p8: str msg content correct");
+
+    msgbus_unsubscribe(sub2);
+
+    /* ── Notification tests (structural) ────────────────────────── */
+    notify_id_t nid = notify_post("Test", "Body", NOTIFY_INFO, 600);
+    TEST_ASSERT(nid >= 0, "p8: notify_post returns valid id");
+    /* Before any tick, queued but not yet promoted */
+    TEST_ASSERT(notify_visible_count() == 0, "p8: notify not visible before tick");
+    notify_dismiss(nid);
+
+    /* ── System tray tests (structural) ──────────────────────────── */
+    systray_init(); /* reset for testing */
+    TEST_ASSERT(systray_get_count() == 0, "p8: systray initially empty");
+
+    int ti = systray_register("Ab", "Test", 0xFFFFFFFF, NULL, NULL);
+    TEST_ASSERT(ti >= 0, "p8: systray register returns valid idx");
+    TEST_ASSERT(systray_get_count() == 1, "p8: systray count after register");
+    TEST_ASSERT(systray_get_width() == SYSTRAY_ITEM_W, "p8: systray width");
+
+    int ti2 = systray_register("Cd", "Test2", 0xFF00FF00, NULL, NULL);
+    TEST_ASSERT(ti2 >= 0, "p8: systray second register ok");
+    TEST_ASSERT(systray_get_count() == 2, "p8: systray count == 2");
+    TEST_ASSERT(systray_get_width() == 2 * SYSTRAY_ITEM_W, "p8: systray width x2");
+
+    systray_unregister(ti);
+    TEST_ASSERT(systray_get_count() == 1, "p8: systray count after unregister");
+
+    systray_unregister(ti2);
+    TEST_ASSERT(systray_get_count() == 0, "p8: systray empty after unregister all");
+
+    /* Re-init msgbus for rest of system */
+    msgbus_init();
+}
+
 /* ---- Run All ---- */
 
 void test_run_all(void) {
@@ -4356,6 +4486,7 @@ void test_run_all(void) {
     test_phase6_networking();
     test_phase7_win32();
     test_phase75_widgets();
+    test_phase8_ipc();
 
     printf("\n=== Results: %d/%d passed", test_pass, test_count);
     if (test_fail > 0) {

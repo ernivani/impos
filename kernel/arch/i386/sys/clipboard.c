@@ -1,4 +1,5 @@
 #include <kernel/clipboard.h>
+#include <kernel/msgbus.h>
 #include <string.h>
 
 static char clip_buf[CLIPBOARD_MAX];
@@ -10,6 +11,7 @@ void clipboard_copy(const char *text, size_t len) {
     memcpy(clip_buf, text, len);
     clip_buf[len] = '\0';
     clip_len = len;
+    msgbus_publish_str(MSGBUS_TOPIC_CLIPBOARD_CHANGED, clip_buf);
 }
 
 const char *clipboard_get(size_t *len) {
