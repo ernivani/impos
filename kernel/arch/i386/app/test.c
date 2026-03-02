@@ -17,6 +17,7 @@
 #include <kernel/tcp.h>
 #include <kernel/udp.h>
 #include <kernel/dns.h>
+#include <kernel/http.h>
 #include <kernel/task.h>
 #include <kernel/sched.h>
 #include <kernel/vmm.h>
@@ -1150,6 +1151,106 @@ void test_tls(void) {
         free(req.body);
     } else {
         printf("  HTTPS GET failed (ret=%d) - server may not support our cipher\n", req.result);
+    }
+}
+
+/* ---- HTTP Tests (requires network) ---- */
+
+static void test_http(void) {
+    printf("== HTTP Tests ==\n");
+
+    /* URL parser unit tests (no network needed) */
+    {
+        char host[128], path[256];
+        uint16_t port;
+        int is_https;
+
+        TEST_ASSERT(http_parse_url("http://example.com",
+            host, sizeof(host), &port, path, sizeof(path), &is_https) == 0,
+            "http: parse http URL");
+        TEST_ASSERT(strcmp(host, "example.com") == 0, "http: parsed host");
+        TEST_ASSERT(port == 80, "http: default port 80");
+        TEST_ASSERT(strcmp(path, "/") == 0, "http: default path /");
+        TEST_ASSERT(is_https == 0, "http: not https");
+
+        TEST_ASSERT(http_parse_url("https://secure.example.com:8443/api/v1",
+            host, sizeof(host), &port, path, sizeof(path), &is_https) == 0,
+            "http: parse https URL with port+path");
+        TEST_ASSERT(strcmp(host, "secure.example.com") == 0, "http: parsed https host");
+        TEST_ASSERT(port == 8443, "http: custom port 8443");
+        TEST_ASSERT(strcmp(path, "/api/v1") == 0, "http: parsed path");
+        TEST_ASSERT(is_https == 1, "http: is https");
+
+        TEST_ASSERT(http_parse_url("https://example.com",
+            host, sizeof(host), &port, path, sizeof(path), &is_https) == 0,
+            "http: parse https default port");
+        TEST_ASSERT(port == 443, "http: default https port 443");
+
+        /* Edge cases */
+        TEST_ASSERT(http_parse_url(NULL, host, sizeof(host),
+            &port, path, sizeof(path), &is_https) < 0,
+            "http: null URL returns error");
+        TEST_ASSERT(http_parse_url("",
+            host, sizeof(host), &port, path, sizeof(path), &is_https) < 0,
+            "http: empty URL returns error");
+    }
+
+    /* Network tests (skip if link not up) */
+    net_config_t *cfg = net_get_config();
+    if (!cfg || !cfg->link_up) {
+        printf("  SKIP: network not available\n");
+        return;
+    }
+
+    /* DNS resolve test */
+    {
+        uint8_t ip[4];
+        int dns_rc = dns_resolve("example.com", ip);
+        TEST_ASSERT(dns_rc == 0, "http: DNS resolve example.com");
+        if (dns_rc < 0) {
+            printf("  SKIP: DNS failed, skipping HTTP/HTTPS GET tests\n");
+            return;
+        }
+        printf("  Resolved example.com to %d.%d.%d.%d\n",
+               ip[0], ip[1], ip[2], ip[3]);
+    }
+
+    /* HTTP GET test */
+    {
+        http_response_t resp;
+        int rc = http_get("http://example.com", &resp);
+        TEST_ASSERT(rc == 0, "http: GET http://example.com succeeds");
+        if (rc == 0) {
+            TEST_ASSERT(resp.status_code == 200, "http: status 200");
+            TEST_ASSERT(resp.body_len > 0, "http: body not empty");
+            /* Check for HTML content */
+            int has_html = resp.body &&
+                (strstr(resp.body, "<html") || strstr(resp.body, "<HTML"));
+            TEST_ASSERT(has_html, "http: response contains HTML");
+            printf("  HTTP GET: %d bytes, status %d\n",
+                   resp.body_len, resp.status_code);
+            http_response_free(&resp);
+        } else {
+            printf("  HTTP GET failed: error %d\n", rc);
+        }
+    }
+
+    /* HTTPS GET test */
+    {
+        http_set_verbose(1);
+        http_response_t resp;
+        int rc = http_get("https://example.com", &resp);
+        http_set_verbose(0);
+        TEST_ASSERT(rc == 0, "http: GET https://example.com succeeds");
+        if (rc == 0) {
+            TEST_ASSERT(resp.status_code == 200, "http: HTTPS status 200");
+            TEST_ASSERT(resp.body_len > 0, "http: HTTPS body not empty");
+            printf("  HTTPS GET: %d bytes, status %d\n",
+                   resp.body_len, resp.status_code);
+            http_response_free(&resp);
+        } else {
+            printf("  HTTPS GET failed: error %d (check serial for TLS diag)\n", rc);
+        }
     }
 }
 
@@ -4458,6 +4559,7 @@ void test_run_all(void) {
     test_firewall();
     test_mouse();
     test_crypto();
+    test_http();
     test_win32_dll();
     test_win32_registry();
     test_winsock();

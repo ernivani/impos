@@ -18,7 +18,7 @@ KVM_FLAG := $(shell [ -w /dev/kvm ] 2>/dev/null && echo "-enable-kvm -cpu host")
 
 INITRD_MODS := $(shell [ -f doom1.wad ] && echo "-initrd doom1.wad,initrd.tar" || echo "-initrd initrd.tar")
 
-.PHONY: all run run-gl terminal clean
+.PHONY: all run run-gl terminal test clean
 
 # ── Build ──────────────────────────────────────────────────────────
 all: initrd.tar
@@ -105,6 +105,10 @@ terminal: all $(DISK_IMAGE)
 		-display $(QEMU_DISPLAY) \
 		-serial stdio \
 		$(KVM_FLAG)
+
+# ── Automated Tests ───────────────────────────────────────────────
+test: all
+	./test_auto.sh --no-build
 
 # ── Clean ──────────────────────────────────────────────────────────
 clean:

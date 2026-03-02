@@ -58,6 +58,8 @@ timeout "$TIMEOUT" qemu-system-i386 \
     $INITRD_MODS \
     -append autotest \
     -drive "file=$DISK_IMAGE,format=raw,if=ide,index=0,media=disk" \
+    -netdev user,id=net0 \
+    -device rtl8139,netdev=net0 \
     -m 4G \
     -nographic \
     -no-reboot \
@@ -98,7 +100,7 @@ fi
 
 echo "$RESULTS_LINE"
 
-# Known failures in headless mode (no GPU, no NIC)
+# Known failures in headless mode (no GPU)
 KNOWN_HEADLESS=(
     "gfx is active"
     "gfx width > 0"
@@ -109,7 +111,6 @@ KNOWN_HEADLESS=(
     "GFX_RGB white"
     "GFX_RGB red"
     "GFX_RGB green"
-    "link is up"
 )
 
 # Print any FAIL lines, filtering out known headless failures

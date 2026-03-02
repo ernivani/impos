@@ -2,7 +2,7 @@
 
 A 32-bit x86 operating system built from scratch in C, featuring a full graphical desktop environment, GPU-accelerated compositing via VirtIO GPU 3D (virgl), a complete TCP/IP networking stack with TLS 1.2, a Unix-style filesystem, and Win32/Linux binary compatibility layers.
 
-~130K lines of kernel + libc code. Boots via GRUB multiboot, runs in QEMU or on bare metal.
+~136K lines of kernel + libc code. Boots via GRUB multiboot, runs in QEMU or on bare metal.
 
 ## Features
 
@@ -12,7 +12,8 @@ A 32-bit x86 operating system built from scratch in C, featuring a full graphica
 - **Software compositor fallback** when GPU acceleration is unavailable
 - **Widget toolkit** with buttons, labels, text inputs, sliders, checkboxes, lists, progress bars
 - **Theme engine** with GNOME-dark inspired styling
-- **Desktop apps**: File Manager, Terminal, Task Manager, Settings, System Monitor
+- **Desktop apps**: File Manager, Terminal, Task Manager, Settings, System Monitor, Calculator, Minesweeper, Notes, About
+- **Notification system** with toast popups and system tray
 - **Radial launcher menu**, context menus, dock, menu bar
 - **TrueType font rendering** and vector path graphics
 - **DRM/KMS** kernel subsystem (CRTC/connector/encoder model, GEM buffers, page flip)
@@ -32,17 +33,25 @@ A 32-bit x86 operating system built from scratch in C, featuring a full graphica
 - **L2**: RTL8139 and PCnet-FAST III NIC drivers, ARP resolution
 - **L3**: IPv4 routing, ICMP (ping)
 - **L4**: TCP (reliable streams), UDP (datagrams)
-- **L5-7**: DHCP client, DNS resolver, HTTP server, TLS 1.2
+- **L5-7**: DHCP client, DNS resolver, HTTP server, HTTP client (`wget`), TLS 1.2 (HTTPS)
+- **HTTP client**: GET with redirect following (301/302/303/307/308), verbose mode, HTTPS support
+- **TLS 1.2**: RSA-AES128-CBC-SHA256, X.509 certificate parsing, full handshake
 - **BSD socket API**: socket, bind, listen, connect, send, recv
 - **Stateless firewall**: 16 rules, first-match-wins
 
 ### Filesystem
-- Custom inode-based filesystem (FS v2)
-- 4KB blocks, 8192 blocks (32MB), 256 inodes
-- 8 direct + 1024 indirect block pointers (~4MB max file size)
+- Custom inode-based filesystem (FS v4) with metadata journaling
+- 4KB blocks, 65536 blocks (256MB), 4096 inodes
+- 8 direct + 1024 single-indirect + 1024x1024 double-indirect block pointers (~4GB max file size)
+- Hardlinks (`ln`, `nlink` tracking, deferred block freeing)
 - Unix permissions (rwx owner/group/other), symlinks, device nodes
+- **VFS layer** with mount table (16 mounts, longest-prefix match)
+- **procfs** at `/proc` (uptime, meminfo, version, per-PID dirs)
+- **devfs** at `/dev` (dynamic device registration)
+- **tmpfs** at `/tmp` (1024 inodes, 16MB RAM-backed)
 - Character devices: `/dev/null`, `/dev/zero`, `/dev/tty`, `/dev/urandom`, `/dev/dri/card0`
 - Per-user disk quotas, dirty bitmap for efficient sync
+- Metadata journal (WAL, 4MB circular log)
 - initrd (TAR) mounted at boot
 
 ### Process Management
@@ -53,7 +62,7 @@ A 32-bit x86 operating system built from scratch in C, featuring a full graphica
 - POSIX signals: SIGINT, SIGTERM, SIGKILL, SIGUSR1/2, SIGPIPE
 - Pipes (4KB circular buffer, blocking I/O)
 - Named shared memory (16 regions, 64KB each, mapped at 0x40000000+)
-- Per-process file descriptor table (16 fds)
+- Per-process file descriptor table (256 fds)
 
 ### Binary Compatibility
 
@@ -75,12 +84,15 @@ A 32-bit x86 operating system built from scratch in C, featuring a full graphica
 
 SEH (Structured Exception Handling) support included.
 
-**Linux ELF binaries** — static ELF32 execution with ~20 Linux syscalls:
-- Process: exit, getpid, fork, execve
-- I/O: read, write, open, close, lseek, ioctl
-- Memory: mmap2, munmap, brk
-- Files: stat64, fstat64, getdents64, getcwd
-- TLS: set_thread_area
+**Linux ELF binaries** — static and dynamically-linked ELF32 execution with 76 Linux syscalls:
+- Process: exit, fork, vfork, clone, execve, wait4, getpid, getppid, kill
+- I/O: read, write, open, close, lseek, ioctl, readv, writev, pipe, dup, dup2, poll, fcntl64
+- Memory: mmap2, munmap, mprotect, brk
+- Files: stat64, fstat64, lstat64, getdents64, getcwd, mkdir, rmdir, unlink, link, symlink, readlink, rename, chmod, chown, ftruncate
+- Time: gettimeofday, time, clock_gettime, clock_nanosleep, nanosleep, alarm
+- Thread: set_thread_area, set_tid_address, futex, clone
+- Network: socketcall (socket, bind, connect, listen, accept, send, recv)
+- Dynamic linking: PT_INTERP interpreter loading, auxiliary vector, file-backed mmap
 
 ### Cryptography
 - AES-128 (CBC mode)
@@ -92,18 +104,18 @@ SEH (Structured Exception Handling) support included.
 - TLS 1.2 PRF (P_SHA256 key derivation)
 
 ### Shell
-63 built-in commands with pipe support (`cmd1 | cmd2`):
+64 built-in commands with pipe support (`cmd1 | cmd2`):
 
 | Category | Commands |
 |----------|----------|
 | Core | help, man, echo, cat, ls, cd, touch, clear, pwd, history, mkdir, rm, vi |
 | System | sync, exit, logout, shutdown, setlayout, timedatectl, env, export, display |
-| Network | ifconfig, ping, arp, nslookup, dhcp, httpd, connect, firewall, ntpdate |
+| Network | ifconfig, ping, arp, nslookup, dhcp, httpd, wget, connect, firewall, ntpdate |
 | Users | whoami, su, sudo, id, useradd, userdel |
 | Files | chmod, chown, ln, readlink, quota |
 | Process | spawn, kill, top, status, shm |
 | Debug | test, gfxdemo, gfxbench, fps, drmtest, fstest, proctest, threadtest, memtest, petest |
-| Apps | doom, virgl_test, run, winget, beep, lspci |
+| Apps | doom, virgl_test, run, winget, lspci, lsusb |
 
 ### Other
 - Multi-layout keyboard (US QWERTY + FR AZERTY)
@@ -112,8 +124,10 @@ SEH (Structured Exception Handling) support included.
 - RTC (real-time clock), NTP time sync
 - PCI bus enumeration
 - ATA/IDE disk driver
-- PC speaker audio
+- AC'97 audio subsystem with audio mixer
+- USB (UHCI host controller, device enumeration)
 - DOOM (full game port, 57K LOC)
+- Automated test suite (1100+ tests, `make test`)
 
 ## Building
 
@@ -134,6 +148,7 @@ make run          # Run with VirtIO GPU (2D), 4GB RAM
 make run-gl       # Run with virgl 3D GPU acceleration
 make run-gl-sw    # Run with software GL (llvmpipe)
 make terminal     # Run in text-only mode (no GUI)
+make test         # Run automated test suite (headless, 1100+ tests)
 make clean        # Remove build artifacts
 ```
 
@@ -167,36 +182,42 @@ kernel/
     isr_stubs.S                ISR/IRQ assembly trampolines
     tty.c                      Serial + VGA text output
     drivers/
-      virtio_gpu.c             VirtIO GPU 2D driver (1063 LOC)
-      virtio_gpu_3d.c          VirtIO GPU 3D / virgl commands (272 LOC)
-      virtio_gpu_drm.c         DRM backend for VirtIO GPU (296 LOC)
-      drm_core.c               DRM/KMS subsystem (692 LOC)
-      libdrm.c                 libdrm-compatible API (382 LOC)
-      virtio_input.c           VirtIO tablet input (466 LOC)
+      virtio_gpu.c             VirtIO GPU 2D driver
+      virtio_gpu_3d.c          VirtIO GPU 3D / virgl commands
+      virtio_gpu_drm.c         DRM backend for VirtIO GPU
+      drm_core.c               DRM/KMS subsystem
+      libdrm.c                 libdrm-compatible API
+      virtio_input.c           VirtIO tablet input
       rtl8139.c / pcnet.c      Network interface drivers
       ata.c                    IDE disk driver
       pci.c                    PCI bus enumeration
       acpi.c                   ACPI power management
       mouse.c                  PS/2 mouse driver
       rtc.c                    Real-time clock
+      ac97.c                   AC'97 audio driver
+      audio_mixer.c            Audio mixer
+      uhci.c                   USB UHCI host controller
     gui/
-      gpu_compositor.c         GPU-accelerated virgl compositor (870 LOC)
-      compositor.c             Software compositor + GPU dispatch (572 LOC)
-      wm2.c                    Window manager (845 LOC)
-      gfx.c                    Framebuffer graphics engine (1480 LOC)
-      gfx_ttf.c                TrueType font renderer (776 LOC)
-      gfx_path.c               Vector path graphics (523 LOC)
+      gpu_compositor.c         GPU-accelerated virgl compositor
+      compositor.c             Software compositor + GPU dispatch
+      wm2.c                    Window manager
+      gfx.c                    Framebuffer graphics engine
+      gfx_ttf.c                TrueType font renderer
+      gfx_path.c               Vector path graphics
       ui_*.c                   Widget toolkit, theme, events, layout
       desktop.c / login.c      Desktop chrome, login screen
       filemgr.c / taskmgr.c    Desktop applications
       settings.c / monitor.c   System apps
+      calculator.c / minesweeper.c / notes.c / about.c
+      notify.c / systray.c     Notifications + system tray
     net/
       net.c                    Driver abstraction layer
       arp.c / ip.c             L2-L3 protocols
       tcp.c / udp.c            L4 transport
       dns.c / dhcp.c           Application protocols
       httpd.c                  HTTP server
-      tls.c                    TLS 1.2 (1011 LOC)
+      http.c                   HTTP/HTTPS client with redirects
+      tls.c                    TLS 1.2 client
       socket.c                 BSD socket API
       firewall.c               Stateless packet filter
     crypto/
@@ -205,23 +226,29 @@ kernel/
       hmac.c / prng.c          HMAC + CSPRNG
       asn1.c                   ASN.1/X.509 parsing
     sys/
-      fs.c                     Filesystem (1341 LOC)
+      fs.c                     Filesystem (1900 LOC)
+      vfs.c                    Virtual filesystem layer
+      journal.c                Metadata journaling
+      procfs.c / devfs.c / tmpfs.c   Virtual filesystems
       task.c / sched.c         Task management + scheduler
-      pmm.c / vmm.c            Physical + virtual memory managers
+      pmm.c / vmm.c / vma.c   Physical + virtual memory managers
       syscall.c                Native syscall dispatch
       pipe.c / signal.c / shm.c  IPC mechanisms
+      clone.c / wait.c / futex.c  Process creation + synchronization
       user.c / group.c         User/group management
       pe_loader.c              Win32 PE binary loader
-      elf_loader.c             Linux ELF binary loader
-      linux_syscall.c          Linux syscall emulation (902 LOC)
+      elf_loader.c             Linux ELF binary loader (static + dynamic)
+      linux_syscall.c          Linux syscall emulation (76 syscalls)
       win32_*.c                Win32 API shim libraries (11 DLLs)
     app/
-      shell.c                  Shell with 63 commands (5223 LOC)
+      shell.c                  Shell with 64 commands (5282 LOC)
       vi.c                     Text editor
+      test.c                   Automated test suite (4598 LOC)
       virgl_test.c             VirtIO GPU 3D test harness
       doom/                    DOOM port (57K LOC)
 libc/
   stdio/ stdlib/ string/       Standard C library
+  pthread/                     POSIX threads (via clone)
 ```
 
 ## GPU Compositor Internals

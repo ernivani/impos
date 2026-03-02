@@ -1190,9 +1190,11 @@ static command_t commands[] = {
     },
     {
         "wget", cmd_wget,
-        "Download a file via HTTP",
-        "wget: wget [-O FILE] URL\n"
-        "    Download a file from the given HTTP URL.\n"
+        "Download a file via HTTP/HTTPS",
+        "wget: wget [-v] [-O FILE] URL\n"
+        "    Download a file from the given HTTP or HTTPS URL.\n"
+        "    Follows redirects (up to 5 hops).\n"
+        "    -v:      verbose output (DNS, TLS, headers).\n"
         "    -O FILE: save response body to FILE.\n"
         "    Without -O, prints the response to stdout.\n",
         NULL,
@@ -1871,22 +1873,28 @@ static void cmd_wget(int argc, char* argv[]) {
 
     const char *url = NULL;
     const char *outfile = NULL;
+    int verbose = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-O") == 0 && i + 1 < argc) {
             outfile = argv[++i];
+        } else if (strcmp(argv[i], "-v") == 0) {
+            verbose = 1;
         } else {
             url = argv[i];
         }
     }
 
     if (!url) {
-        printf("Usage: wget [-O FILE] URL\n");
+        printf("Usage: wget [-v] [-O FILE] URL\n");
         return;
     }
 
-    printf("Connecting to %s...\n", url);
+    http_set_verbose(verbose);
+    if (!verbose)
+        printf("Connecting to %s...\n", url);
     int rc = http_get(url, &resp);
+    http_set_verbose(0);
     if (rc < 0) {
         printf("wget: failed (error %d)\n", rc);
         return;
