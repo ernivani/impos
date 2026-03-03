@@ -7,18 +7,18 @@ observed behavior from `make run-gl` on QEMU 8.x with KVM, 4GB RAM.
 
 | Metric | Value |
 |--------|-------|
-| Total source (kernel + libc) | ~148K LOC |
-| Kernel + libc (excluding DOOM) | ~79K LOC |
-| Kernel binary size | 4,975,408 bytes (~4.7 MB) |
-| GUI subsystem | 15,701 LOC (42 files) |
-| GPU pipeline (drivers + compositor) | 4,147 LOC (7 files) |
+| Total source (kernel + libc) | ~152K LOC |
+| Kernel + libc (excluding DOOM) | ~83K LOC |
+| Kernel binary size | 5,223,108 bytes (~5.0 MB) |
+| GUI subsystem | 15,889 LOC (42 files) |
+| GPU pipeline (drivers + compositor) | 4,169 LOC (7 files) |
 | Networking stack | 3,652 LOC (12 files) |
 | Cryptography | 1,571 LOC (8 files) |
 | Binary compat (PE + ELF + Win32 DLLs) | 14,658 LOC |
 | Filesystem + VFS + journal | 3,418 LOC |
-| Shell | 5,282 LOC (64 commands) |
-| Test suite | 4,715 LOC (1146 tests) |
-| DOOM port | 57,327 LOC |
+| Shell + scripting | 7,666 LOC (82 commands) |
+| Test suite | 5,138 LOC (1275 tests) |
+| DOOM port | 67,996 LOC |
 
 ## Memory
 

@@ -5,7 +5,7 @@
 
 ---
 
-## Phases 1–11 — COMPLETED
+## Phases 1–13 — COMPLETED
 
 | Phase | Summary | Status |
 |-------|---------|--------|
@@ -20,118 +20,18 @@
 | 9 — Audio Subsystem | AC'97 driver, audio mixer, DOOM windowed mode | Done |
 | 10 — Filesystem Hardlinks & VM | Hardlinks, VM improvements, HTTP client, USB enumeration | Done |
 | 11 — HTTPS & TLS Expansion | TLS 1.2 with 4 cipher suites, ECDHE/GCM, wget HTTPS, redirect following | Done |
+| 12 — Shell Scripting & Job Control | Tokenizer, AST parser, variables, control flow, globs, redirections, pipelines, job control, 18 new text utilities | Done |
+| 13 — Image Decoding & Desktop | BMP/PNG decoders, deflate/inflate, image scaling, wallpaper from file, image viewer app, clipboard | Done |
 
-**Current state after Phase 11:** ~2008 era across most subsystems. ~148K LOC, 1146 tests, 4 TLS cipher suites, GPU-accelerated desktop, Win32+Linux binary compat.
+**Current state after Phase 13:** ~2010 era across most subsystems. ~152K LOC, 1275 tests, 82 shell commands with scripting, PNG/BMP image support, GPU-accelerated desktop with wallpaper, Win32+Linux binary compat.
 
----
-
-## Phase 12 — I/O Multiplexing & Shell Scripting
-
-**Current state:** poll() exists in Linux syscall compat, shell has 64 commands but no scripting.
-**Target state:** ~2010 era shell with proper I/O multiplexing.
-
-The shell is the primary user interface for a lot of OS functionality. Without scripting, every task is manual. Without proper select/poll on native fds, event-driven apps can't work.
-
-### Step 12.1 — Native poll()/select() for All FD Types
-
-- Ensure poll/select works natively (not just Linux compat) across pipes, sockets, device fds, and regular files
-- Add `O_NONBLOCK` support on pipes and device fds (not just sockets)
-- Implement `POLLIN`, `POLLOUT`, `POLLHUP`, `POLLERR` properly for each fd type
-- This is the foundation for any event loop (GUI, server, terminal multiplexer)
-
-### Step 12.2 — Shell Variable Expansion
-
-- Environment variable expansion: `$HOME`, `$PATH`, `$?` (last exit code)
-- Variable assignment: `FOO=bar`
-- Double-quote interpolation: `"hello $USER"` vs single-quote literal: `'hello $USER'`
-- Special variables: `$0`, `$1`..`$9`, `$#`, `$@`, `$$`
-
-### Step 12.3 — Shell Redirection & Globbing
-
-- Output redirection: `>`, `>>` (append), `2>` (stderr), `2>&1`
-- Input redirection: `<`
-- Here-documents: `<<EOF`
-- Glob expansion: `*`, `?`, `[abc]` patterns via a simple `glob()` implementation
-- Depends on dup/dup2 (already in Linux syscall layer — expose natively)
-
-### Step 12.4 — Shell Control Flow
-
-- `if`/`then`/`elif`/`else`/`fi`
-- `for` loops: `for x in *.c; do echo $x; done`
-- `while`/`until` loops
-- `case`/`esac` pattern matching
-- Exit code testing: `&&`, `||`
-- Subshells: `$(command)` or backtick substitution
-
-### Step 12.5 — Job Control
-
-- Background execution: `command &`
-- `fg`, `bg` builtins
-- `Ctrl+Z` sends `SIGTSTP` to foreground process group
-- `jobs` builtin to list background jobs
-- Depends on process groups and sessions (already implemented)
-
-### Step 12.6 — Core Userspace Utilities
-
-- `cp`, `mv` (currently missing — basic file operations)
-- `grep` (basic pattern matching, no full regex needed)
-- `wc` (line/word/byte count)
-- `head`, `tail` (first/last N lines)
-- `sort`, `uniq`
-- `find` (recursive directory search with name matching)
-- `tee` (write to stdout and file simultaneously)
-- `xargs` (build commands from stdin)
-
----
-
-## Phase 13 — Image Decoding & Desktop Polish
-
-**Current state:** TrueType fonts, vector path graphics, GNOME-dark theme, but no image format support.
-**Target state:** ~2010 era desktop that can display images and feels cohesive.
-
-Every desktop OS from 2000 onward can display PNG and JPEG. This is a major usability gap.
-
-### Step 13.1 — PNG Decoder
-
-- Implement a minimal PNG decoder: IHDR, IDAT (deflate), IEND chunks
-- Support 8-bit RGBA and RGB, grayscale
-- Inflate (zlib decompress) — you can port a minimal `tinfl` or write one from RFC 1951
-- Filter reconstruction (None, Sub, Up, Average, Paeth)
-- Output to 32-bit BGRA framebuffer format for direct compositor use
-
-### Step 13.2 — JPEG Decoder
-
-- Implement baseline JPEG decoding (DCT-based, Huffman, YCbCr→RGB)
-- A minimal stb_image-style decoder is ~1500 LOC in C
-- Support 4:2:0 and 4:4:4 chroma subsampling
-- No need for progressive JPEG initially
-
-### Step 13.3 — BMP/ICO Support
-
-- BMP is trivial (raw pixel data with a header) — useful for icons and cursors
-- ICO format for window icons and taskbar (wraps BMP or PNG)
-- Use for custom app icons in the desktop, file manager thumbnails
-
-### Step 13.4 — Image Viewer Application
-
-- Desktop app: open PNG/JPEG/BMP files from the file manager
-- Zoom, pan, fit-to-window
-- Integrate with file manager: double-click an image opens the viewer
-- Thumbnail generation in file manager directory listings
-
-### Step 13.5 — Wallpaper & Theming Improvements
-
-- Load a PNG/JPEG wallpaper at boot instead of a solid color
-- Wallpaper selection in Settings app
-- Icon themes: PNG-based icons for files, folders, apps in the file manager and dock
-- Cursor themes (custom cursor images from PNG/BMP)
-
-### Step 13.6 — Clipboard
-
-- Implement a global clipboard buffer (kernel-managed or via shared memory)
-- Copy/paste plain text between terminal, notes, and other text widgets
-- `Ctrl+C` / `Ctrl+V` keybindings in text input widgets
-- Later: support image clipboard data
+### Recent fixes (post Phase 13)
+- **Boot profiling**: `TIME(fmt, ...)` macro prints `[sec.ms]` timestamps to serial for boot performance analysis
+- **GPU compositor wallpaper**: lazy-retry mechanism for GPU texture allocation failures, fixes wallpaper not showing in `make run-gl`
+- **Shell command table UB**: fixed undefined behavior where `-O2` caused GCC to read `count` before it was set in `add_group(cmd_*(&count), count)` — caused corrupted help output and page faults
+- **VirtIO GPU cursor**: changed cursor resource format from `B8G8R8X8` (no alpha) to `B8G8R8A8` for proper transparency
+- **Terminal scroll**: invalidate cursor save state before canvas scroll to prevent stale pixel artifacts
+- **GUI command dispatch**: added `shell_build_command_table()` to graphical boot path (was only called in text mode)
 
 ---
 

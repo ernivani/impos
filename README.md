@@ -1,8 +1,8 @@
 # ImposOS
 
-A 32-bit x86 operating system built from scratch in C, featuring a full graphical desktop environment, GPU-accelerated compositing via VirtIO GPU 3D (virgl), a complete TCP/IP networking stack with TLS 1.2, a Unix-style filesystem, and Win32/Linux binary compatibility layers.
+A 32-bit x86 operating system built from scratch in C, featuring a full graphical desktop environment, GPU-accelerated compositing via VirtIO GPU 3D (virgl), a complete TCP/IP networking stack with TLS 1.2, a Unix-style filesystem, shell scripting, image decoding, and Win32/Linux binary compatibility layers.
 
-~148K lines of kernel + libc code. Boots via GRUB multiboot, runs in QEMU or on bare metal.
+~152K lines of kernel + libc code. Boots via GRUB multiboot, runs in QEMU or on bare metal.
 
 ## Features
 
@@ -12,7 +12,7 @@ A 32-bit x86 operating system built from scratch in C, featuring a full graphica
 - **Software compositor fallback** when GPU acceleration is unavailable
 - **Widget toolkit** with buttons, labels, text inputs, sliders, checkboxes, lists, progress bars
 - **Theme engine** with GNOME-dark inspired styling
-- **Desktop apps**: File Manager, Terminal, Task Manager, Settings, System Monitor, Calculator, Minesweeper, Notes, About
+- **Desktop apps**: File Manager, Terminal, Task Manager, Settings, System Monitor, Calculator, Minesweeper, Notes, Image Viewer, About
 - **Notification system** with toast popups and system tray
 - **Radial launcher menu**, context menus, dock, menu bar
 - **TrueType font rendering** and vector path graphics
@@ -53,6 +53,13 @@ A 32-bit x86 operating system built from scratch in C, featuring a full graphica
 - Per-user disk quotas, dirty bitmap for efficient sync
 - Metadata journal (WAL, 4MB circular log)
 - initrd (TAR) mounted at boot
+
+### Image Support
+- **BMP decoder**: 24-bit and 32-bit uncompressed, top-down and bottom-up
+- **PNG decoder**: deflate/inflate, IHDR/IDAT/IEND, filter reconstruction (None/Sub/Up/Average/Paeth), 8-bit RGB/RGBA/grayscale
+- **Image scaling**: nearest-neighbor with aspect-ratio preservation
+- **Desktop wallpaper**: PNG/BMP wallpaper loaded from filesystem, scaled to display resolution
+- **Image viewer app**: open images from file manager, fit-to-window display
 
 ### Process Management
 - Preemptive multitasking (120Hz PIT timer)
@@ -104,19 +111,30 @@ SEH (Structured Exception Handling) support included.
 - TLS 1.2 PRF (P_SHA256 key derivation)
 - 4 TLS cipher suites: ECDHE-ECDSA-AES128-GCM-SHA256, ECDHE-RSA-AES128-CBC-SHA256, RSA-AES128-GCM-SHA256, RSA-AES128-CBC-SHA256
 
+### Shell Scripting
+- **Tokenizer**: quoted strings (single=literal, double=expand), backslash escapes, operator splitting
+- **Variable expansion**: `$VAR`, `${VAR}`, `$?` (exit code), `$$` (PID), `$0`, `~`, `$(cmd)` (command substitution)
+- **Control flow**: `if/then/elif/else/fi`, `for VAR in WORDS; do; done`, `while/until`, `case/esac`
+- **Operators**: `&&`, `||`, `;`, `&` (background), `()` (subshell grouping)
+- **Redirections**: `> file`, `>> file`, `< file`, `2> file`
+- **Pipelines**: multi-stage `cmd1 | cmd2 | cmd3`
+- **Glob expansion**: `*`, `?`, `[abc]`, `[a-z]` patterns
+- **Job control**: `jobs`, `fg %N`, `bg %N`, Ctrl+Z suspend, Ctrl+C interrupt
+
 ### Shell
-64 built-in commands with pipe support (`cmd1 | cmd2`):
+82 built-in commands with pipe and scripting support:
 
 | Category | Commands |
 |----------|----------|
 | Core | help, man, echo, cat, ls, cd, touch, clear, pwd, history, mkdir, rm, vi |
-| System | sync, exit, logout, shutdown, setlayout, timedatectl, env, export, display |
+| System | sync, exit, logout, shutdown, setlayout, timedatectl, env, export, display, sleep, test, true, false |
 | Network | ifconfig, ping, arp, nslookup, dhcp, httpd, wget, connect, firewall, ntpdate |
 | Users | whoami, su, sudo, id, useradd, userdel |
-| Files | chmod, chown, ln, readlink, quota |
-| Process | spawn, kill, top, status, shm |
-| Debug | test, gfxdemo, gfxbench, fps, drmtest, fstest, proctest, threadtest, memtest, petest |
-| Apps | doom, virgl_test, run, winget, lspci, lsusb |
+| Files | chmod, chown, ln, readlink, quota, cp, mv, find |
+| Text | grep, wc, head, tail, sort, uniq, tee |
+| Process | spawn, kill, top, shm, jobs, fg, bg |
+| Debug | regtest, gfxdemo, gfxbench, fps, drmtest, fstest, proctest, threadtest, memtest, petest |
+| Apps | doom, virgl_test, run, winget, lspci, lsusb, imgview |
 
 ### Other
 - Multi-layout keyboard (US QWERTY + FR AZERTY)
@@ -128,7 +146,7 @@ SEH (Structured Exception Handling) support included.
 - AC'97 audio subsystem with audio mixer
 - USB (UHCI host controller, device enumeration)
 - DOOM (full game port, 57K LOC)
-- Automated test suite (1146 tests, `make test`)
+- Automated test suite (1275 tests, `make test`)
 
 ## Building
 
@@ -149,7 +167,7 @@ make run          # Run with VirtIO GPU (2D), 4GB RAM
 make run-gl       # Run with virgl 3D GPU acceleration
 make run-gl-sw    # Run with software GL (llvmpipe)
 make terminal     # Run in text-only mode (no GUI)
-make test         # Run automated test suite (headless, 1146 tests)
+make test         # Run automated test suite (headless, 1275 tests)
 make clean        # Remove build artifacts
 ```
 
@@ -242,11 +260,12 @@ kernel/
       linux_syscall.c          Linux syscall emulation (76 syscalls)
       win32_*.c                Win32 API shim libraries (11 DLLs)
     app/
-      shell.c                  Shell with 64 commands (5282 LOC)
+      shell.c + shell/         Shell with 82 commands, scripting engine (7666 LOC)
+      sh_parse.c + glob.c      Shell parser (AST, tokenizer) + glob expansion
       vi.c                     Text editor
-      test.c                   Automated test suite (4598 LOC)
+      test.c + test/           Automated test suite (5138 LOC, 1275 tests)
       virgl_test.c             VirtIO GPU 3D test harness
-      doom/                    DOOM port (57K LOC)
+      doom/                    DOOM port (68K LOC)
 libc/
   stdio/ stdlib/ string/       Standard C library
   pthread/                     POSIX threads (via clone)
