@@ -17,6 +17,7 @@
 #include <kernel/pe_loader.h>
 #include <kernel/elf_loader.h>
 #include <kernel/rtc.h>
+#include <kernel/signal.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,6 +115,40 @@ static shell_fg_app_t *active_fg_app = NULL;
 void shell_register_fg_app(shell_fg_app_t *app) { active_fg_app = app; }
 void shell_unregister_fg_app(void) { active_fg_app = NULL; }
 shell_fg_app_t *shell_get_fg_app(void) { return active_fg_app; }
+
+/* Suspended fg apps — parallel to job_table for Ctrl+Z resume */
+static shell_fg_app_t *suspended_apps[MAX_JOBS];
+
+void shell_suspend_fg_app(void) {
+    shell_fg_app_t *fg = active_fg_app;
+    if (!fg) return;
+
+    const char *name = "fg_app";
+    task_info_t *t = fg->task_id >= 0 ? task_get(fg->task_id) : NULL;
+    if (t) name = t->name;
+
+    int job = shell_job_add(t ? t->pid : 0, fg->task_id, name);
+    if (job > 0) {
+        int idx = job - 1;
+        job_table[idx].state = JOB_STOPPED;
+        suspended_apps[idx] = fg;
+        if (fg->task_id >= 0)
+            sig_send(fg->task_id, SIGSTOP);
+    }
+
+    active_fg_app = NULL;  /* unregister WITHOUT calling on_close */
+    printf("\n[%d] Stopped\t%s\n", job, name);
+}
+
+shell_fg_app_t *shell_get_suspended_app(int job_idx) {
+    if (job_idx < 0 || job_idx >= MAX_JOBS) return NULL;
+    return suspended_apps[job_idx];
+}
+
+void shell_clear_suspended_app(int job_idx) {
+    if (job_idx >= 0 && job_idx < MAX_JOBS)
+        suspended_apps[job_idx] = NULL;
+}
 
 #define MAX_ARGS 64
 
@@ -913,9 +948,15 @@ int shell_dispatch_command(int argc, char *argv[]) {
         int ret = elf_run_argv(name, argc, (const char **)argv);
         if (ret >= 0) {
             task_info_t *t = task_get(ret);
-            while (t && t->active && t->state != TASK_STATE_ZOMBIE)
+            while (t && t->active && t->state != TASK_STATE_ZOMBIE
+                   && t->state != TASK_STATE_STOPPED)
                 task_yield();
-            if (t) sh_set_exit_code(t->exit_code);
+            if (t && t->state == TASK_STATE_STOPPED) {
+                int job = shell_job_add(t->pid, ret, name);
+                if (job > 0) printf("\n[%d] Stopped\t%s\n", job, name);
+            } else if (t) {
+                sh_set_exit_code(t->exit_code);
+            }
             return sh_get_exit_code();
         }
 
@@ -924,9 +965,15 @@ int shell_dispatch_command(int argc, char *argv[]) {
         ret = elf_run_argv(path_buf, argc, (const char **)argv);
         if (ret >= 0) {
             task_info_t *t = task_get(ret);
-            while (t && t->active && t->state != TASK_STATE_ZOMBIE)
+            while (t && t->active && t->state != TASK_STATE_ZOMBIE
+                   && t->state != TASK_STATE_STOPPED)
                 task_yield();
-            if (t) sh_set_exit_code(t->exit_code);
+            if (t && t->state == TASK_STATE_STOPPED) {
+                int job = shell_job_add(t->pid, ret, name);
+                if (job > 0) printf("\n[%d] Stopped\t%s\n", job, name);
+            } else if (t) {
+                sh_set_exit_code(t->exit_code);
+            }
             return sh_get_exit_code();
         }
 

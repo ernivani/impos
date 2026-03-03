@@ -77,6 +77,12 @@ int terminal_app_handle_key(char c) {
 
     shell_fg_app_t *fg = shell_get_fg_app();
     if (fg) {
+        if (c == 26) {  /* Ctrl+Z: suspend fg app */
+            shell_suspend_fg_app();
+            shell_draw_prompt();
+            term_damage();
+            return 1;
+        }
         /* Foreground app gets keys */
         if (fg->on_key) fg->on_key(c);
     } else {

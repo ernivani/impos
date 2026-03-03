@@ -46,6 +46,7 @@ int g_serial_console = 0;
 #define CTRL_U  21
 #define CTRL_V  22
 #define CTRL_W  23
+#define CTRL_Z  26
 
 /* --- Line editor state --- */
 static char buf[SHELL_CMD_SIZE];
@@ -165,6 +166,15 @@ int shell_handle_key(char c) {
         cursor_move((int)buf_len - (int)cursor);
         printf("^C\n");
         return 2;
+    }
+    if (c == CTRL_Z) {
+        shell_fg_app_t *fg = shell_get_fg_app();
+        if (fg) {
+            printf("^Z\n");
+            shell_suspend_fg_app();
+            return 2;  /* redraw prompt */
+        }
+        return 0;
     }
     if (c == CTRL_L) {
         terminal_clear();

@@ -234,6 +234,8 @@ int pipe_read(int fd, char *buf, int count, int tid) {
     if (p->count == 0) {
         if (p->writers == 0)
             return 0;  /* EOF — no writers left */
+        if (t->fds[fd].flags & LINUX_O_NONBLOCK)
+            return -3;  /* EAGAIN — non-blocking, no data */
         /* Buffer empty, writers exist → block */
         p->read_tid = tid;
         return -2;  /* sentinel: caller should block + retry */
@@ -278,6 +280,8 @@ int pipe_write(int fd, const char *buf, int count, int tid) {
 
     uint32_t space = PIPE_BUF_SIZE - p->count;
     if (space == 0) {
+        if (t->fds[fd].flags & LINUX_O_NONBLOCK)
+            return -3;  /* EAGAIN — non-blocking, buffer full */
         /* Buffer full → block */
         p->write_tid = tid;
         return -2;  /* sentinel: caller should block + retry */

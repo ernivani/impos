@@ -59,4 +59,9 @@ typedef struct {
 shell_job_t *shell_get_job_table(void);
 void shell_job_update_all(void);
 
+/* Job control: suspend/resume foreground apps */
+void             shell_suspend_fg_app(void);
+shell_fg_app_t  *shell_get_suspended_app(int job_idx);
+void             shell_clear_suspended_app(int job_idx);
+
 #endif

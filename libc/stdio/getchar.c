@@ -495,6 +495,13 @@ char getchar(void) {
                         if (ti && ti->killable && ti->is_user)
                             sig_send(i, SIGINT);
                     }
+                } else if (c == 'z') {
+                    /* Ctrl+Z: send SIGTSTP to all killable user tasks */
+                    for (int i = 4; i < TASK_MAX; i++) {
+                        task_info_t *ti = task_get(i);
+                        if (ti && ti->killable && ti->is_user)
+                            sig_send(i, SIGTSTP);
+                    }
                 }
                 return c - 'a' + 1;
             }

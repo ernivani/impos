@@ -23,6 +23,9 @@ initrd_staging/
 .vscode/
 .idea/
 
+# Generated reports
+*.out
+
 # Debug / tracing artifacts
 gl_intercept.c
 gl_intercept.so

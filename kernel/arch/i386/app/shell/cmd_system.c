@@ -722,6 +722,15 @@ static void cmd_fg(int argc, char* argv[]) {
         sig_send(job_table[idx].tid, SIGCONT);
         job_table[idx].state = JOB_RUNNING;
     }
+    /* Check for suspended fg app (builtin like top) — uses callback model */
+    shell_fg_app_t *app = shell_get_suspended_app(idx);
+    if (app) {
+        shell_register_fg_app(app);
+        shell_clear_suspended_app(idx);
+        job_table[idx].state = JOB_DONE;
+        sh_set_exit_code(0);
+        return;
+    }
     /* Wait for it to finish */
     task_info_t *t = task_get(job_table[idx].tid);
     while (t && t->active && t->state != TASK_STATE_ZOMBIE &&
