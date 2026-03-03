@@ -1,11 +1,12 @@
 /*
- * aarch64 architecture init — Phase 2.
+ * aarch64 architecture init — Phase 3.
  *
  * Sets up:
  *   - VBAR_EL1 exception vector table
  *   - GICv2 interrupt controller (Distributor + CPU Interface)
  *   - ARM Generic Timer at 120Hz (matching i386 PIT frequency)
  *   - Exception dispatch (IRQ → handler table, Sync → SVC/page fault)
+ *   - Preemptive scheduling via timer IRQ → schedule()
  *
  * QEMU virt hardware map:
  *   GICv2 Distributor:  0x08000000
@@ -17,6 +18,9 @@
 #include <kernel/idt.h>
 #include <kernel/io.h>
 #include <kernel/boot_info.h>
+#include <kernel/task.h>
+#include <kernel/sched.h>
+#include <kernel/signal.h>
 #include <stdint.h>
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -167,9 +171,7 @@ static void timer_init(void) {
     write_cntp_ctl(1);  /* ENABLE=1, IMASK=0 */
 }
 
-static void timer_irq_handler(registers_t *regs) {
-    (void)regs;
-
+static registers_t* timer_irq_handler(registers_t *regs) {
     tick_count++;
 
     /* Track CPU usage */
@@ -178,9 +180,25 @@ static void timer_irq_handler(registers_t *regs) {
     else
         busy_ticks++;
 
-    /* Schedule next interrupt (absolute, not relative — avoids drift) */
+    /* Task accounting */
+    task_tick();
+
+    /* Sample CPU usage every second (120 ticks) */
+    if (tick_count % 120 == 0)
+        task_sample();
+
+    /* Check signal alarms */
+    sig_check_alarms();
+
+    /* Schedule next timer interrupt (absolute, avoids drift) */
     uint64_t next = read_cntpct() + timer_interval;
     write_cntp_cval(next);
+
+    /* Run scheduler — may return a different task's register frame */
+    if (sched_is_active())
+        return schedule(regs);
+
+    return regs;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -239,7 +257,7 @@ void gdt_set_gs_base(uint32_t base) { (void)base; }
 #define VEC_KIND_FIQ    2
 #define VEC_KIND_SERROR 3
 
-void arch_handle_exception(registers_t *regs, uint32_t type) {
+registers_t* arch_handle_exception(registers_t *regs, uint32_t type) {
     uint32_t kind = type & 0x3;
 
     if (kind == VEC_KIND_IRQ || kind == VEC_KIND_FIQ) {
@@ -248,11 +266,13 @@ void arch_handle_exception(registers_t *regs, uint32_t type) {
         uint32_t intid = iar & 0x3FF;
 
         if (intid == GIC_INTID_SPURIOUS)
-            return;
+            return regs;
 
-        /* Timer PPI */
+        registers_t *ret = regs;
+
+        /* Timer PPI — may context-switch (returns different regs) */
         if (intid == TIMER_PPI) {
-            timer_irq_handler(regs);
+            ret = timer_irq_handler(regs);
         } else if (intid < MAX_IRQ_HANDLERS && irq_handlers[intid]) {
             irq_handlers[intid](regs);
         } else {
@@ -261,7 +281,7 @@ void arch_handle_exception(registers_t *regs, uint32_t type) {
 
         /* End of interrupt */
         mmio_write32(GICC_EOIR, iar);
-        return;
+        return ret;
     }
 
     if (kind == VEC_KIND_SYNC) {
@@ -271,11 +291,12 @@ void arch_handle_exception(registers_t *regs, uint32_t type) {
         uint32_t ec = (esr >> 26) & 0x3F;
 
         if (ec == EC_SVC_A64) {
-            /* System call — will be wired in Phase 4 */
-            DBG("SVC #%u from ELR=0x%x (not yet implemented)",
-                (unsigned)(esr & 0xFFFF),
-                (unsigned)regs->elr);
-            return;
+            /* System call — will be wired in Phase 4.
+             * For now, task_yield() uses SVC #0 — treat as a yield
+             * by triggering a reschedule. */
+            if (sched_is_active())
+                return schedule(regs);
+            return regs;
         }
 
         if (ec == EC_DATA_ABORT || ec == EC_DATA_ABORT_S ||
@@ -299,6 +320,8 @@ void arch_handle_exception(registers_t *regs, uint32_t type) {
                      (unsigned)regs->elr);
         goto hang;
     }
+
+    return regs;
 
 hang:
     serial_puts("*** System halted ***\r\n");
@@ -328,8 +351,9 @@ void idt_initialize(void) {
     /* Initialize timer at 120 Hz */
     timer_init();
 
-    /* Register timer handler in IRQ table */
-    irq_register_handler(TIMER_PPI, timer_irq_handler);
+    /* Timer handler is called directly from arch_handle_exception,
+     * not through the generic IRQ table (since it returns registers_t*
+     * for context switching). No registration needed. */
 
     /* Enable IRQs */
     sti();

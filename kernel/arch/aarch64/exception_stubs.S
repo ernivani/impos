@@ -65,9 +65,13 @@ exception_handler_common:
     str     x10, [sp, #OFF_SP]
 
     /* Call C handler: arch_handle_exception(regs=x0, type=x1)
-     * w1 still holds the type code set by the trampoline. */
+     * w1 still holds the type code set by the trampoline.
+     * Returns registers_t* in x0 — may be a DIFFERENT frame (context switch). */
     mov     x0, sp
     bl      arch_handle_exception
+
+    /* ── Context switch: adopt returned frame as our restore source ── */
+    mov     sp, x0
 
     /* ── Restore context ───────────────────────────────────────── */
 

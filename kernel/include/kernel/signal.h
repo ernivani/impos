@@ -39,11 +39,20 @@ typedef void (*sig_handler_t)(int);
 #define SIG_SETMASK   2
 
 /* Saved user-mode context pushed onto user stack during delivery */
+#if defined(__aarch64__)
+typedef struct {
+    uint64_t x[31];     /* x0-x30 */
+    uint64_t sp;
+    uint64_t elr;       /* return address (PC) */
+    uint64_t spsr;
+} sig_context_t;  /* 34 * 8 = 272 bytes */
+#else
 typedef struct {
     uint32_t eip, cs, eflags, esp, ss;
     uint32_t eax, ecx, edx, ebx, esi, edi, ebp;
     uint32_t ds, es, fs, gs;
 } sig_context_t;  /* 16 x 4 = 64 bytes */
+#endif
 
 /* Per-task signal state (embedded in task_info_t) */
 typedef struct {

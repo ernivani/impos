@@ -2,6 +2,7 @@
 #define _KERNEL_TASK_H
 
 #include <stdint.h>
+#include <stddef.h>  /* for uintptr_t */
 #include <kernel/pipe.h>
 #include <kernel/signal.h>
 #include <kernel/shm.h>
@@ -45,8 +46,8 @@ typedef struct {
 
     /* Preemptive multitasking fields */
     task_state_t state;
-    uint32_t     esp;         /* saved stack pointer */
-    uint32_t*    stack_base;  /* malloc'd stack (NULL for boot task) */
+    uintptr_t    esp;         /* saved stack pointer (registers_t* on stack) */
+    void*        stack_base;  /* malloc'd stack (NULL for boot task) */
     uint32_t     stack_size;  /* stack size in bytes */
     uint32_t     sleep_until; /* PIT tick to wake at (for SLEEPING) */
 
@@ -66,13 +67,13 @@ typedef struct {
 
     /* Ring 3 user thread fields */
     int          is_user;       /* 1 if ring 3 thread */
-    uint32_t     kernel_esp;    /* top of kernel stack (→ TSS.esp0) */
-    uint32_t     kernel_stack;  /* PMM-allocated kernel stack phys addr */
-    uint32_t     user_stack;    /* PMM-allocated user stack phys addr */
+    uintptr_t    kernel_esp;    /* top of kernel stack (→ TSS.esp0) */
+    uintptr_t    kernel_stack;  /* PMM-allocated kernel stack phys addr */
+    uintptr_t    user_stack;    /* PMM-allocated user stack phys addr */
 
     /* Per-process page directory */
-    uint32_t     page_dir;        /* page directory phys addr (kernel PD for ring 0) */
-    uint32_t     user_page_table; /* PMM page table for user space (for cleanup) */
+    uintptr_t    page_dir;        /* page directory phys addr (kernel PD for ring 0) */
+    uintptr_t    user_page_table; /* PMM page table for user space (for cleanup) */
 
     /* Per-task signal state */
     sig_state_t  sig;
