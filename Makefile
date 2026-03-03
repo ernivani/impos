@@ -68,7 +68,6 @@ run: all $(DISK_IMAGE)
 		-netdev user,id=net0 \
 		-device rtl8139,netdev=net0 \
 		-device virtio-tablet-pci \
-		-usb -device usb-kbd \
 		-m 4G \
 		-vga virtio \
 		-display $(QEMU_DISPLAY) \
@@ -86,7 +85,6 @@ run-gl: all $(DISK_IMAGE)
 		-netdev user,id=net0 \
 		-device rtl8139,netdev=net0 \
 		-device virtio-tablet-pci \
-		-usb -device usb-kbd \
 		-m 4G \
 		-device virtio-vga-gl \
 		-display $(DISPLAY_GL),gl=on \
