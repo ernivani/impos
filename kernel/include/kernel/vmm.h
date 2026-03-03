@@ -2,7 +2,11 @@
 #define _KERNEL_VMM_H
 
 #include <stdint.h>
+#ifndef __aarch64__
 #include <kernel/multiboot.h>
+#else
+typedef void multiboot_info_t;  /* Opaque on aarch64 — not used */
+#endif
 
 /* Page table entry flags */
 #define PTE_PRESENT     0x001

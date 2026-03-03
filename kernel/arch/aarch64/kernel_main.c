@@ -1,22 +1,19 @@
 /*
- * aarch64 stub kernel_main — Phase 0-1.
+ * aarch64 kernel_main — Phase 2.
  *
- * Prints a greeting to the PL011 UART and halts.
- * This will be replaced by the real kernel_main once enough
- * subsystems are ported (Phase 3+).
+ * Initializes: serial → PMM → VMM (MMU) → interrupts (GIC + timer).
+ * Then enters an idle loop to demonstrate timer ticks.
  */
 
 #include <kernel/tty.h>
 #include <kernel/io.h>
 #include <kernel/boot_info.h>
+#include <kernel/idt.h>
+#include <kernel/pmm.h>
+#include <kernel/vmm.h>
 
-/* Global boot info (defined here for now, will move to common code) */
+/* Global boot info */
 boot_info_t g_boot_info;
-
-/* Stub for pit_get_ticks — no timer yet (Phase 2 adds the generic timer) */
-uint32_t pit_get_ticks(void) {
-    return 0;
-}
 
 void kernel_main(void *dtb) {
     /* Save DTB pointer for later parsing (Phase 8) */
@@ -30,17 +27,36 @@ void kernel_main(void *dtb) {
 
     serial_puts("\r\n");
     serial_puts("========================================\r\n");
-    serial_puts("  Hello from ImposOS aarch64!\r\n");
-    serial_puts("  QEMU virt machine, Cortex-A72\r\n");
+    serial_puts("  ImposOS aarch64 — Phase 2\r\n");
+    serial_puts("  QEMU virt, Cortex-A72, 8GB RAM\r\n");
     serial_puts("========================================\r\n");
     serial_puts("\r\n");
 
     DBG("DTB pointer: 0x%x", (unsigned)(uintptr_t)dtb);
-    DBG("Phase 0 complete — boot stub working.");
-    DBG("Next: Phase 2 (interrupts, timer, MMU)");
 
-    /* Halt */
+    /* Phase 2: Physical Memory Manager */
+    pmm_init(0);
+
+    /* Phase 2: Virtual Memory Manager (enables MMU) */
+    vmm_init(0);
+
+    /* Phase 2: Interrupts (GICv2 + Generic Timer at 120Hz) */
+    idt_initialize();
+
+    /* Verify timer is running — print tick count every ~1 second */
+    DBG("Entering idle loop (ticks print every ~120 ticks)...");
+
+    uint32_t last_print = 0;
     while (1) {
-        __asm__ volatile("wfe");
+        uint32_t ticks = pit_get_ticks();
+        if (ticks - last_print >= 120) {
+            DBG("tick=%u (uptime: %u.%us, free frames: %u)",
+                ticks, ticks / 120, (ticks % 120) * 10 / 120,
+                pmm_free_frame_count());
+            last_print = ticks;
+        }
+        cpu_halting = 1;
+        __asm__ volatile("wfi");
+        cpu_halting = 0;
     }
 }

@@ -2,7 +2,11 @@
 #define _KERNEL_PMM_H
 
 #include <stdint.h>
+#ifndef __aarch64__
 #include <kernel/multiboot.h>
+#else
+typedef void multiboot_info_t;  /* Opaque on aarch64 — not used */
+#endif
 
 /* Initialize the physical memory manager from multiboot mmap */
 void pmm_init(multiboot_info_t *mbi);
