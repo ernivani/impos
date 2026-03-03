@@ -227,13 +227,6 @@ int virtio_mmio_setup_vq(virtio_mmio_dev_t *dev, uint32_t queue_idx,
     }
     __asm__ volatile("dmb ish" ::: "memory");
 
-    DBG("virtio-mmio: vq[%u] size=%u desc=0x%x avail=0x%x used=0x%x pfn=0x%x",
-        queue_idx, size,
-        (unsigned)(uintptr_t)vq->desc,
-        (unsigned)(uintptr_t)vq->avail,
-        (unsigned)(uintptr_t)vq->used,
-        (unsigned)((uintptr_t)mem / VIRTIO_MMIO_PAGE_SIZE));
-
     return 0;
 }
 
