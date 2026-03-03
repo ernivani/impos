@@ -28,9 +28,15 @@ initrd.tar:
 	@rm -rf initrd_staging
 	@mkdir -p initrd_staging/etc initrd_staging/bin initrd_staging/usr/bin initrd_staging/tmp initrd_staging/wallpapers
 	@echo "Welcome to ImposOS!" > initrd_staging/etc/motd
-	@cc -o tools/gen_wallpaper tools/gen_wallpaper.c 2>/dev/null && \
+	@if [ -f wallpaper.jpg ] && command -v convert >/dev/null 2>&1; then \
+		convert wallpaper.jpg -resize 1920x1080 initrd_staging/wallpapers/default.png; \
+	elif [ -f wallpaper.png ]; then \
+		cp wallpaper.png initrd_staging/wallpapers/default.png; \
+	else \
+		cc -o tools/gen_wallpaper tools/gen_wallpaper.c 2>/dev/null && \
 		tools/gen_wallpaper initrd_staging/wallpapers/default.bmp && \
-		rm -f tools/gen_wallpaper || true
+		rm -f tools/gen_wallpaper; \
+	fi
 	@if [ -f test_programs/busybox ]; then \
 		cp test_programs/busybox initrd_staging/bin/busybox; \
 		for cmd in ls cat echo pwd uname id wc head tail; do \

@@ -583,15 +583,18 @@ image_t *image_scale(const image_t *src, int new_w, int new_h) {
     int sh = src->height;
 
     for (int y = 0; y < new_h; y++) {
-        /* Fixed-point source coordinate (16.16) */
-        uint32_t sy_fp = (uint32_t)y * ((uint32_t)(sh - 1) << 16) / (uint32_t)(new_h - 1 > 0 ? new_h - 1 : 1);
+        /* Fixed-point source coordinate (16.16) — use uint64_t to avoid overflow
+         * for images wider than ~256px (e.g. 1920 * (1919<<16) > UINT32_MAX) */
+        uint32_t dh = (uint32_t)(new_h - 1 > 0 ? new_h - 1 : 1);
+        uint32_t sy_fp = (uint32_t)((uint64_t)y * ((uint64_t)(sh - 1) << 16) / dh);
         int sy0 = (int)(sy_fp >> 16);
         int sy1 = sy0 + 1;
         if (sy1 >= sh) sy1 = sh - 1;
         int fy = (int)(sy_fp & 0xFFFF) >> 8;  /* 0..255 */
 
+        uint32_t dw = (uint32_t)(new_w - 1 > 0 ? new_w - 1 : 1);
         for (int x = 0; x < new_w; x++) {
-            uint32_t sx_fp = (uint32_t)x * ((uint32_t)(sw - 1) << 16) / (uint32_t)(new_w - 1 > 0 ? new_w - 1 : 1);
+            uint32_t sx_fp = (uint32_t)((uint64_t)x * ((uint64_t)(sw - 1) << 16) / dw);
             int sx0 = (int)(sx_fp >> 16);
             int sx1 = sx0 + 1;
             if (sx1 >= sw) sx1 = sw - 1;
@@ -613,7 +616,8 @@ image_t *image_scale(const image_t *src, int new_w, int new_h) {
                 int top = v00 + (v10 - v00) * fx / 255; \
                 int bot = v01 + (v11 - v01) * fx / 255; \
                 int val = top + (bot - top) * fy / 255; \
-                if (val < 0) val = 0; if (val > 255) val = 255; \
+                if (val < 0) val = 0; \
+                if (val > 255) val = 255; \
                 result = val; \
             } while (0)
 

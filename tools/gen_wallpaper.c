@@ -1,10 +1,11 @@
 /* gen_wallpaper.c — Generate a default wallpaper BMP for ImposOS initrd.
- * Produces a 640x400 24bpp gradient BMP (dark blue/purple, ~768KB).
+ * Produces a 1920x1080 24bpp gradient BMP (dark blue/purple, ~5.9MB).
  * Build: cc -o gen_wallpaper gen_wallpaper.c
  * Usage: ./gen_wallpaper > default.bmp
  */
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void write16(FILE *f, uint16_t v) { fwrite(&v, 2, 1, f); }
@@ -14,7 +15,7 @@ int main(int argc, char **argv) {
     const char *outfile = "default.bmp";
     if (argc > 1) outfile = argv[1];
 
-    int W = 640, H = 400;
+    int W = 1920, H = 1080;
     int row_bytes = W * 3;
     int row_stride = (row_bytes + 3) & ~3;
     uint32_t pixel_size = (uint32_t)row_stride * H;
@@ -41,7 +42,7 @@ int main(int argc, char **argv) {
     write32(f, 0); write32(f, 0);
 
     /* Pixel data (bottom-up) */
-    uint8_t row[row_stride];
+    uint8_t *row = malloc(row_stride);
     for (int y = H - 1; y >= 0; y--) {
         memset(row, 0, row_stride);
         for (int x = 0; x < W; x++) {
@@ -88,6 +89,7 @@ int main(int argc, char **argv) {
         fwrite(row, 1, row_stride, f);
     }
 
+    free(row);
     fclose(f);
     return 0;
 }

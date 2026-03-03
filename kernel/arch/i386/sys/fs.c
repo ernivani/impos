@@ -1866,7 +1866,7 @@ int fs_mount_initrd(const uint8_t* data, uint32_t size) {
         ptr += ((fsize + 511) / 512) * 512;
     }
 
-    printf("[INITRD] Loaded %d files from initrd\n", files_loaded);
+    DBG("[INITRD] Loaded %d files from initrd\n", files_loaded);
     return files_loaded;
 }
 

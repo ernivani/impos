@@ -609,7 +609,7 @@ static void draw_waves(uint32_t *buf, int w, int h, uint32_t t,
 
 static image_t   *cached_wp_image = NULL;
 static image_t   *cached_wp_scaled = NULL;
-static char       cached_wp_path[128] = "/wallpapers/default.bmp";
+static char       cached_wp_path[128] = "/wallpapers/default.png";
 static int        cached_wp_sw = 0;
 static int        cached_wp_sh = 0;
 
@@ -627,6 +627,9 @@ static void draw_image_wp(uint32_t *buf, int w, int h, uint32_t t,
     /* Load image if not cached or path changed */
     if (!cached_wp_image) {
         cached_wp_image = image_load_file(cached_wp_path);
+        /* Try .bmp fallback if .png not found */
+        if (!cached_wp_image)
+            cached_wp_image = image_load_file("/wallpapers/default.bmp");
         /* Invalidate scaled cache */
         if (cached_wp_scaled) { image_free(cached_wp_scaled); cached_wp_scaled = NULL; }
     }
@@ -707,7 +710,7 @@ static const theme_t *all_themes[WALLPAPER_STYLE_COUNT] = {
 /* ── Public API ─────────────────────────────────────────────────── */
 
 void wallpaper_init(void) {
-    cur_style = WALLPAPER_MOUNTAINS;
+    cur_style = WALLPAPER_IMAGE;
     cur_theme = 0;
 }
 
