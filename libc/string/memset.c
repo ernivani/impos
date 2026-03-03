@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 void* memset(void* bufptr, int value, size_t size) {
+#if defined(__i386__)
 	void *ret = bufptr;
 
 	/* Replicate the byte across all 4 bytes of a dword */
@@ -29,4 +30,10 @@ void* memset(void* bufptr, int value, size_t size) {
 	);
 
 	return ret;
+#else
+	unsigned char *b = bufptr;
+	for (size_t i = 0; i < size; i++)
+		b[i] = (unsigned char)value;
+	return bufptr;
+#endif
 }

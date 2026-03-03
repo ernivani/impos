@@ -18,7 +18,7 @@ KVM_FLAG := $(shell [ -w /dev/kvm ] 2>/dev/null && echo "-enable-kvm -cpu host")
 
 INITRD_MODS := $(shell [ -f doom1.wad ] && echo "-initrd doom1.wad,initrd.tar" || echo "-initrd initrd.tar")
 
-.PHONY: all run run-gl terminal test clean
+.PHONY: all run run-gl terminal test clean build-aarch64 run-aarch64
 
 # ── Build ──────────────────────────────────────────────────────────
 all: initrd.tar
@@ -112,6 +112,23 @@ terminal: all $(DISK_IMAGE)
 		-display $(QEMU_DISPLAY) \
 		-serial stdio \
 		$(KVM_FLAG)
+
+# ── aarch64 Build ─────────────────────────────────────────────────
+# Clean libc/kernel objects first to avoid i386↔aarch64 contamination,
+# then build with ARCH=aarch64 toolchain.
+build-aarch64:
+	cd libc && $(MAKE) clean
+	cd kernel && $(MAKE) clean
+	ARCH=aarch64 ./build.sh
+
+# ── aarch64 Run (serial console, QEMU virt) ──────────────────────
+run-aarch64: build-aarch64
+	qemu-system-aarch64 \
+		-machine virt \
+		-cpu cortex-a53 \
+		-m 4G \
+		-kernel kernel/myos.kernel \
+		-nographic
 
 # ── Automated Tests ───────────────────────────────────────────────
 test: all

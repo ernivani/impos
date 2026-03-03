@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 void* memcpy(void* restrict dstptr, const void* restrict srcptr, size_t size) {
+#if defined(__i386__)
 	void *ret = dstptr;
 	size_t dwords = size >> 2;
 	size_t remain = size & 3;
@@ -21,4 +22,11 @@ void* memcpy(void* restrict dstptr, const void* restrict srcptr, size_t size) {
 	);
 
 	return ret;
+#else
+	unsigned char *d = dstptr;
+	const unsigned char *s = srcptr;
+	for (size_t i = 0; i < size; i++)
+		d[i] = s[i];
+	return dstptr;
+#endif
 }

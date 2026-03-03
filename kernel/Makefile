@@ -27,9 +27,13 @@ CPPFLAGS:=$(CPPFLAGS) $(KERNEL_ARCH_CPPFLAGS)
 LDFLAGS:=$(LDFLAGS) $(KERNEL_ARCH_LDFLAGS)
 LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
 
+# KERNEL_MAIN_OBJ defaults to kernel/kernel.o but can be overridden
+# by arch make.config (e.g., aarch64 provides a stub kernel_main).
+KERNEL_MAIN_OBJ ?= kernel/kernel.o
+
 KERNEL_OBJS=\
 $(KERNEL_ARCH_OBJS) \
-kernel/kernel.o \
+$(KERNEL_MAIN_OBJ) \
 
 OBJS=\
 $(ARCHDIR)/crti.o \
@@ -54,7 +58,9 @@ all: myos.kernel
 
 myos.kernel: $(OBJS) $(ARCHDIR)/linker.ld
 	$(CC) -T $(ARCHDIR)/linker.ld -o $@ $(CFLAGS) $(LINK_LIST)
+ifeq ($(HOSTARCH),i386)
 	@if command -v grub-file >/dev/null 2>&1; then grub-file --is-x86-multiboot myos.kernel; fi
+endif
 
 $(ARCHDIR)/crtbegin.o $(ARCHDIR)/crtend.o:
 	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@

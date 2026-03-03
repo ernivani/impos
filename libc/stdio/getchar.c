@@ -331,7 +331,11 @@ char getchar(void) {
             }
             task_set_current(TASK_IDLE); /* restore idle before HLT */
             cpu_halting = 1;      /* truly idle: about to HLT */
+#if defined(__aarch64__)
+            __asm__ volatile ("wfe");
+#else
             __asm__ volatile ("hlt");
+#endif
             continue;
         }
 

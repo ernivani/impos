@@ -7,6 +7,13 @@
 extern "C" {
 #endif
 
+#if defined(__aarch64__)
+/* aarch64: x19-x30 (12 regs) + SP = 13 × uint64_t = 104 bytes */
+typedef struct {
+	unsigned long regs[13];
+} jmp_buf[1];
+#else
+/* i386: ebx, esi, edi, ebp, esp, eip = 6 × uint32_t = 24 bytes */
 typedef struct {
 	unsigned int ebx;
 	unsigned int esi;
@@ -15,6 +22,7 @@ typedef struct {
 	unsigned int esp;
 	unsigned int eip;
 } jmp_buf[1];
+#endif
 
 int setjmp(jmp_buf env);
 __attribute__((__noreturn__))

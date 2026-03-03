@@ -26,3 +26,9 @@ export CC="$CC --sysroot=$SYSROOT"
 if echo "$HOST" | grep -Eq -- '-elf($|-)'; then
   export CC="$CC -isystem=$INCLUDEDIR"
 fi
+
+# aarch64-linux-gnu-gcc needs -ffreestanding -nostdlib to behave like a
+# freestanding cross-compiler (no Linux libc headers/libs).
+if echo "$HOST" | grep -Eq '^aarch64-linux-gnu'; then
+  export CC="$CC -isystem=$INCLUDEDIR"
+fi

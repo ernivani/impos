@@ -44,8 +44,14 @@ void exit(int status) {
 	(void)status;
 #endif
 
+#if defined(__aarch64__)
+	asm volatile("msr daifset, #15");  /* mask all interrupts */
+	while (1)
+		asm volatile("wfe");
+#else
 	asm volatile("cli");
 	while (1)
 		asm volatile("hlt");
+#endif
 	__builtin_unreachable();
 }

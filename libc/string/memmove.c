@@ -5,6 +5,7 @@ void* memmove(void* dstptr, const void* srcptr, size_t size) {
 	if (dstptr == srcptr || size == 0)
 		return dstptr;
 
+#if defined(__i386__)
 	if (dstptr < srcptr) {
 		/* Forward copy — same as memcpy */
 		void *d = dstptr;
@@ -46,6 +47,17 @@ void* memmove(void* dstptr, const void* srcptr, size_t size) {
 		}
 		__asm__ volatile("cld\n\t" ::: "memory");
 	}
+#else
+	unsigned char *d = dstptr;
+	const unsigned char *s = srcptr;
+	if (d < s) {
+		for (size_t i = 0; i < size; i++)
+			d[i] = s[i];
+	} else {
+		for (size_t i = size; i > 0; i--)
+			d[i - 1] = s[i - 1];
+	}
+#endif
 
 	return dstptr;
 }
