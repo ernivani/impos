@@ -21,6 +21,7 @@
 #include <kernel/task.h>
 #include <kernel/sched.h>
 #include <kernel/signal.h>
+#include <kernel/syscall.h>
 #include <stdint.h>
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -281,6 +282,14 @@ registers_t* arch_handle_exception(registers_t *regs, uint32_t type) {
 
         /* End of interrupt */
         mmio_write32(GICC_EOIR, iar);
+
+        /* Check signals on return to EL0 (user mode) */
+        if ((ret->spsr & 0xF) == 0) {
+            int tid = task_get_current();
+            if (sig_deliver(tid, ret))
+                ret = schedule(ret);
+        }
+
         return ret;
     }
 
@@ -291,12 +300,19 @@ registers_t* arch_handle_exception(registers_t *regs, uint32_t type) {
         uint32_t ec = (esr >> 26) & 0x3F;
 
         if (ec == EC_SVC_A64) {
-            /* System call — will be wired in Phase 4.
-             * For now, task_yield() uses SVC #0 — treat as a yield
-             * by triggering a reschedule. */
-            if (sched_is_active())
-                return schedule(regs);
-            return regs;
+            /* System call: x8=num, x0-x5=args, return in x0 */
+            registers_t *ret = syscall_handler(regs);
+
+            /* Check signals on return to EL0 (user mode).
+             * SPSR.M[3:0] == 0b0000 means EL0t (user mode). */
+            if ((ret->spsr & 0xF) == 0) {
+                int tid = task_get_current();
+                if (sig_deliver(tid, ret)) {
+                    /* Task was killed — reschedule */
+                    ret = schedule(ret);
+                }
+            }
+            return ret;
         }
 
         if (ec == EC_DATA_ABORT || ec == EC_DATA_ABORT_S ||

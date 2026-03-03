@@ -12,6 +12,7 @@
 #include <kernel/task.h>
 #include <kernel/io.h>
 #include <kernel/sched.h>
+#include <kernel/syscall.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <kernel/pipe.h>
@@ -370,9 +371,9 @@ int task_create_user_thread(const char *name, void (*entry)(void), int killable)
 }
 
 void task_yield(void) {
-    /* On aarch64, yield via SVC #0 (Phase 4 wires this up).
-     * For now, just use wfi which will trigger the next timer IRQ. */
-    __asm__ volatile("svc #0");
+    /* SVC #0 with x8=SYS_YIELD (1) triggers syscall_handler → schedule() */
+    register uint64_t x8 __asm__("x8") = SYS_YIELD;
+    __asm__ volatile("svc #0" :: "r"(x8) : "memory");
 }
 
 void task_exit(void) {

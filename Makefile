@@ -36,13 +36,17 @@ all: initrd.tar
 	./build.sh
 
 # ── Run (aarch64, serial console) ────────────────────────────────
-run: all
+run: all $(DISK_IMAGE)
 	qemu-system-aarch64 \
 		-machine virt \
 		-cpu cortex-a72 \
 		-smp 2 \
 		-m 8G \
 		-kernel kernel/myos.kernel \
+		-drive file=$(DISK_IMAGE),format=raw,if=none,id=hd0 \
+		-device virtio-blk-device,drive=hd0 \
+		-netdev user,id=net0 \
+		-device virtio-net-device,netdev=net0 \
 		-nographic
 
 # ── Automated Tests (aarch64) ────────────────────────────────────
