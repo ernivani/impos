@@ -409,14 +409,17 @@ int shell_login(void) {
 
 void shell_initialize_subsystems(void) {
     DBG("subsys: fs_initialize");    fs_initialize();
+    TIME("fs_initialize done");
     DBG("subsys: initrd");
     if (initrd_data && initrd_size > 0) { fs_mount_initrd(initrd_data, initrd_size); }
+    TIME("initrd mounted");
     DBG("subsys: config"); config_initialize();
     DBG("subsys: rtc");    rtc_init();
     DBG("subsys: net");    net_initialize();
     DBG("subsys: env");    env_initialize();
     DBG("subsys: host");   hostname_initialize();
     DBG("subsys: user");   user_initialize();
+    TIME("user init done");
     DBG("subsys: group");  group_initialize();
     DBG("subsys: quota");  quota_initialize();
 

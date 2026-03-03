@@ -12,39 +12,34 @@ void state_run(void) {
     /* GPU_DEBUG: run GPU compositor self-test before login blocks */
     DBG("state: GPU_DEBUG self-test before login");
     gpu_comp_init();
-    DBG("state: GPU_DEBUG self-test done");
+    TIME("gpu_comp_init done");
 
     while (1) {
         switch (state) {
         case STATE_SPLASH:
-            DBG("state: login_show_splash");
+            TIME("state: SPLASH");
             login_show_splash();
-            DBG("state: splash done, checking setup");
             state = shell_needs_setup() ? STATE_SETUP : STATE_LOGIN;
-            DBG("state: transition ok");
             break;
 
         case STATE_SETUP:
-            DBG("state: login_run_setup");
+            TIME("state: SETUP");
             login_run_setup();
-            DBG("state: setup done");
             ui_shell_notify_login();
             state = STATE_DESKTOP;
             break;
 
         case STATE_LOGIN:
-            DBG("state: login_run");
+            TIME("state: LOGIN");
             login_run();
-            DBG("state: login done, notify");
             ui_shell_notify_login();
-            DBG("state: desktop notify done");
+            TIME("state: login done, entering DESKTOP");
             state = STATE_DESKTOP;
             break;
 
         case STATE_DESKTOP: {
-            DBG("state: ui_shell_run");
+            TIME("state: DESKTOP");
             int action = ui_shell_run();
-            DBG("state: ui_shell_run returned");
             if (action == DESKTOP_ACTION_POWER)
                 state = STATE_LOGIN;
             break;

@@ -617,11 +617,14 @@ void gpu_comp_surface_created(int pool_idx, int w, int h) {
     gs->h = h;
     gs->sv_handle = H_SAMPLER_VIEW_BASE + (uint32_t)pool_idx;
 
+    TIME("GPU surface create: idx=%d %dx%d", pool_idx, w, h);
+
     if (!alloc_3d_resource(&gs->res_id, &gs->phys, &gs->frames,
                             PIPE_TEXTURE_2D,
                             VIRGL_FORMAT_B8G8R8A8_UNORM,
                             VIRGL_BIND_SAMPLER_VIEW,
                             (uint32_t)w, (uint32_t)h)) {
+        TIME("GPU surface %d: alloc FAILED", pool_idx);
         gs->active = 0;
         return;
     }
@@ -644,6 +647,7 @@ void gpu_comp_surface_created(int pool_idx, int w, int h) {
     }
 
     gs->active = 1;
+    TIME("GPU surface %d: active res=%u phys=%x", pool_idx, gs->res_id, gs->phys);
 }
 
 void gpu_comp_surface_destroyed(int pool_idx) {
@@ -674,7 +678,23 @@ void gpu_comp_surface_resized(int pool_idx, int new_w, int new_h) {
 void gpu_comp_render_frame(void) {
     if (!gpu_active) return;
 
-    static int first_frame = 1;
+    static int frame_count = 0;
+
+    /* 0. Lazy-retry: if a visible surface has no GPU texture, try to create it now.
+       This handles the case where PMM was fragmented during init but freed up later. */
+    for (int i = 0; i < MAX_GPU_SURFACES; i++) {
+        comp_surface_t *cs = &comp_pool[i];
+        if (!cs->in_use || !cs->visible) continue;
+        if (gpu_surfs[i].active) continue;
+        /* Surface is visible but has no GPU texture — retry allocation */
+        if (frame_count < 5)
+            TIME("GPU lazy-retry surface %d (%dx%d)", i, cs->w, cs->h);
+        gpu_comp_surface_created(i, cs->w, cs->h);
+        if (gpu_surfs[i].active) {
+            /* Force full upload on successful retry */
+            cs->damage_all = 1;
+        }
+    }
 
     /* 1. Upload dirty surface textures to GPU */
     for (int i = 0; i < MAX_GPU_SURFACES; i++) {
@@ -702,6 +722,12 @@ void gpu_comp_render_frame(void) {
                 a = (a * sa) >> 8;
                 dst[p] = (a << 24) | (px & 0x00FFFFFF);
             }
+        }
+
+        /* Log wallpaper pixel sample for first few frames */
+        if (cs->layer == COMP_LAYER_WALLPAPER && frame_count < 3) {
+            DBG("GPU wp upload: px[0]=%x px[100]=%x npix=%d",
+                src[0], npix > 100 ? src[100] : 0, npix);
         }
 
         /* Transfer pixels to host GPU texture */
@@ -757,16 +783,13 @@ void gpu_comp_render_frame(void) {
         }
     }
 
-    if (quad_count == 0) {
-        if (first_frame) {
-            DBG("GPU_COMP: first frame — no visible quads");
-            first_frame = 0;
-        }
-        return;
+    if (frame_count < 5) {
+        TIME("GPU frame %d: quad_count=%d", frame_count, quad_count);
     }
 
-    if (first_frame) {
-        DBG("GPU_COMP: first frame — %d quads", quad_count);
+    if (quad_count == 0) {
+        frame_count++;
+        return;
     }
 
     /* Upload vertex buffer to host */
@@ -864,7 +887,6 @@ void gpu_comp_render_frame(void) {
         }
         gfx_flip_rect(0, 0, (int)screen_w, (int)screen_h);
 
-        if (first_frame)
-            first_frame = 0;
+        frame_count++;
     }
 }

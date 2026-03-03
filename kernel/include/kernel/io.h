@@ -133,4 +133,18 @@ static inline char serial_getc(void) {
 
 #define DBG(fmt, ...) serial_printf("[DBG] " fmt "\n", ##__VA_ARGS__)
 
+/* Boot-time profiler: prints [seconds.milliseconds] prefix to serial.
+   PIT runs at 120Hz so 1 tick ≈ 8.33ms. Before idt_initialize(), ticks=0.
+   Note: serial_printf has no width/padding support, so we manually
+   compute the three digits of milliseconds for zero-padded output. */
+extern uint32_t pit_get_ticks(void);
+#define TIME(fmt, ...) do { \
+    uint32_t _t = pit_get_ticks(); \
+    uint32_t _s = _t / 120; \
+    uint32_t _ms = (_t % 120) * 1000 / 120; \
+    serial_printf("[%u.%u%u%u] " fmt "\n", \
+                  _s, _ms / 100, (_ms / 10) % 10, _ms % 10, \
+                  ##__VA_ARGS__); \
+} while(0)
+
 #endif

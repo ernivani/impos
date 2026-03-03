@@ -488,6 +488,7 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Initialize serial debug output early so gfx_init can log */
     serial_init();
+    TIME("serial_init done");
     DBG("ImposOS booting...");
 
     /* Check for terminal boot mode via kernel cmdline */
@@ -497,10 +498,12 @@ void kernel_main(multiboot_info_t* mbi) {
     DBG("cmdline='%s' terminal_mode=%d autotest=%d", saved_cmdline, terminal_mode, autotest_mode);
 
     if (!terminal_mode) gfx_init(mbi);
+    TIME("gfx_init done");
     terminal_initialize();
 
     /* Set up GDT, IDT, PIC, PIT before anything else */
     idt_initialize();
+    TIME("idt (PIT/PIC) done");
 
     /* Initialize message bus (used by clipboard, notifications, etc.) */
     msgbus_init();
@@ -508,6 +511,7 @@ void kernel_main(multiboot_info_t* mbi) {
     /* Initialize physical and virtual memory management */
     pmm_init(mbi);
     vmm_init(mbi);
+    TIME("pmm+vmm done");
 
     /* Initialize frame reference counting (after PMM, before any allocations) */
     extern void frame_ref_init(void);
@@ -530,6 +534,7 @@ void kernel_main(multiboot_info_t* mbi) {
 
     /* Initialize preemptive scheduler */
     sched_init();
+    TIME("task+sched done");
 
     /* Initialize UI theme */
     ui_theme_init();
@@ -540,12 +545,15 @@ void kernel_main(multiboot_info_t* mbi) {
     /* Initialize PS/2 mouse and firewall */
     mouse_initialize();
     firewall_initialize();
+    TIME("peripherals done");
 
     ata_initialize();
+    TIME("ATA done");
     acpi_initialize();
 
     /* Detect GPU acceleration (VirtIO GPU + Bochs VGA BGA) */
     gfx_init_gpu_accel();
+    TIME("GPU accel done");
 
     /* Initialize VirtIO tablet input (absolute mouse, bypasses PS/2) */
     virtio_input_init();
@@ -580,8 +588,11 @@ void kernel_main(multiboot_info_t* mbi) {
         while (1) asm volatile("hlt");
     } else if (gfx_is_active() && !terminal_mode) {
         /* Graphical boot: init subsystems, then run state machine */
+        TIME("pre-subsystems");
         shell_initialize_subsystems();
+        TIME("subsystems done");
         DBG("state_run: starting GUI");
+        TIME("entering state_run");
         state_run();  /* Never returns */
     } else {
         /* Text-mode shell (either no framebuffer, or terminal boot mode) */

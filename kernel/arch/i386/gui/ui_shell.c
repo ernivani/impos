@@ -158,10 +158,12 @@ void ui_shell_init(void)
     int sh = (int)gfx_height();
 
     compositor_init();
+    TIME("compositor_init done");
     ui_window_init();
     ui_font_init();
     anim_init();
     wallpaper_init();
+    TIME("wallpaper_init done");
     app_init();
 
     gfx_set_compositor_mode(1);
@@ -171,7 +173,9 @@ void ui_shell_init(void)
     if (wp_surf) {
         uint32_t t0 = pit_get_ticks();
         wallpaper_draw(wp_surf->pixels, sw, sh, t0);
+        TIME("wallpaper_draw done");
         comp_surface_damage_all(wp_surf);
+        TIME("wp surface ready");
         wp_last_t = t0;
     }
 
@@ -196,6 +200,7 @@ void ui_shell_init(void)
                                400, 270, "ImposOS");
     demo_paint();
 
+    TIME("ui_shell_init complete");
 }
 
 /* ── Main event loop ────────────────────────────────────────────── */

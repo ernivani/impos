@@ -7,6 +7,7 @@
  */
 #include <kernel/wallpaper.h>
 #include <kernel/image.h>
+#include <kernel/io.h>
 #include <string.h>
 
 /* ── Integer trig (Bhaskara I approximation) ───────────────────── */
@@ -620,6 +621,8 @@ static const theme_t img_theme = {
     0xFF89B4FA, 0xFF89B4FA, 0xFF89B4FA
 };
 
+static int wp_load_logged = 0;  /* one-shot guard for load/fail TIME */
+
 static void draw_image_wp(uint32_t *buf, int w, int h, uint32_t t,
                            int style, int theme_idx, const theme_t *th) {
     (void)t; (void)style; (void)theme_idx; (void)th;
@@ -632,6 +635,13 @@ static void draw_image_wp(uint32_t *buf, int w, int h, uint32_t t,
             cached_wp_image = image_load_file("/wallpapers/default.bmp");
         /* Invalidate scaled cache */
         if (cached_wp_scaled) { image_free(cached_wp_scaled); cached_wp_scaled = NULL; }
+        if (!wp_load_logged) {
+            if (cached_wp_image)
+                TIME("image loaded %dx%d", cached_wp_image->width, cached_wp_image->height);
+            else
+                TIME("image load FAILED (path=%s)", cached_wp_path);
+            wp_load_logged = 1;
+        }
     }
 
     if (!cached_wp_image) {
@@ -659,6 +669,7 @@ static void draw_image_wp(uint32_t *buf, int w, int h, uint32_t t,
         if (scaled_h < h) scaled_h = h;
 
         cached_wp_scaled = image_scale(cached_wp_image, scaled_w, scaled_h);
+        TIME("image scaled to %dx%d", scaled_w, scaled_h);
         cached_wp_sw = w;
         cached_wp_sh = h;
     }
@@ -804,6 +815,7 @@ void wallpaper_set_image_path(const char *path) {
     /* Invalidate cache so it reloads on next draw */
     if (cached_wp_image) { image_free(cached_wp_image); cached_wp_image = NULL; }
     if (cached_wp_scaled) { image_free(cached_wp_scaled); cached_wp_scaled = NULL; }
+    wp_load_logged = 0;
     cached_wp_sw = 0;
     cached_wp_sh = 0;
 }
