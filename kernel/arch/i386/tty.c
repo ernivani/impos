@@ -334,6 +334,10 @@ static void terminal_scroll_up(void) {
 			if (pw > (uint32_t)canvas_pw) pw = (uint32_t)canvas_pw;
 			if (ph > (uint32_t)canvas_ph) ph = (uint32_t)canvas_ph;
 
+			/* Invalidate cursor save — scroll shifts all pixels */
+			canvas_cur_px = -1;
+			canvas_cur_py = -1;
+
 			for (uint32_t row = 0; row < ph - FONT_H; row++) {
 				memcpy(canvas_buf + row * canvas_pw,
 				       canvas_buf + (row + FONT_H) * canvas_pw,

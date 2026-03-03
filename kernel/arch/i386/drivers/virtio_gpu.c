@@ -966,7 +966,7 @@ void virtio_gpu_set_cursor(uint32_t *pixels, int w, int h,
     if (!cursor_res_id) {
         cursor_res_id = next_resource_id++;
         if (gpu_create_resource_2d(cursor_res_id,
-                                    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+                                    VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM,
                                     CURSOR_W, CURSOR_H) != 0)
             return;
 

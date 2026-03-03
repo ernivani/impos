@@ -8,6 +8,7 @@
 
 void shell_initialize(void);
 void shell_initialize_subsystems(void);
+void shell_build_command_table(void);
 int shell_needs_setup(void);
 void shell_process_command(char* command);
 size_t shell_autocomplete(char* buffer, size_t buffer_pos, size_t buffer_size);

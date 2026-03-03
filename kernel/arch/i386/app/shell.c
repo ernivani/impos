@@ -206,7 +206,7 @@ static void add_group(const command_t *cmds, int count) {
         all_commands[num_commands++] = cmds[i];
 }
 
-static void shell_build_command_table(void) {
+void shell_build_command_table(void) {
     num_commands = 0;
 
     /* help and man come first */
@@ -245,16 +245,21 @@ static void shell_build_command_table(void) {
         0
     };
 
-    /* Merge all command groups */
+    /* Merge all command groups.
+     * NOTE: count must be set BEFORE being passed to add_group —
+     * passing cmd_*(&count) and count in the same call is UB because
+     * C does not guarantee argument evaluation order. With -O2, GCC
+     * can (and does) read count before the function sets it. */
     int count;
-    add_group(cmd_fs_commands(&count), count);
-    add_group(cmd_text_commands(&count), count);
-    add_group(cmd_net_commands(&count), count);
-    add_group(cmd_user_commands(&count), count);
-    add_group(cmd_system_commands(&count), count);
-    add_group(cmd_gfx_commands(&count), count);
-    add_group(cmd_process_commands(&count), count);
-    add_group(cmd_exec_commands(&count), count);
+    const command_t *cmds;
+    cmds = cmd_fs_commands(&count);      add_group(cmds, count);
+    cmds = cmd_text_commands(&count);    add_group(cmds, count);
+    cmds = cmd_net_commands(&count);     add_group(cmds, count);
+    cmds = cmd_user_commands(&count);    add_group(cmds, count);
+    cmds = cmd_system_commands(&count);  add_group(cmds, count);
+    cmds = cmd_gfx_commands(&count);     add_group(cmds, count);
+    cmds = cmd_process_commands(&count); add_group(cmds, count);
+    cmds = cmd_exec_commands(&count);    add_group(cmds, count);
 }
 
 /* ── help / man (need the full command table) ── */

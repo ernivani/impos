@@ -590,6 +590,7 @@ void kernel_main(multiboot_info_t* mbi) {
         /* Graphical boot: init subsystems, then run state machine */
         TIME("pre-subsystems");
         shell_initialize_subsystems();
+        shell_build_command_table();
         TIME("subsystems done");
         DBG("state_run: starting GUI");
         TIME("entering state_run");
