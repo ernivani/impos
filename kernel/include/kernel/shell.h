@@ -40,4 +40,23 @@ shell_fg_app_t  *shell_get_fg_app(void);
 /* Desktop terminal integration */
 extern int shell_exit_requested;
 
+/* Job states */
+#define JOB_NONE    0
+#define JOB_RUNNING 1
+#define JOB_STOPPED 2
+#define JOB_DONE    3
+
+typedef struct {
+    int pid;
+    int tid;
+    int pgid;
+    int state;
+    char command[128];
+} shell_job_t;
+
+#define MAX_JOBS 16
+
+shell_job_t *shell_get_job_table(void);
+void shell_job_update_all(void);
+
 #endif
