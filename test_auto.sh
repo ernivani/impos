@@ -4,6 +4,7 @@
 #
 # Usage: ./test_auto.sh [--no-build] [--timeout SECS]
 #
+# Detects architecture from ARCH env var or the built kernel binary.
 # Exit code: 0 if all tests pass, 1 if any test fails or timeout.
 
 set -euo pipefail
@@ -23,20 +24,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ── Detect architecture ──────────────────────────────────────────
+ARCH="${ARCH:-}"
+if [[ -z "$ARCH" ]] && [[ -f kernel/myos.kernel ]]; then
+    if file kernel/myos.kernel | grep -q 'aarch64'; then
+        ARCH=aarch64
+    else
+        ARCH=i386
+    fi
+fi
+ARCH="${ARCH:-aarch64}"
+echo "==> Architecture: $ARCH"
+
 # ── Build ──────────────────────────────────────────────────────────
 if [[ "$BUILD" -eq 1 ]]; then
-    echo "==> Building ImposOS..."
-    make -j"$(nproc)" 2>&1 | tail -3
+    echo "==> Building ImposOS ($ARCH)..."
+    if [[ "$ARCH" == "i386" ]]; then
+        make build-i386 -j"$(nproc)" 2>&1 | tail -3
+    else
+        make -j"$(nproc)" 2>&1 | tail -3
+    fi
 fi
-
-# Ensure disk image exists (fresh for each test run)
-DISK_IMAGE="impos_disk_test.img"
-rm -f "$DISK_IMAGE"
-qemu-img create -f raw "$DISK_IMAGE" 280M >/dev/null 2>&1
 
 # ── Detect KVM ─────────────────────────────────────────────────────
 KVM_FLAG=""
-if [[ -w /dev/kvm ]] 2>/dev/null; then
+if [[ "$ARCH" == "i386" ]] && [[ -w /dev/kvm ]] 2>/dev/null; then
     KVM_FLAG="-enable-kvm -cpu host"
 fi
 
@@ -52,22 +64,38 @@ fi
 echo "==> Starting QEMU (timeout: ${TIMEOUT}s)..."
 rm -f "$LOG_FILE"
 
-# Run QEMU with serial to file, nographic, autotest cmdline
-timeout "$TIMEOUT" qemu-system-i386 \
-    -kernel kernel/myos.kernel \
-    $INITRD_MODS \
-    -append autotest \
-    -drive "file=$DISK_IMAGE,format=raw,if=ide,index=0,media=disk" \
-    -netdev user,id=net0 \
-    -device rtl8139,netdev=net0 \
-    -m 4G \
-    -nographic \
-    -no-reboot \
-    $KVM_FLAG \
-    > "$LOG_FILE" 2>/dev/null || true
+if [[ "$ARCH" == "aarch64" ]]; then
+    # aarch64: QEMU virt machine, serial console
+    timeout "$TIMEOUT" qemu-system-aarch64 \
+        -machine virt \
+        -cpu cortex-a72 \
+        -smp 2 \
+        -m 8G \
+        -kernel kernel/myos.kernel \
+        -nographic \
+        -no-reboot \
+        > "$LOG_FILE" 2>/dev/null || true
+else
+    # i386: legacy QEMU with IDE disk, RTL8139, VGA
+    DISK_IMAGE="impos_disk_test.img"
+    rm -f "$DISK_IMAGE"
+    qemu-img create -f raw "$DISK_IMAGE" 280M >/dev/null 2>&1
 
-# Clean up test disk
-rm -f "$DISK_IMAGE"
+    timeout "$TIMEOUT" qemu-system-i386 \
+        -kernel kernel/myos.kernel \
+        $INITRD_MODS \
+        -append autotest \
+        -drive "file=$DISK_IMAGE,format=raw,if=ide,index=0,media=disk" \
+        -netdev user,id=net0 \
+        -device rtl8139,netdev=net0 \
+        -m 4G \
+        -nographic \
+        -no-reboot \
+        $KVM_FLAG \
+        > "$LOG_FILE" 2>/dev/null || true
+
+    rm -f "$DISK_IMAGE"
+fi
 
 # ── Parse results ──────────────────────────────────────────────────
 if [[ ! -s "$LOG_FILE" ]]; then

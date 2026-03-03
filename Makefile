@@ -13,16 +13,111 @@ else
   QEMU_AUDIO   := -audiodev pa,id=snd0 -device AC97,audiodev=snd0
 endif
 
-# KVM acceleration if available
+# KVM acceleration if available (i386 only — aarch64 uses TCG)
 KVM_FLAG := $(shell [ -w /dev/kvm ] 2>/dev/null && echo "-enable-kvm -cpu host")
 
 INITRD_MODS := $(shell [ -f doom1.wad ] && echo "-initrd doom1.wad,initrd.tar" || echo "-initrd initrd.tar")
 
-.PHONY: all run run-gl terminal test clean build-aarch64 run-aarch64
+.PHONY: all run test clean \
+        build-i386 run-i386 run-i386-gl terminal-i386 test-i386
 
-# ── Build ──────────────────────────────────────────────────────────
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  DEFAULT TARGET: aarch64 (QEMU virt, cortex-a72, 8GB)           ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+# ── Build (aarch64) ──────────────────────────────────────────────
 all: initrd.tar
+	@# Clean any stale i386 objects to avoid cross-arch contamination
+	@if [ -f kernel/myos.kernel ] && file kernel/myos.kernel | grep -q '32-bit'; then \
+		echo ">>> Cleaning stale i386 objects..."; \
+		cd libc && $(MAKE) clean > /dev/null 2>&1; \
+		cd ../kernel && $(MAKE) clean > /dev/null 2>&1; \
+	fi
 	./build.sh
+
+# ── Run (aarch64, serial console) ────────────────────────────────
+run: all
+	qemu-system-aarch64 \
+		-machine virt \
+		-cpu cortex-a72 \
+		-smp 2 \
+		-m 8G \
+		-kernel kernel/myos.kernel \
+		-nographic
+
+# ── Automated Tests (aarch64) ────────────────────────────────────
+test: all
+	./test_auto.sh --no-build
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  LEGACY: i386 targets (GRUB multiboot, IDE, VGA)                ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+# ── Build (i386) ─────────────────────────────────────────────────
+build-i386: initrd.tar
+	@# Clean any stale aarch64 objects to avoid cross-arch contamination
+	@if [ -f kernel/myos.kernel ] && file kernel/myos.kernel | grep -q '64-bit'; then \
+		echo ">>> Cleaning stale aarch64 objects..."; \
+		cd libc && $(MAKE) clean > /dev/null 2>&1; \
+		cd ../kernel && $(MAKE) clean > /dev/null 2>&1; \
+	fi
+	ARCH=i386 ./build.sh
+
+# ── Run (i386, graphical window) ─────────────────────────────────
+run-i386: build-i386 $(DISK_IMAGE)
+	qemu-system-i386 \
+		-kernel kernel/myos.kernel \
+		$(INITRD_MODS) \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
+		-device virtio-tablet-pci \
+		-m 4G \
+		-vga virtio \
+		-display $(QEMU_DISPLAY) \
+		-serial stdio \
+		$(QEMU_AUDIO) \
+		$(KVM_FLAG)
+
+# ── Run (i386, virtio-vga-gl 3D) ────────────────────────────────
+DISPLAY_GL ?= sdl
+run-i386-gl: build-i386 $(DISK_IMAGE)
+	qemu-system-i386 \
+		-kernel kernel/myos.kernel \
+		$(INITRD_MODS) \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
+		-device virtio-tablet-pci \
+		-m 4G \
+		-device virtio-vga-gl \
+		-display $(DISPLAY_GL),gl=on \
+		-serial stdio \
+		$(QEMU_AUDIO) \
+		$(KVM_FLAG)
+
+# ── Terminal (i386, text shell) ──────────────────────────────────
+terminal-i386: build-i386 $(DISK_IMAGE)
+	qemu-system-i386 \
+		-kernel kernel/myos.kernel \
+		$(INITRD_MODS) \
+		-append terminal \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
+		-m 4G \
+		-vga std \
+		-display $(QEMU_DISPLAY) \
+		-serial stdio \
+		$(KVM_FLAG)
+
+# ── Tests (i386) ─────────────────────────────────────────────────
+test-i386: build-i386
+	ARCH=i386 ./test_auto.sh --no-build
+
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║  Shared targets                                                  ║
+# ╚═══════════════════════════════════════════════════════════════════╝
 
 initrd.tar:
 	@rm -rf initrd_staging
@@ -64,75 +159,6 @@ initrd.tar:
 
 $(DISK_IMAGE):
 	qemu-img create -f raw $(DISK_IMAGE) $(DISK_SIZE)
-
-# ── Run (graphical window) ─────────────────────────────────────────
-run: all $(DISK_IMAGE)
-	qemu-system-i386 \
-		-kernel kernel/myos.kernel \
-		$(INITRD_MODS) \
-		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
-		-netdev user,id=net0 \
-		-device rtl8139,netdev=net0 \
-		-device virtio-tablet-pci \
-		-m 4G \
-		-vga virtio \
-		-display $(QEMU_DISPLAY) \
-		-serial stdio \
-		$(QEMU_AUDIO) \
-		$(KVM_FLAG)
-
-# ── Run with virtio-vga-gl (3D GPU acceleration via virgl) ─────────
-DISPLAY_GL ?= sdl
-run-gl: all $(DISK_IMAGE)
-	qemu-system-i386 \
-		-kernel kernel/myos.kernel \
-		$(INITRD_MODS) \
-		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
-		-netdev user,id=net0 \
-		-device rtl8139,netdev=net0 \
-		-device virtio-tablet-pci \
-		-m 4G \
-		-device virtio-vga-gl \
-		-display $(DISPLAY_GL),gl=on \
-		-serial stdio \
-		$(QEMU_AUDIO) \
-		$(KVM_FLAG)
-
-# ── Terminal (text shell, no desktop GUI) ──────────────────────────
-terminal: all $(DISK_IMAGE)
-	qemu-system-i386 \
-		-kernel kernel/myos.kernel \
-		$(INITRD_MODS) \
-		-append terminal \
-		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk \
-		-netdev user,id=net0 \
-		-device rtl8139,netdev=net0 \
-		-m 4G \
-		-vga std \
-		-display $(QEMU_DISPLAY) \
-		-serial stdio \
-		$(KVM_FLAG)
-
-# ── aarch64 Build ─────────────────────────────────────────────────
-# Clean libc/kernel objects first to avoid i386↔aarch64 contamination,
-# then build with ARCH=aarch64 toolchain.
-build-aarch64:
-	cd libc && $(MAKE) clean
-	cd kernel && $(MAKE) clean
-	ARCH=aarch64 ./build.sh
-
-# ── aarch64 Run (serial console, QEMU virt) ──────────────────────
-run-aarch64: build-aarch64
-	qemu-system-aarch64 \
-		-machine virt \
-		-cpu cortex-a53 \
-		-m 4G \
-		-kernel kernel/myos.kernel \
-		-nographic
-
-# ── Automated Tests ───────────────────────────────────────────────
-test: all
-	./test_auto.sh --no-build
 
 # ── Clean ──────────────────────────────────────────────────────────
 clean:

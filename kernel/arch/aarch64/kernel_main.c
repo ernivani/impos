@@ -31,7 +31,7 @@ void kernel_main(void *dtb) {
     serial_puts("\r\n");
     serial_puts("========================================\r\n");
     serial_puts("  Hello from ImposOS aarch64!\r\n");
-    serial_puts("  QEMU virt machine, Cortex-A53\r\n");
+    serial_puts("  QEMU virt machine, Cortex-A72\r\n");
     serial_puts("========================================\r\n");
     serial_puts("\r\n");
 
