@@ -1,0 +1,1 @@
+../../../i386/app/test/test_shell.c
