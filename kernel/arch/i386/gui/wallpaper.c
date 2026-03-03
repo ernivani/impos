@@ -6,6 +6,7 @@
  * No libm required — uses integer sine approximation (Bhaskara I).
  */
 #include <kernel/wallpaper.h>
+#include <kernel/image.h>
 #include <string.h>
 
 /* ── Integer trig (Bhaskara I approximation) ───────────────────── */
@@ -603,6 +604,84 @@ static void draw_waves(uint32_t *buf, int w, int h, uint32_t t,
     (void)style;
 }
 
+/* ── Style: Image ──────────────────────────────────────────────── */
+/* Loads and caches a PNG/BMP image from disk, scales to fill screen. */
+
+static image_t   *cached_wp_image = NULL;
+static image_t   *cached_wp_scaled = NULL;
+static char       cached_wp_path[128] = "/wallpapers/default.bmp";
+static int        cached_wp_sw = 0;
+static int        cached_wp_sh = 0;
+
+/* Single theme entry for Image style */
+static const theme_t img_theme = {
+    "Custom", 0xFF89B4FA,
+    { 0xFF1E1E2E, 0xFF1E1E2E, 0, 0, 0 }, 2,
+    0xFF89B4FA, 0xFF89B4FA, 0xFF89B4FA
+};
+
+static void draw_image_wp(uint32_t *buf, int w, int h, uint32_t t,
+                           int style, int theme_idx, const theme_t *th) {
+    (void)t; (void)style; (void)theme_idx; (void)th;
+
+    /* Load image if not cached or path changed */
+    if (!cached_wp_image) {
+        cached_wp_image = image_load_file(cached_wp_path);
+        /* Invalidate scaled cache */
+        if (cached_wp_scaled) { image_free(cached_wp_scaled); cached_wp_scaled = NULL; }
+    }
+
+    if (!cached_wp_image) {
+        /* Fallback to mountains */
+        draw_mountains(buf, w, h, 64, WALLPAPER_MOUNTAINS, 0, &mtns[0]);
+        return;
+    }
+
+    /* Scale to fill if dimensions changed */
+    if (!cached_wp_scaled || cached_wp_sw != w || cached_wp_sh != h) {
+        if (cached_wp_scaled) image_free(cached_wp_scaled);
+
+        /* Scale-to-fill: find scale factor that covers entire screen,
+         * then crop center */
+        int iw = cached_wp_image->width;
+        int ih = cached_wp_image->height;
+
+        /* Scale factor: max(w/iw, h/ih) — using integer math */
+        int scale_w = w * 1024 / iw;
+        int scale_h = h * 1024 / ih;
+        int scale = (scale_w > scale_h) ? scale_w : scale_h;
+        int scaled_w = iw * scale / 1024;
+        int scaled_h = ih * scale / 1024;
+        if (scaled_w < w) scaled_w = w;
+        if (scaled_h < h) scaled_h = h;
+
+        cached_wp_scaled = image_scale(cached_wp_image, scaled_w, scaled_h);
+        cached_wp_sw = w;
+        cached_wp_sh = h;
+    }
+
+    if (!cached_wp_scaled) {
+        draw_mountains(buf, w, h, 64, WALLPAPER_MOUNTAINS, 0, &mtns[0]);
+        return;
+    }
+
+    /* Blit center-cropped region */
+    int ox = (cached_wp_scaled->width - w) / 2;
+    int oy = (cached_wp_scaled->height - h) / 2;
+    if (ox < 0) ox = 0;
+    if (oy < 0) oy = 0;
+
+    for (int y = 0; y < h; y++) {
+        int sy = oy + y;
+        if (sy >= cached_wp_scaled->height) sy = cached_wp_scaled->height - 1;
+        for (int x = 0; x < w; x++) {
+            int sx = ox + x;
+            if (sx >= cached_wp_scaled->width) sx = cached_wp_scaled->width - 1;
+            buf[y * w + x] = cached_wp_scaled->pixels[sy * cached_wp_scaled->width + sx];
+        }
+    }
+}
+
 /* ── Dispatch table ─────────────────────────────────────────────── */
 
 typedef void (*draw_fn_t)(uint32_t *, int, int, uint32_t, int, int, const theme_t *);
@@ -612,16 +691,17 @@ static const draw_fn_t draw_fns[WALLPAPER_STYLE_COUNT] = {
     draw_geometric,
     draw_stars_wp,
     draw_waves,
+    draw_image_wp,
 };
 
 static const char *style_names[WALLPAPER_STYLE_COUNT] = {
-    "Mountains", "Gradient", "Geometric", "Stars", "Waves"
+    "Mountains", "Gradient", "Geometric", "Stars", "Waves", "Image"
 };
 
-static const int theme_counts[WALLPAPER_STYLE_COUNT] = { 4, 4, 3, 3, 3 };
+static const int theme_counts[WALLPAPER_STYLE_COUNT] = { 4, 4, 3, 3, 3, 1 };
 
 static const theme_t *all_themes[WALLPAPER_STYLE_COUNT] = {
-    mtns, grads, geos, stars_t, wavest
+    mtns, grads, geos, stars_t, wavest, &img_theme
 };
 
 /* ── Public API ─────────────────────────────────────────────────── */
@@ -710,4 +790,21 @@ uint32_t wallpaper_theme_color(int style_idx, int theme_idx) {
     int tc = theme_counts[style_idx];
     if (theme_idx < 0 || theme_idx >= tc) return 0xFF808080;
     return all_themes[style_idx][theme_idx].dot_color;
+}
+
+void wallpaper_set_image_path(const char *path) {
+    if (!path) return;
+    int len = 0;
+    while (path[len] && len < 126) len++;
+    memcpy(cached_wp_path, path, len);
+    cached_wp_path[len] = '\0';
+    /* Invalidate cache so it reloads on next draw */
+    if (cached_wp_image) { image_free(cached_wp_image); cached_wp_image = NULL; }
+    if (cached_wp_scaled) { image_free(cached_wp_scaled); cached_wp_scaled = NULL; }
+    cached_wp_sw = 0;
+    cached_wp_sh = 0;
+}
+
+const char *wallpaper_get_image_path(void) {
+    return cached_wp_path;
 }

@@ -9,6 +9,7 @@
 #include <kernel/settings_app.h>
 #include <kernel/ui_window.h>
 #include <kernel/wallpaper.h>
+#include <kernel/image.h>
 #include <kernel/gfx.h>
 #include <kernel/ui_theme.h>
 #include <string.h>
@@ -146,16 +147,38 @@ static void settings_paint(void) {
                              0xFFCDD6F4, 1);
         cy += 24;
 
-        /* Thumbnail grid: 5 style cards */
+        /* Thumbnail grid: 6 style cards in 3x2 layout */
         int cur_style = wallpaper_get_style();
         for (int s = 0; s < WALLPAPER_STYLE_COUNT; s++) {
-            int tx = cx + s * (THUMB_W + 12);
-            int ty = cy;
+            int col_idx = s % 3;
+            int row_idx = s / 3;
+            int tx = cx + col_idx * (THUMB_W + 12);
+            int ty = cy + row_idx * (THUMB_H + 24);
 
-            /* Thumbnail background */
+            /* Thumbnail: for Image style, show a mini preview if loaded */
             uint32_t thumb_buf[THUMB_W * THUMB_H];
-            wallpaper_draw_thumbnail(thumb_buf, THUMB_W, THUMB_H, s,
-                                     wallpaper_get_theme());
+            if (s == WALLPAPER_IMAGE) {
+                image_t *preview = image_load_file(wallpaper_get_image_path());
+                if (preview) {
+                    image_t *thumb = image_scale(preview, THUMB_W, THUMB_H);
+                    if (thumb) {
+                        memcpy(thumb_buf, thumb->pixels,
+                               THUMB_W * THUMB_H * sizeof(uint32_t));
+                        image_free(thumb);
+                    } else {
+                        wallpaper_draw_thumbnail(thumb_buf, THUMB_W, THUMB_H,
+                                                 s, 0);
+                    }
+                    image_free(preview);
+                } else {
+                    /* No image available — draw placeholder */
+                    for (int i = 0; i < THUMB_W * THUMB_H; i++)
+                        thumb_buf[i] = 0xFF1E1E2E;
+                }
+            } else {
+                wallpaper_draw_thumbnail(thumb_buf, THUMB_W, THUMB_H, s,
+                                         wallpaper_get_theme());
+            }
 
             /* Blit thumbnail into canvas */
             for (int row = 0; row < THUMB_H; row++) {
@@ -190,7 +213,7 @@ static void settings_paint(void) {
             uint32_t nfg = (s == cur_style) ? 0xFFCDD6F4 : 0xFF6C7086;
             gfx_surf_draw_string_smooth(&gs, nx, ty + THUMB_H + 6, sname, nfg, 1);
         }
-        cy += THUMB_H + 24;
+        cy += 2 * (THUMB_H + 24);
 
         /* Theme dots */
         {
@@ -268,11 +291,14 @@ static int settings_mouse_wallpaper(int mx, int my, int btn_up) {
     int new_hover_style = -1;
     int new_hover_dot   = -1;
 
-    /* Check thumbnails */
+    /* Check thumbnails (3x2 grid) */
     for (int s = 0; s < WALLPAPER_STYLE_COUNT; s++) {
-        int tx = cx + s * (THUMB_W + 12);
+        int col_idx = s % 3;
+        int row_idx = s / 3;
+        int tx = cx + col_idx * (THUMB_W + 12);
+        int ty = cy + row_idx * (THUMB_H + 24);
         if (mx >= tx && mx < tx + THUMB_W &&
-            my >= cy && my < cy + THUMB_H) {
+            my >= ty && my < ty + THUMB_H) {
             new_hover_style = s;
             if (btn_up) {
                 wallpaper_set_style(s, 0);
@@ -282,7 +308,7 @@ static int settings_mouse_wallpaper(int mx, int my, int btn_up) {
             break;
         }
     }
-    cy += THUMB_H + 24;
+    cy += 2 * (THUMB_H + 24);
 
     /* Check theme dots */
     int cur_style = wallpaper_get_style();

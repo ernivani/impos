@@ -9,7 +9,8 @@
 #define WALLPAPER_GEOMETRIC  2
 #define WALLPAPER_STARS      3
 #define WALLPAPER_WAVES      4
-#define WALLPAPER_STYLE_COUNT 5
+#define WALLPAPER_IMAGE      5
+#define WALLPAPER_STYLE_COUNT 6
 
 /* Max themes per style */
 #define WALLPAPER_MAX_THEMES 4
@@ -46,5 +47,9 @@ uint32_t wallpaper_theme_color(int style_idx, int theme_idx);
 
 /* Returns 1 during theme cross-fade transition (for adaptive wallpaper FPS). */
 int wallpaper_is_transitioning(void);
+
+/* Image wallpaper path (for WALLPAPER_IMAGE style). */
+void wallpaper_set_image_path(const char *path);
+const char *wallpaper_get_image_path(void);
 
 #endif

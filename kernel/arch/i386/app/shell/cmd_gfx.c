@@ -11,6 +11,7 @@
 #include <kernel/pmm.h>
 #include <kernel/task.h>
 #include <kernel/sched.h>
+#include <kernel/image.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -808,6 +809,93 @@ static void cmd_fps(int argc, char* argv[]) {
     wm_composite();
 }
 
+/* ═══ imgview — display an image file fullscreen ═════════════════ */
+
+static void cmd_imgview(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Usage: imgview <path>\n");
+        return;
+    }
+
+    if (!gfx_is_active()) {
+        printf("Graphics mode not available\n");
+        return;
+    }
+
+    image_t *img = image_load_file(argv[1]);
+    if (!img) {
+        printf("imgview: cannot load image '%s'\n", argv[1]);
+        return;
+    }
+
+    int W = (int)gfx_width();
+    int H = (int)gfx_height();
+
+    /* Scale to fit screen while preserving aspect ratio */
+    int scale_w = W * 1024 / img->width;
+    int scale_h = H * 1024 / img->height;
+    int scale = (scale_w < scale_h) ? scale_w : scale_h;
+    int sw = img->width * scale / 1024;
+    int sh = img->height * scale / 1024;
+    if (sw < 1) sw = 1;
+    if (sh < 1) sh = 1;
+
+    image_t *scaled = image_scale(img, sw, sh);
+    image_free(img);
+    if (!scaled) {
+        printf("imgview: failed to scale image\n");
+        return;
+    }
+
+    /* Suspend WM and take over framebuffer */
+    keyboard_set_idle_callback(0);
+    int tid = task_register("imgview", 1, -1);
+
+    gfx_clear(0xFF000000);
+
+    /* Center on screen */
+    int ox = (W - sw) / 2;
+    int oy = (H - sh) / 2;
+
+    uint32_t *bb = gfx_backbuffer();
+    int pitch = (int)(gfx_pitch() / 4);
+    for (int y = 0; y < sh && (oy + y) < H; y++) {
+        if (oy + y < 0) continue;
+        for (int x = 0; x < sw && (ox + x) < W; x++) {
+            if (ox + x < 0) continue;
+            bb[(oy + y) * pitch + (ox + x)] = scaled->pixels[y * sw + x];
+        }
+    }
+
+    /* Info bar at bottom */
+    char info[128];
+    snprintf(info, sizeof(info), "%s  %dx%d  (press any key to exit)",
+             argv[1], scaled->width, scaled->height);
+    gfx_draw_string(10, H - 20, info, GFX_RGB(180, 180, 180), GFX_BLACK);
+
+    gfx_flip();
+    image_free(scaled);
+
+    /* Wait for keypress or kill */
+    while (1) {
+        if (tid >= 0 && task_check_killed(tid)) break;
+        if (keyboard_data_available()) {
+            char c = getchar();
+            (void)c;
+            break;
+        }
+        task_set_current(TASK_IDLE);
+        cpu_halting = 1;
+        __asm__ volatile ("hlt");
+        cpu_halting = 0;
+    }
+
+    if (tid >= 0) task_unregister(tid);
+    keyboard_set_idle_callback(desktop_get_idle_terminal_cb());
+    terminal_clear();
+    if (gfx_is_active()) wm_composite();
+}
+
 /* Forward declaration for virgl_test (defined in app/virgl_test.c) */
 extern void cmd_virgl_test(int argc, char* argv[]);
 
@@ -886,6 +974,24 @@ static const command_t gfx_commands[] = {
         "    corner of the desktop. The counter updates every second and\n"
         "    shows the number of WM composites per second. Run 'fps'\n"
         "    again to turn it off.\n",
+        CMD_FLAG_ROOT
+    },
+    {
+        "imgview", cmd_imgview,
+        "Display an image file (BMP/PNG)",
+        "imgview: imgview <path>\n"
+        "    Load and display an image file fullscreen.\n"
+        "    Supports BMP (24/32bpp) and PNG (8-bit RGB/RGBA).\n"
+        "    Press any key to exit.\n",
+        "NAME\n"
+        "    imgview - image viewer\n\n"
+        "SYNOPSIS\n"
+        "    imgview <path>\n\n"
+        "DESCRIPTION\n"
+        "    Loads a BMP or PNG image from the filesystem and displays\n"
+        "    it centered on screen with a black background. The image\n"
+        "    is scaled to fit while preserving aspect ratio.\n"
+        "    Press any key to return to the shell.\n",
         CMD_FLAG_ROOT
     },
 };
